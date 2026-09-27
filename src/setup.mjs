@@ -1,9 +1,10 @@
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
-import { checkboxPrompt, colorText, formatStatus } from './terminal-ui.mjs';
+import { checkboxPrompt, colorText, formatStatus, textPrompt } from './terminal-ui.mjs';
 import { discoverDestinations, remediation } from './bas-discovery.mjs';
 import { discoverCloudFoundryDestinations, getCloudFoundryTarget, deleteManagedCloudFoundryServiceKeys } from './cf-destination.mjs';
 import { SAP_DEVELOPMENT_MCP_SERVERS, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, installMcpConfig, readMcpConfig, resolveMcpConfigPath } from './mcp-config.mjs';
+import { readCredentials, removeDestinationCredentials, resolveCredentialsPath, storeDestinationCredentials } from './credentials-store.mjs';
 
 const SETUP_COMMAND = 'sap-ai-dev --setup';
 
@@ -23,6 +24,56 @@ async function confirmCloudFoundryImport({ input = stdin, output = stdout } = {}
   }
 }
 
+// Internet destinations reach SAP through the BAS .dest proxy, which strips
+// Set-Cookie and makes ADT CSRF-protected writes impossible. Ask once for
+// direct-connection credentials and store them next to the MCP config; the
+// relay then connects straight to the backend host with Basic auth.
+async function promptForInternetDestinationCredentials({ destinations, credentialsPath, existing = {}, input = stdin, output = stdout } = {}) {
+  const stored = {};
+  const internetDestinations = destinations.filter(destination =>
+    destination.source !== 'cloud-foundry'
+    && String(destination.proxyType || '').toLowerCase() === 'internet'
+    && /^basicauthentication$/i.test(String(destination.authentication || '')));
+  if (!internetDestinations.length) return stored;
+
+  print(output, '');
+  print(output, formatStatus('Some selected destinations are Internet type with basic authentication.', 'step', output, 'Direct connect'));
+  print(output, '  The BAS proxy strips SAP session cookies, which blocks ADT writes (CSRF validation).');
+  print(output, '  Providing a user and password enables a direct connection for those destinations.');
+  print(output, `  Credentials are stored beside your MCP config in ${credentialsPath} (never inside mcp.json).`);
+  print(output, '');
+
+  for (const destination of internetDestinations) {
+    const known = existing[destination.name];
+    if (known?.user && known?.password) {
+      print(output, formatStatus(`Credentials for ${destination.name} are already stored (user ${known.user}). Press Enter at both prompts to keep them.`, 'info', output, 'Direct connect'));
+    }
+    const userAnswer = await textPrompt({
+      message: colorText(`👤 ${destination.name} — SAP user`, 'cyan', output),
+      required: false,
+      placeholder: known ? `${known.user} (Enter keeps stored user)` : 'SAP user name'
+    }, { input, output });
+    const user = userAnswer.trim() || known?.user || '';
+    const passwordAnswer = await textPrompt({
+      message: colorText(`🔒 ${destination.name} — SAP password${known ? ' (Enter keeps stored password)' : ''}`, 'cyan', output),
+      secret: true,
+      required: false
+    }, { input, output });
+    const password = passwordAnswer || known?.password || '';
+    if (!user || !password) {
+      print(output, formatStatus(`No complete credentials for ${destination.name}; direct connect stays inactive for it.`, 'warning', output, 'Direct connect'));
+      continue;
+    }
+    stored[destination.name] = {
+      host: destination.backendUrl || known?.host || '',
+      user,
+      password
+    };
+    print(output, formatStatus(`Stored credentials for ${destination.name}.`, 'success', output, 'Direct connect'));
+  }
+  return stored;
+}
+
 function safeProbe(probe) {
   const result = {};
   if (typeof probe?.status === 'string') result.status = probe.status;
@@ -39,6 +90,8 @@ function safeBasDestination(destination) {
     url: destination.url,
     client: destination.client,
     authentication: destination.authentication,
+    proxyType: destination.proxyType,
+    backendUrl: destination.backendUrl || null,
     probe: safeProbe(destination.probe)
   };
 }
@@ -117,6 +170,7 @@ export async function runSetup({
   }
   const destinations = basDestinations.map(safeBasDestination);
   const warnings = [];
+  const credentialWarnings = [];
   let createdKeys = [];
   let configPath;
   let managedKeys = [];
@@ -228,6 +282,39 @@ export async function runSetup({
       shortcuts: { all: 'a' }
     }, { input, output });
   }
+
+  // Ask for direct-connect credentials for selected Internet destinations
+  // so ADT writes work despite the BAS proxy stripping session cookies.
+  const credentialsPath = await resolveCredentialsPath(env, configPath);
+  const internetSelected = selected.filter(destination =>
+    destination.source !== 'cloud-foundry'
+    && String(destination.proxyType || '').toLowerCase() === 'internet'
+    && /^basicauthentication$/i.test(String(destination.authentication || '')));
+  if (internetSelected.length) {
+    try {
+      const existingMap = (await readCredentials(credentialsPath).catch(() => ({ destinations: {} }))).destinations || {};
+      const storedNow = await promptForInternetDestinationCredentials({
+        destinations: selected,
+        credentialsPath,
+        existing: existingMap,
+        input,
+        output
+      });
+      for (const [name, entry] of Object.entries(storedNow)) {
+        await storeDestinationCredentials(credentialsPath, name, entry);
+      }
+      // Remove stored credentials for Internet destinations that are no
+      // longer selected, so the file only tracks active servers.
+      const stillSelected = new Set(selected.map(destination => destination.name));
+      const stale = Object.keys(existingMap)
+        .filter(name => !stillSelected.has(name))
+        .filter(name => internetSelected.every(destination => destination.name !== name));
+      if (stale.length) await removeDestinationCredentials(credentialsPath, stale);
+    } catch (error) {
+      if (/Prompt interrupted/.test(error.message)) throw error;
+      credentialWarnings.push(`Direct-connect credentials could not be stored: ${error.message}`);
+    }
+  }
   try {
     const result = await install(selected, { env, sapDevelopmentServers });
     const location = result?.path ? ` in ${result.path}` : '';
@@ -248,8 +335,9 @@ export async function runSetup({
       }
     }
     await reportWarnings(warnings);
+    await reportWarnings(credentialWarnings);
     await reportWarnings(cleanupWarnings);
-    return { selected, ...(result || {}), warnings: [...warnings, ...cleanupWarnings] };
+    return { selected, ...(result || {}), warnings: [...warnings, ...credentialWarnings, ...cleanupWarnings] };
   } catch (error) {
     const cleanupWarnings = [];
     if (createdKeys.length) {

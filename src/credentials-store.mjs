@@ -1,0 +1,114 @@
+import { randomUUID } from 'node:crypto';
+import { chmod, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { basename, dirname, join } from 'node:path';
+import { brandedEnvValue } from './branding.mjs';
+
+// Credentials for direct-connect destinations live next to the MCP config
+// (never inside it), with 0600 permissions and no tokens or cookies. The
+// file maps destination names to { host, user, password, updatedAt }.
+const CREDENTIALS_FILENAME = 'sap-ai-dev-toolkit-credentials.json';
+
+const SECRET_PATTERN = /(authorization|cookie|password|secret|token|bearer|credential)/i;
+
+async function exists(path) {
+  try {
+    await stat(path);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+export function redactCredentialValue(value) {
+  return SECRET_PATTERN.test(String(value)) ? '[redacted]' : value;
+}
+
+export async function resolveCredentialsPath(env = process.env, mcpConfigPath) {
+  const configured = brandedEnvValue(env, 'CREDENTIALS_FILE');
+  if (configured) return configured;
+  if (mcpConfigPath) return join(dirname(mcpConfigPath), CREDENTIALS_FILENAME);
+  const home = env.HOME || homedir();
+  const candidates = [
+    join(home, '.vscode', 'data', 'User'),
+    join(home, '.vscode-server', 'data', 'User'),
+    join(home, '.code-server', 'data', 'User')
+  ];
+  for (const candidate of candidates) if (await exists(candidate)) return join(candidate, CREDENTIALS_FILENAME);
+  return join(candidates[0], CREDENTIALS_FILENAME);
+}
+
+function sanitizeEntry(entry) {
+  const result = {};
+  if (typeof entry?.host === 'string' && entry.host) result.host = entry.host;
+  if (typeof entry?.user === 'string' && entry.user) result.user = entry.user;
+  if (typeof entry?.password === 'string' && entry.password) result.password = entry.password;
+  if (typeof entry?.updatedAt === 'string') result.updatedAt = entry.updatedAt;
+  return result;
+}
+
+export async function readCredentials(path) {
+  let raw;
+  try {
+    raw = await readFile(path, 'utf8');
+  } catch (error) {
+    if (error?.code === 'ENOENT') return {};
+    throw new Error(`Credentials file ${path} could not be read: ${error.message}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`Credentials file ${path} contains invalid JSON: ${error.message}`);
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Credentials file ${path} must contain a top-level JSON object`);
+  }
+  const destinations = {};
+  for (const [name, entry] of Object.entries(parsed.destinations || {})) {
+    const clean = sanitizeEntry(entry);
+    if (clean.user && clean.password) destinations[name] = clean;
+  }
+  return { destinations };
+}
+
+async function writeCredentials(path, destinations) {
+  const directory = dirname(path);
+  await mkdir(directory, { recursive: true });
+  const temporary = join(directory, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporary, `${JSON.stringify({ version: 1, destinations }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+    await rename(temporary, path);
+    await chmod(path, 0o600).catch(() => {});
+  } catch (error) {
+    await rm(temporary, { force: true }).catch(() => {});
+    throw new Error(`Credentials file ${path} could not be written: ${error.message}`);
+  }
+}
+
+export async function storeDestinationCredentials(path, name, { host, user, password }) {
+  const current = await readCredentials(path).catch(error => { throw error; });
+  const destinations = { ...current.destinations };
+  destinations[String(name)] = { host: String(host || ''), user: String(user || ''), password: String(password || ''), updatedAt: new Date().toISOString() };
+  await writeCredentials(path, destinations);
+  return { path, name };
+}
+
+export async function removeDestinationCredentials(path, names) {
+  const current = await readCredentials(path);
+  const destinations = { ...current.destinations };
+  const removed = [];
+  for (const name of names) {
+    if (Object.hasOwn(destinations, String(name))) {
+      delete destinations[String(name)];
+      removed.push(String(name));
+    }
+  }
+  if (removed.length) await writeCredentials(path, destinations);
+  return { path, removed };
+}
+
+export function listCredentialDestinations(credentials) {
+  return Object.entries(credentials?.destinations || {}).map(([name, entry]) => ({ name, host: entry.host, user: entry.user, updatedAt: entry.updatedAt }));
+}

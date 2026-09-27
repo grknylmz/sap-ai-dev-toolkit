@@ -56,6 +56,18 @@ function assertValidationPolicy(markdown, path) {
   assert.match(markdown, /report|Record|document/i, `${path} must require observed outcome reporting`);
 }
 
+function assertPlanFirstPolicy(markdown, path) {
+  assert.match(markdown, /[Pp]lan before implementing|[Pp]lanning phase before implementation/, `${path} must require a plan to be presented before implementation starts`);
+  assert.match(markdown, /wait for explicit (?:user )?approval|no SAP state-changing package proceeds before the user approves/i, `${path} must gate SAP state-changing implementation on explicit approval`);
+}
+
+function assertLocalFirstPolicy(markdown, path) {
+  assert.match(markdown, /abapGit[- ]serialized|abapGit-style/, `${path} must require local abapGit-style source files`);
+  assert.match(markdown, /object\.type\.extension/, `${path} must document the object.type.extension file naming`);
+  assert.match(markdown, /LintABAP/, `${path} must require local linting with LintABAP`);
+  assert.match(markdown, /before (?:they are )?sent to the SAP system|before sending to SAP|check and lint before sending/i, `${path} must require local checks before the SAP transfer`);
+}
+
 function assertNoUnsafeTransportClaims(markdown, path) {
   const releaseMentions = markdown.match(/ReleaseTransport|release\/deletion|release and deletion|release is unavailable|release action/gi) || [];
   assert.ok(releaseMentions.length > 0 || !/transport/i.test(markdown), `${path} transport guidance should explicitly handle release limitations when transport is discussed`);
@@ -88,6 +100,8 @@ test('ABAP Developer agent has valid metadata and invokes the packaged skills', 
   }
   assertMentionsLiveToolDiscovery(markdown, agentPath);
   assertValidationPolicy(markdown, agentPath);
+  assertPlanFirstPolicy(markdown, agentPath);
+  assertLocalFirstPolicy(markdown, agentPath);
   assertNoUnsafeTransportClaims(markdown, agentPath);
 });
 
@@ -108,6 +122,24 @@ test('SAP Solution Architect agent has valid metadata and planning/handoff polic
   assert.match(markdown, /RAP Service Developer/i);
   assert.match(markdown, /ABAP Runtime Debugger/i);
   assert.match(markdown, /SDLC|lifecycle/i);
+  assertPlanFirstPolicy(markdown, path);
+  assertLocalFirstPolicy(markdown, path);
+  assertNoUnsafeTransportClaims(markdown, path);
+});
+
+test('RAP Service Developer agent has valid metadata and plan-first local-first policy', async () => {
+  const path = join(agentsRoot, 'rap-service-developer.agent.md');
+  const markdown = await readMarkdown(path);
+  const metadata = parseFrontmatter(markdown, path);
+  assert.deepEqual(Object.keys(metadata).sort(), ['description', 'name', 'target', 'user-invocable']);
+  assert.equal(metadata.name, 'RAP Service Developer');
+  assert.equal(metadata.target, 'vscode');
+  assert.equal(metadata['user-invocable'], 'true');
+  assert.match(metadata.description, /RAP/i);
+  assertMentionsLiveToolDiscovery(markdown, path);
+  assertValidationPolicy(markdown, path);
+  assertPlanFirstPolicy(markdown, path);
+  assertLocalFirstPolicy(markdown, path);
   assertNoUnsafeTransportClaims(markdown, path);
 });
 
@@ -131,6 +163,15 @@ test('implementation-oriented skills require tests, runtime evidence, activation
     const markdown = await readMarkdown(path);
     assertValidationPolicy(markdown, path);
     assert.match(markdown, /do not (?:treat|present|claim)|never report|not replace|not .*substitutes?/i, `${skill} must explicitly prevent substituting static checks for behavior evidence`);
+  }
+});
+
+test('implementation and delivery skills require planning first and local-first authoring', async () => {
+  for (const skill of ['abap-development', 'rap-development', 'rap-service-delivery', 'sap-sdlc-orchestration']) {
+    const path = join(skillsRoot, skill, 'SKILL.md');
+    const markdown = await readMarkdown(path);
+    assertPlanFirstPolicy(markdown, path);
+    assertLocalFirstPolicy(markdown, path);
   }
 });
 

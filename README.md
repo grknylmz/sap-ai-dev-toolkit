@@ -298,11 +298,12 @@ The package includes four user-invocable custom agents (**SAP Solution Architect
 
 1. **Start with architecture when requirements are open-ended.** Use **SAP Solution Architect** to investigate the SAP system, evaluate SAP standard solutions, recommend released APIs, apply Clean Core and side-by-side extensibility, create the solution design, and orchestrate the SDLC through implementation work packages and validation gates.
 2. **Understand the request.** Establish the expected behavior and, for SAP changes, the destination, package, and transport or temporary target. Ask only when a material detail is missing.
-3. **Inspect before editing.** Read relevant source, tests, callers, dependencies, standard APIs, release state, and conventions; query the active MCP server's live `tools/list` and use its exact destination-prefixed tools and schemas.
-4. **Implement with behavior in mind.** Add or refine an ABAP Unit assertion first when an executable regression test is available, then make the smallest change that meets the request.
-5. **Verify with available checks.** Use `LintABAP` for caller-supplied source, BAS editor LSP diagnostics when configured, and SAP `SyntaxCheck`, `RunUnitTests`, and `RunATCCheck` when exposed and relevant. Lint and syntax checks do not replace behavior tests.
-6. **Protect SAP state.** Only make requested changes. Activate objects or publish services only when asked; create transports only when explicitly authorized. Release and deletion of transports are unavailable through this add-on.
-7. **Report observed results.** Summarize architecture decisions, changed objects, implementation handoff or actual validation, activation, and publication outcomes. Identify skipped checks and exact blockers; never claim a check passed if it did not run.
+3. **Plan before implementing.** Every implementation task starts with a presented plan: objects to change, ABAP Unit test approach, local authoring/validation, and the SAP write/activation steps it requires. The agents proceed while work stays read-only or workspace-local and wait for explicit approval before any plan that writes to, activates in, or publishes to the SAP system.
+4. **Inspect before editing.** Read relevant source, tests, callers, dependencies, standard APIs, release state, and conventions; query the active MCP server's live `tools/list` and use its exact destination-prefixed tools and schemas.
+5. **Implement with behavior in mind, locally first.** Add or refine an ABAP Unit assertion first when an executable regression test is available, then make the smallest change that meets the request. Sources are authored locally as abapGit-serialized workspace files (`object.type.extension`), and checked and linted there before they are sent to SAP.
+6. **Check and lint before sending to SAP.** Run the local `LintABAP` tool on the caller-supplied files plus required dependencies and consume BAS editor LSP diagnostics when configured; fix findings locally and re-lint. Only then transfer the sources to SAP and use the remote `SyntaxCheck`, `RunUnitTests`, and `RunATCCheck` when exposed and relevant. Lint and syntax checks do not replace behavior tests.
+7. **Protect SAP state.** Only make requested changes. Activate objects or publish services only when asked; create transports only when explicitly authorized. Release and deletion of transports are unavailable through this add-on.
+8. **Report observed results.** Summarize architecture decisions, changed objects, implementation handoff or actual validation, activation, and publication outcomes. Identify skipped checks and exact blockers; never claim a check passed if it did not run.
 
 ### 🧩 Included Agent Skills
 
@@ -698,6 +699,18 @@ The response contains a `tools` array. A `RunQuery` entry resembles this excerpt
 | `SAP_AI_DEV_TOOLKIT_MODE` | VSP child mode (`expert` by default; `focused` omits `ActivateMultiple`, `GetUserTransports`, and `GetTransportInfo`). The proxy exposes its curated tools plus tools listed in `tools.md` when registered by that mode, including local `LintABAP`. |
 | `SAP_ALLOW_TRANSPORTABLE_EDITS` | Generated MCP entries set this to `true` to permit source edits in transportable packages; VSP safety checks and SAP authorizations still apply. |
 | `SAP_AI_DEV_TOOLKIT_DISABLE_BAS_RELAY=true` | Disable the built-in BAS destination relay. By default the add-on self-heals `.dest` destinations through a local relay that keeps all access destination-based while handling ADT CSRF fetch/retry behavior before VSP calls SAP. |
+| `SAP_AI_DEV_TOOLKIT_HTTP_PROXY` | Egress proxy for relay and discovery traffic (falls back to `HTTP_PROXY`/`http_proxy`; unset means the default BAS proxy for `.dest` hosts, empty means direct). |
+| `SAP_AI_DEV_TOOLKIT_MAX_CSRF_RETRIES` | Bounded CSRF/session self-healing retries per unsafe request (default 3). |
+
+#### Self-healing modes
+
+The relay between the VSP child and each BAS destination recovers from the failure modes that break ADT writes over `.dest` proxies:
+
+1. **CSRF session pairing** — every token is stored together with the `Set-Cookie` state SAP returned alongside it, and both are replayed on POST/PUT/PATCH/DELETE. This fixes `403 CSRF token validation failed` caused by token/session separation.
+2. **Session refresh** — when SAP rejects or rotates a session (401/403 after a token was already accepted), the cached session is dropped, a fresh token+cookie pair is fetched, and the request retried, bounded by the retry limit.
+3. **Proxy tunnel fallback** — when the BAS proxy refuses absolute-form requests (502/504 or transport errors), the relay switches to a CONNECT tunnel through the same proxy and keeps going.
+4. **Child crash recovery** — a crashed VSP child is restarted transparently, re-initialized, tools re-registered, and the interrupted `tools/call` retried once before any error reaches the client.
+5. **Direct connect for Internet destinations** — the BAS `.dest` proxy strips SAP `Set-Cookie` headers, which makes CSRF token/session binding impossible for ADT writes (`403 CSRF token validation failed`). When you select an Internet destination with basic authentication, setup prompts for a SAP user and password and stores them in `sap-ai-dev-toolkit-credentials.json` **next to** `mcp.json` (never inside it, permissions `0600`). The relay then connects straight to the backend host with Basic auth — cookies survive, CSRF pairing works, and writes behave like they do from Eclipse/ADT. Rerun `sap-ai-dev --setup` to change or clear stored credentials; re-selecting nothing removes stale entries.
 | `SAP_AI_DEV_MCP_CONFIG` | Explicit MCP user configuration path. |
 | `BAS_VSP_MCP_CONFIG` | Backward-compatible alias for the MCP user configuration path. |
 | `BAS_VSP_BINARY` | Trusted prebuilt VSP executable; skips Go and binary provisioning. |

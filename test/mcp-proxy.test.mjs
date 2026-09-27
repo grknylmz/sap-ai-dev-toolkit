@@ -57,11 +57,45 @@ test('self-heals BAS destinations through a local destination relay without cred
   proxy.start();
   await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
   const event = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).find(row => row.event === 'initialize');
-  assert.equal(event.argv.includes('--proxy-auth'), false);
+  assert.equal(event.argv.includes('--proxy-auth'), true);
   assert.match(event.argv[event.argv.indexOf('--url') + 1], /^http:\/\/127\.0\.0\.1:\d+$/);
   assert.equal(event.env.user, undefined);
   assert.equal(event.env.password, undefined);
   assert.ok(logs.some(message => message.includes('BAS destination relay enabled')));
+});
+
+test('self-heals BAS relay children with loopback NO_PROXY and keeps --proxy-auth', async t => {
+  const destination = { name: 'S4H', url: 'http://S4H.dest', client: '100', authentication: 'BasicAuthentication', proxyType: 'Internet' };
+  const directory = await mkdtemp(join(tmpdir(), 'bas-relay-env-'));
+  const log = join(directory, 'children.log');
+  const proxy = new MCPProxy({ binary: fixture, destinations: [destination], env: { ...process.env, FAKE_LOG: log }, log: () => {} });
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+  proxy.start();
+  await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  const event = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).find(row => row.event === 'initialize');
+  assert.equal(event.argv.includes('--proxy-auth'), true);
+  const noProxy = String(event.env.noProxy || '').split(',').map(value => value.trim().toLowerCase());
+  assert.ok(noProxy.includes('127.0.0.1'), `NO_PROXY must exempt the relay loopback: ${event.env.noProxy}`);
+  assert.ok(noProxy.includes('localhost'), `NO_PROXY must exempt relay localhost: ${event.env.noProxy}`);
+});
+
+test('restarts a crashed VSP child and retries the tool call once', async t => {
+  const { directory, log, proxy } = await fixtureProxy();
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+  await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } });
+  await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+  const entry = proxy.children[0];
+  const originalChild = entry.child;
+  // Kill the child behind the proxy's back to simulate a crash.
+  const exit = once(originalChild.process, 'exit');
+  originalChild.process.kill('SIGKILL');
+  await exit;
+  const response = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'alpha__GetSystemInfo', arguments: {} } });
+  assert.equal(response?.error, undefined, `self-healing must recover the call: ${JSON.stringify(response?.error)}`);
+  assert.notEqual(proxy.children[0].child, originalChild, 'a replacement child must have been spawned');
+  const events = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.ok(events.some(row => row.event === 'initialize' && row.destination === 'alpha'), 'replacement child must re-initialize');
+  assert.ok(events.some(row => row.event === 'call' && row.name === 'GetSystemInfo'), 'the retried call must reach the child');
 });
 
 test('closes each Cloud Foundry route after child exit and on startup failure', async t => {
@@ -106,7 +140,8 @@ test('closes each Cloud Foundry route after child exit and on startup failure', 
     spawn: () => { throw new Error('spawn denied'); },
     log: () => {}
   });
-  assert.throws(() => failedProxy.start(), /No destination child could be started/);
+  failedProxy.start();
+  await assert.rejects(() => failedProxy.starting, /No destination child could be started/);
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(failedStartCloseCount, 1);
 });
@@ -319,9 +354,13 @@ test('returns JSON-RPC errors for unknown namespaces and logs child failures', a
   const child = proxy.children.find(entry => entry.destination.name === 'alpha').child;
   child.process.kill('SIGKILL');
   await new Promise(resolve => setTimeout(resolve, 25));
-  const failed = await proxy.handle({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'alpha__GetSource' } });
-  assert.equal(failed.error.code, -32001);
+  // A crashed child no longer fails the call: self-healing restarts it and
+  // retries once, so the request goes through to a fresh child.
+  const healed = await proxy.handle({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'alpha__GetSource' } });
+  assert.equal(healed?.error, undefined, `call must heal after child crash: ${JSON.stringify(healed?.error)}`);
+  assert.equal(healed.result.content[0].text, 'alpha:GetSource');
   assert.ok(logs.some(message => message.includes('alpha') && message.includes('tools/call GetSource failed')));
+  assert.ok(logs.some(message => message.includes('self-healing restart complete')), 'restart must be logged');
 });
 test('stdin EOF shuts down every child process and forwards child logs', async t => {
   const { directory, log, proxy } = await fixtureProxy();

@@ -10,9 +10,35 @@ import { installMcpConfig } from './mcp-config.mjs';
 import { runSetup } from './setup.mjs';
 import { resolveConfiguredCloudFoundryDestination } from './cf-destination.mjs';
 import { withBrandedEnvironment } from './branding.mjs';
+import { readCredentials, resolveCredentialsPath } from './credentials-store.mjs';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const runtimeEnv = withBrandedEnvironment(process.env);
+
+// Attach stored direct-connect credentials (setup prompts for Internet
+// destinations) to matching discovered destinations. Credentials stay in
+// memory only; nothing is logged or written to the MCP config.
+async function enrichWithStoredCredentials(destinations, env = runtimeEnv) {
+  const needingCredentials = destinations.filter(destination =>
+    destination.source !== 'cloud-foundry'
+    && destination.url
+    && String(destination.url).includes('.dest'));
+  if (!needingCredentials.length) return destinations;
+  let stored;
+  try {
+    const path = await resolveCredentialsPath(env);
+    stored = await readCredentials(path);
+  } catch (error) {
+    console.error(`[sap-ai-dev] stored credentials could not be read: ${String(error.message).slice(0, 200)}`);
+    return destinations;
+  }
+  return destinations.map(destination => {
+    const entry = stored.destinations?.[destination.name];
+    if (!entry?.host || !entry.user || !entry.password) return destination;
+    if (!destination.backendUrl) return destination;
+    return { ...destination, credentials: { host: entry.host, user: entry.user, password: entry.password } };
+  });
+}
 
 function hasFlag(name) { return process.argv.slice(2).includes(name); }
 function json(value) { process.stdout.write(`${JSON.stringify(value)}\n`); }
@@ -75,6 +101,19 @@ async function runDoctor(destinations) {
       const initialized = await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } });
       if (initialized?.error) throw new Error(initialized.error.message || 'MCP initialization failed');
       checks.push(doctorRow(destination.name, 'VSP MCP startup', 'passed', 'initialized'));
+      const relayedDestination = proxy.children[0]?.destination;
+      if (relayedDestination?.relay) {
+        checks.push(doctorRow(destination.name, 'BAS destination relay', 'passed', `enabled (${relayedDestination.url}); CSRF token/session pairing active`));
+      } else if (destination.source === 'cloud-foundry') {
+        checks.push(doctorRow(destination.name, 'BAS destination relay', 'skipped', 'Cloud Foundry destinations connect through the connectivity proxy directly.'));
+      } else if (String(runtimeEnv.SAP_AI_DEV_TOOLKIT_DISABLE_BAS_RELAY || '').toLowerCase() === 'true') {
+        checks.push(doctorRow(destination.name, 'BAS destination relay', 'skipped', 'Disabled through SAP_AI_DEV_TOOLKIT_DISABLE_BAS_RELAY.'));
+      } else {
+        checks.push(doctorRow(destination.name, 'BAS destination relay', 'skipped', 'Not applicable for this destination.'));
+      }
+      if (relayedDestination?.credentials) {
+        checks.push(doctorRow(destination.name, 'Direct connect', 'passed', `active (${new URL(relayedDestination.credentials.host).origin}); ADT writes use stored credentials`));
+      }
       const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
       if (listed?.error) throw new Error(listed.error.message || 'MCP tools/list failed');
       const tools = listed.result?.tools || [];
@@ -165,7 +204,7 @@ async function main() {
     try {
       const destinations = runtimeEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'cloud-foundry'
         ? [await resolveConfiguredCloudFoundryDestination({ env: runtimeEnv })]
-        : await discoverForCommand();
+        : await enrichWithStoredCredentials(await discoverForCommand());
       report = await runDoctor(destinations);
     } catch (error) {
       report = { ok: false, destinations: 0, checks: [doctorRow('-', 'destination discovery', 'failed', redactText(error.message || error).slice(0, 300))] };
@@ -231,12 +270,15 @@ async function main() {
 
   const discovered = await discoverDestinations({ env: runtimeEnv });
   for (const destination of discovered) console.error(probeDiagnostic(destination));
-  const destinations = discovered;
+  const destinations = await enrichWithStoredCredentials(discovered);
   if (!destinations.length) {
     console.error('[sap-ai-dev] destination discovery returned no named BAS destinations');
     throw new Error(remediation);
   }
   const binary = await binaryOrError();
+  for (const destination of destinations) {
+    if (destination.credentials) console.error(`[sap-ai-dev] ${destination.name}: direct connect enabled through stored credentials`);
+  }
   console.error(`[sap-ai-dev] starting MCP proxy for ${destinations.map(destination => `${destination.name} (client=${destination.client})`).join(', ')}`);
   const proxy = new MCPProxy({ binary, destinations, env: process.env, log: message => console.error(message) });
   const shutdown = signal => { void proxy.close().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143)); };

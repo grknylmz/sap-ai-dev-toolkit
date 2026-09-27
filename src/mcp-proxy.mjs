@@ -1,6 +1,6 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { once } from 'node:events';
-import { sanitizeChildEnv } from './bas-discovery.mjs';
+import { sanitizeChildEnv, slugifyDestination } from './bas-discovery.mjs';
 import { ABAP_LINT_TOOL, runABAPLint } from './abaplint.mjs';
 import { createEngineeringTools } from './engineering-tools.mjs';
 import { brandedEnvValue } from './branding.mjs';
@@ -62,11 +62,24 @@ function closeDestinationRoute(destination) {
 function useBasDestinationRelay(destination, env = process.env) {
   if (String(brandedEnvValue(env, 'DISABLE_BAS_RELAY') || '').toLowerCase() === 'true') return false;
   if (destination.source === 'cloud-foundry') return false;
+  if (!destination.authentication) return false;
   return Boolean(destination.url && String(destination.url).includes('.dest'));
 }
 
 function childEnvironment(destination, env) {
-  return { ...sanitizeChildEnv(env), ...(destination.childEnv || {}) };
+  const childEnv = { ...sanitizeChildEnv(env), ...(destination.childEnv || {}) };
+  // The VSP child must reach the local BAS relay directly, never through the
+  // BAS .dest proxy. Without a loopback exception every child request would
+  // be double-proxied and the relay's session pairing could never apply.
+  if (destination.relay) {
+    const loopback = '127.0.0.1,localhost';
+    for (const key of ['NO_PROXY', 'no_proxy']) {
+      const entries = String(childEnv[key] || '').split(',').map(value => value.trim()).filter(Boolean);
+      for (const host of loopback.split(',')) if (!entries.some(entry => entry.toLowerCase() === host)) entries.push(host);
+      childEnv[key] = entries.join(',');
+    }
+  }
+  return childEnv;
 }
 
 
@@ -75,7 +88,7 @@ export function childArguments(destination, env = process.env) {
   // Transportable source edits are controlled by SAP_ALLOW_TRANSPORTABLE_EDITS.
   const mode = brandedEnvValue(env, 'MODE') || 'expert';
   const args = ['--url', destination.url, '--client', destination.client || '001', '--mode', mode];
-  if (!destination.relay && (destination.source !== 'cloud-foundry' || destination.authentication === 'PrincipalPropagation')) args.push('--proxy-auth');
+  if (destination.source !== 'cloud-foundry' || destination.authentication === 'PrincipalPropagation') args.push('--proxy-auth');
   args.push('--enable-transports');
   return args;
 }
@@ -102,12 +115,14 @@ class Child {
     this.process.on('error', error => {
       if (!this.closing && !this.pending.size && this.options.log) this.options.log(`[${destination.name}] VSP child process error: ${diagnosticText(error.message)}`);
       this.fail(error);
-      void closeDestinationRoute(destination);
+      // Relay routes survive child crashes so self-healing restarts can reuse
+      // them; they are closed by the proxy shutdown path instead.
+      if (!destination.relay) void closeDestinationRoute(destination);
     });
     this.process.on('exit', (code, signal) => {
       if (!this.closing && !this.pending.size && this.options.log) this.options.log(`[${destination.name}] VSP child exited (${code ?? signal})`);
       this.fail(new Error(`child exited (${code ?? signal})`));
-      void closeDestinationRoute(destination);
+      if (!destination.relay) void closeDestinationRoute(destination);
     });
   }
 
@@ -216,51 +231,87 @@ export class MCPProxy {
   start() {
     if (this.started) return this;
     this.started = true;
-    for (const originalDestination of this.destinations) {
-      let destination = originalDestination;
-      try {
-        if (useBasDestinationRelay(originalDestination, this.env)) {
-          const relay = createBasDestinationRelay(originalDestination, { env: this.env, log: this.log });
-          const originalClose = originalDestination.close;
-          destination = {
-            ...originalDestination,
-            url: relay.url,
-            relay: true,
-            async close() {
-              await originalClose?.();
-              await relay.close();
-            }
-          };
-          this.log(`[${originalDestination.name}] BAS destination relay enabled (${relay.url})`);
+    this.starting = (async () => {
+      for (const originalDestination of this.destinations) {
+        let destination = originalDestination;
+        try {
+          if (useBasDestinationRelay(originalDestination, this.env)) {
+            const relay = createBasDestinationRelay(originalDestination, { env: this.env, log: this.log });
+            const originalClose = originalDestination.close;
+            const relayUrl = await relay.ready;
+            destination = {
+              ...originalDestination,
+              url: relayUrl,
+              relay: true,
+              async close() {
+                await originalClose?.();
+                await relay.close();
+              }
+            };
+            this.log(`[${originalDestination.name}] BAS destination relay enabled (${relayUrl})`);
+          }
+          this.log(`[${destination.name}] starting VSP child (client=${destination.client || '001'})`);
+          this.children.push({
+            destination,
+            child: new Child(this.binary, destination, {
+              env: this.env,
+              spawn: this.spawn,
+              args: this.childArgs?.(destination),
+              log: this.log,
+              onNotification: notification => {
+                if (this.clientInitialized) this.output(JSON.stringify(notification));
+                else this.pendingNotifications.push(notification);
+              }
+            })
+          });
+        } catch (error) {
+          this.log(`[${destination.name}] failed to start child: ${diagnosticText(error.message)}`);
+          void closeDestinationRoute(destination);
         }
-        this.log(`[${destination.name}] starting VSP child (client=${destination.client || '001'})`);
-        this.children.push({
-          destination,
-          child: new Child(this.binary, destination, {
-            env: this.env,
-            spawn: this.spawn,
-            args: this.childArgs?.(destination),
-            log: this.log,
-            onNotification: notification => {
-              if (this.clientInitialized) this.output(JSON.stringify(notification));
-              else this.pendingNotifications.push(notification);
-            }
-          })
-        });
-      } catch (error) {
-        this.log(`[${destination.name}] failed to start child: ${diagnosticText(error.message)}`);
-        void closeDestinationRoute(destination);
       }
-    }
-    if (!this.children.length) {
-      this.started = false;
-      for (const destination of this.destinations) void closeDestinationRoute(destination);
-      throw new Error('No destination child could be started');
-    }
+      if (!this.children.length) {
+        this.started = false;
+        for (const destination of this.destinations) void closeDestinationRoute(destination);
+        throw new Error('No destination child could be started');
+      }
+      return this;
+    })();
+    // Mark the startup promise as handled here; initializeChildren re-awaits
+    // it so startup failures still surface as MCP initialization errors
+    // without triggering an unhandled rejection in between.
+    this.starting.catch(() => {});
     return this;
   }
 
+  // Self-healing mode 3: transparently restart a crashed VSP child so an
+  // MCP tools/call does not permanently fail after a single crash. The
+  // restarted child re-initializes and re-registers tools before the call
+  // is retried once.
+  async restartChild(entry) {
+    if (this.shuttingDown) throw new Error('MCP proxy is shutting down');
+    const name = entry.destination.name;
+    this.log(`[${name}] VSP child crashed; self-healing restart in progress`);
+    await entry.child.close().catch(() => {});
+    const child = new Child(this.binary, entry.destination, {
+      env: this.env,
+      spawn: this.spawn,
+      args: this.childArgs?.(entry.destination),
+      log: this.log,
+      onNotification: notification => {
+        if (this.clientInitialized) this.output(JSON.stringify(notification));
+        else this.pendingNotifications.push(notification);
+      }
+    });
+    entry.child = child;
+    entry.server = await child.initialize(this.lastInitializeParams || {});
+    await child.listTools().catch(() => {});
+    this.log(`[${name}] VSP child self-healing restart complete`);
+    return entry;
+  }
+
   async initializeChildren(params) {
+    await this.starting;
+    this.lastInitializeParams = params;
     const healthy = [];
     for (const entry of this.children) {
       this.log(`[${entry.destination.name}] initializing VSP MCP session`);
@@ -364,6 +415,19 @@ export class MCPProxy {
           return response.error ? { ...response, id: message.id } : rpcResult(message.id, response.result);
         } catch (error) {
           this.log(`[${mapped.entry.destination.name}] tools/call ${toolName} failed after ${Date.now() - startedAt}ms: ${diagnosticText(error.rpcError?.message || error.message)}`);
+          // Self-healing: a dead child (crash, OOM, transient pipe break) is
+          // restarted and the call retried once before surfacing the error.
+          const childBroken = mapped.entry.child.exited || !mapped.entry.child.process.stdin.writable;
+          if (childBroken && !this.shuttingDown) {
+            try {
+              await this.restartChild(mapped.entry);
+              this.log(`[${mapped.entry.destination.name}] tools/call ${toolName} retried after self-healing restart`);
+              const retried = await mapped.entry.child.request('tools/call', upstreamParams);
+              return retried.error ? { ...retried, id: message.id } : rpcResult(message.id, retried.result);
+            } catch (restartError) {
+              this.log(`[${mapped.entry.destination.name}] tools/call ${toolName} self-healing restart failed: ${diagnosticText(restartError.message)}`);
+            }
+          }
           return error.rpcError ? rpcError(message.id, error.rpcError.code || -32001, error.rpcError.message || error.message, error.rpcError.data) : rpcError(message.id, -32001, `Destination ${mapped.entry.destination.name} failed: ${error.message}`);
         }
       }

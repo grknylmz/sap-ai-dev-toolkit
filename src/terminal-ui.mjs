@@ -210,3 +210,87 @@ export async function checkboxPrompt({ message, choices, required = false, short
     }
   });
 }
+
+// Single-line text/secret prompt matching the checkbox prompt's interaction
+// style. Secrets are masked with ●, support backspace, and can be re-prompted
+// through `validate`. Ctrl+C rejects with 'Prompt interrupted'.
+export async function textPrompt({ message, secret = false, required = true, placeholder = '', validate } = {}, { input = process.stdin, output = process.stdout } = {}) {
+  let value = '';
+  let renderedLines = 0;
+  let done = false;
+  let previousRawMode;
+
+  const write = text => output.write(text);
+  const masked = () => '●'.repeat(value.length);
+  const clearRendered = () => {
+    if (!renderedLines) return;
+    write(`\u001b[${renderedLines}A\u001b[J`);
+    renderedLines = 0;
+  };
+  const render = (error = '') => {
+    const columns = Number.isFinite(output?.columns) ? output.columns : 80;
+    const lines = [];
+    const hint = secret ? ' (input is hidden)' : '';
+    lines.push(truncateToColumns(`${message}${hint}`, columns));
+    const shown = secret ? masked() : value;
+    const display = shown || colorText(placeholder, 'cyan', output);
+    lines.push(truncateToColumns(`❯ ${display}`, columns));
+    if (error) lines.push(colorText(`  ${error}`, 'red', output));
+    clearRendered();
+    write(`${lines.join('\n')}\n`);
+    renderedLines = lines.length;
+  };
+
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      input.off('keypress', onKeypress);
+      if (typeof input.setRawMode === 'function' && previousRawMode !== undefined) input.setRawMode(previousRawMode);
+      if (typeof input.pause === 'function') input.pause();
+      write('\u001b[?25h');
+    };
+    const finish = result => {
+      if (done) return;
+      done = true;
+      clearRendered();
+      const summary = secret ? '✓ saved' : (result || '(empty)');
+      write(`${stripAnsi(message)} ${summary}\n`);
+      cleanup();
+      resolve(result);
+    };
+    const fail = error => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(error);
+    };
+    const onKeypress = (chunk, key = {}) => {
+      if (key.ctrl && key.name === 'c') return fail(new Error('Prompt interrupted'));
+      if (key.name === 'return' || key.name === 'enter') {
+        const validation = typeof validate === 'function' ? validate(value) : true;
+        if (validation !== true) return render(String(validation));
+        if (required && !value.length) return render('Enter a value (or press Ctrl+C to skip).');
+        return finish(value);
+      }
+      if (key.name === 'backspace' || key.name === 'delete') {
+        value = value.slice(0, -1);
+      } else if (key.sequence && !key.ctrl && !key.meta && /^.$/u.test(key.sequence)) {
+        value += key.sequence;
+      } else {
+        return;
+      }
+      render();
+    };
+
+    try {
+      readline.emitKeypressEvents(input);
+      previousRawMode = input.isRaw;
+      if (typeof input.setRawMode === 'function') input.setRawMode(true);
+      if (typeof input.resume === 'function') input.resume();
+      write('\u001b[?25l');
+      input.on('keypress', onKeypress);
+      render();
+    } catch (error) {
+      fail(error);
+    }
+  });
+}
