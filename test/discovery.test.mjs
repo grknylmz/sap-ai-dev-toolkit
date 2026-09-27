@@ -10,7 +10,7 @@ test('normalizes destination metadata case-insensitively', () => {
   });
   assert.deepEqual(destination, {
     name: 'DEV-ABAP', authentication: 'PrincipalPropagation', client: '200',
-    url: 'http://DEV-ABAP.dest', rawKeys: ['Name', 'Properties']
+    url: 'http://DEV-ABAP.dest', backendUrl: 'https://backend.example', proxyType: null, rawKeys: ['Name', 'Properties']
   });
 });
 

@@ -52,11 +52,15 @@ export function normalizeDestination(item) {
   const name = text(values.name || values.destinationname || values.destname);
   const authentication = text(values.authentication || values.authtype || values.auth);
   const client = text(values.sapclient || values.client) || '001';
+  const backendUrl = text(values.url || values.host || values.webideexposedhost);
+  const proxyType = text(values.proxytype || values.proxy);
   return {
     name,
     authentication: authentication || 'Unknown',
     client,
     url: name ? destinationUrl(name) : null,
+    backendUrl: backendUrl || null,
+    proxyType: proxyType || null,
     rawKeys: Object.keys(item || {}).map(String)
   };
 }

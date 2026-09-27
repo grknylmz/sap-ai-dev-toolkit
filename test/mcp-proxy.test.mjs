@@ -47,6 +47,23 @@ test('uses authentication-specific arguments for Cloud Foundry children', () => 
   assert.equal(childArguments(principal, {}).includes('--proxy-auth'), true);
 });
 
+test('self-heals BAS destinations through a local destination relay without credentials', async t => {
+  const destination = { name: 'S4H', url: 'http://S4H.dest', client: '100', authentication: 'BasicAuthentication', proxyType: 'Internet' };
+  const directory = await mkdtemp(join(tmpdir(), 'bas-relay-'));
+  const log = join(directory, 'children.log');
+  const logs = [];
+  const proxy = new MCPProxy({ binary: fixture, destinations: [destination], env: { ...process.env, FAKE_LOG: log }, log: message => logs.push(message) });
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+  proxy.start();
+  await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  const event = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).find(row => row.event === 'initialize');
+  assert.equal(event.argv.includes('--proxy-auth'), false);
+  assert.match(event.argv[event.argv.indexOf('--url') + 1], /^http:\/\/127\.0\.0\.1:\d+$/);
+  assert.equal(event.env.user, undefined);
+  assert.equal(event.env.password, undefined);
+  assert.ok(logs.some(message => message.includes('BAS destination relay enabled')));
+});
+
 test('closes each Cloud Foundry route after child exit and on startup failure', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-cf-child-lifecycle-'));
   const log = join(directory, 'children.log');

@@ -1,9 +1,10 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { once } from 'node:events';
-import { sanitizeChildEnv, slugifyDestination } from './bas-discovery.mjs';
+import { sanitizeChildEnv } from './bas-discovery.mjs';
 import { ABAP_LINT_TOOL, runABAPLint } from './abaplint.mjs';
 import { createEngineeringTools } from './engineering-tools.mjs';
 import { brandedEnvValue } from './branding.mjs';
+import { createBasDestinationRelay } from './bas-destination-relay.mjs';
 
 const JSONRPC = '2.0';
 const FORWARDED_METHODS = new Set(['ping', 'resources/list', 'resources/read', 'resources/templates/list', 'prompts/list', 'completion/complete', 'logging/setLevel']);
@@ -58,6 +59,12 @@ function closeDestinationRoute(destination) {
   return closedRoutes.get(destination);
 }
 
+function useBasDestinationRelay(destination, env = process.env) {
+  if (String(brandedEnvValue(env, 'DISABLE_BAS_RELAY') || '').toLowerCase() === 'true') return false;
+  if (destination.source === 'cloud-foundry') return false;
+  return Boolean(destination.url && String(destination.url).includes('.dest'));
+}
+
 function childEnvironment(destination, env) {
   return { ...sanitizeChildEnv(env), ...(destination.childEnv || {}) };
 }
@@ -68,7 +75,7 @@ export function childArguments(destination, env = process.env) {
   // Transportable source edits are controlled by SAP_ALLOW_TRANSPORTABLE_EDITS.
   const mode = brandedEnvValue(env, 'MODE') || 'expert';
   const args = ['--url', destination.url, '--client', destination.client || '001', '--mode', mode];
-  if (destination.source !== 'cloud-foundry' || destination.authentication === 'PrincipalPropagation') args.push('--proxy-auth');
+  if (!destination.relay && (destination.source !== 'cloud-foundry' || destination.authentication === 'PrincipalPropagation')) args.push('--proxy-auth');
   args.push('--enable-transports');
   return args;
 }
@@ -209,8 +216,23 @@ export class MCPProxy {
   start() {
     if (this.started) return this;
     this.started = true;
-    for (const destination of this.destinations) {
+    for (const originalDestination of this.destinations) {
+      let destination = originalDestination;
       try {
+        if (useBasDestinationRelay(originalDestination, this.env)) {
+          const relay = createBasDestinationRelay(originalDestination, { env: this.env, log: this.log });
+          const originalClose = originalDestination.close;
+          destination = {
+            ...originalDestination,
+            url: relay.url,
+            relay: true,
+            async close() {
+              await originalClose?.();
+              await relay.close();
+            }
+          };
+          this.log(`[${originalDestination.name}] BAS destination relay enabled (${relay.url})`);
+        }
         this.log(`[${destination.name}] starting VSP child (client=${destination.client || '001'})`);
         this.children.push({
           destination,
@@ -393,10 +415,12 @@ export class MCPProxy {
   async close() {
     if (this.shuttingDown) return;
     this.shuttingDown = true;
-    await Promise.all(this.destinations.map(async destination => {
-      const entry = this.children.find(candidate => candidate.destination === destination);
-      await entry?.child.close();
-      await closeDestinationRoute(destination);
+    const closed = new Set();
+    await Promise.all(this.children.map(async entry => {
+      await entry.child.close();
+      await closeDestinationRoute(entry.destination);
+      closed.add(entry.destination);
     }));
+    await Promise.all(this.destinations.filter(destination => !closed.has(destination)).map(destination => closeDestinationRoute(destination)));
   }
 }
