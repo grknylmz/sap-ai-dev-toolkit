@@ -7,7 +7,7 @@ description: Validate HANA Cloud CAP and HDI changes locally, inspect deployment
 
 ## Tool shortlist
 
-Use live `tools/list` for HANA and SAP tool availability. HANA inspection is limited to `hana_connection_info`, `hana_list_objects`, `hana_describe_object`, and bounded `hana_read_rows`; SAP VSP tools use their live destination-prefixed names. Use CAP/CDS documentation and model tools where available. Do not use ABAP `RunQuery`, ABAP Unit, or `LintABAP` as HANA validation. Direct MCP invocation is mandatory. Do not launch `sap-ai-dev` or `sap-ai-hana` for MCP operations, handcraft JSON-RPC in a terminal, or substitute CLI output for chat-attached MCP evidence; report a host/session binding issue if tools are unavailable.
+Use live `tools/list` for HANA and SAP tool availability. HANA inspection is limited to `hana_connection_info`, `hana_list_objects`, `hana_describe_object`, and bounded `hana_read_rows`; SAP VSP tools use their live destination-prefixed names. Use CAP/CDS documentation and model tools where available. Do not use ABAP `RunQuery`, ABAP Unit, or `LintABAP` as HANA validation. Direct MCP invocation is mandatory. Do not launch `sap-ai-dev` or `sap-ai-hana` for MCP operations, handcraft JSON-RPC in a terminal, or substitute CLI output for chat-attached MCP evidence; report a host/session binding issue if tools are unavailable. Tool names shown in PascalCase (such as `GetSource` or `LintABAP`) are logical names; the live MCP surface exposes them lowercase and snake_case under the `<destination>_` prefix, so `GetSource` on destination `DEMO_ABAP` appears as `demo-abap_get_source`. Always call the exact names returned by `tools/list`.
 
 ## Procedure
 

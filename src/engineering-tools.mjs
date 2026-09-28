@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { sanitizeChildEnv } from './bas-discovery.mjs';
+import { redactText } from './redact.mjs';
 
 const CHANGESET_WRITE_TOOLS = new Set(['WriteSource']);
 const TRANSPORT_CHECK_TOOLS = new Set(['GetTransport', 'GetTransportInfo', 'ListDependencies', 'GetInactiveObjects', 'RunUnitTests', 'RunATCCheck']);
 const MAX_CHANGE_BYTES = 128 * 1024;
 const MAX_CHANGESET_SIZE = 12;
 const MAX_REMOTE_BODY_BYTES = 2 * 1024 * 1024;
+const MAX_SUITE_CASES = 30;
 
 function object(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -21,9 +23,7 @@ function toolJson(value) {
 }
 
 function safeDiagnostic(value) {
-  return String(value?.message || value || 'unknown error')
-    .replace(/(authorization|proxy-authorization)\s*[:=]\s*(?:bearer\s+|basic\s+)?[^\s,;]+/gi, '$1=[redacted]')
-    .replace(/(cookie|password|secret|token)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]')
+  return redactText(value?.message || value || 'unknown error')
     .replace(/\s+/g, ' ')
     .slice(0, 300);
 }
@@ -339,27 +339,43 @@ function responseForDemo(path) {
   return { status: 200, contentType: 'application/json', body: JSON.stringify({ value: [{ ID: '10000001', Description: 'Sample order' }] }) };
 }
 
+function isLoopbackHost(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
+// OData reads follow the same egress rules as the relay: loopback targets
+// (the local BAS relay the child talks to) must go direct, NO_PROXY
+// exemptions are honored, and everything else uses the configured proxy.
+function proxyUrlFor(target, env) {
+  if (isLoopbackHost(target.hostname)) return '';
+  const host = target.hostname.toLowerCase();
+  const noProxy = String(env.NO_PROXY || env.no_proxy || '').split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+  if (noProxy.some(entry => entry === '*' || host === entry || host.endsWith(entry.startsWith('.') ? entry : `.${entry}`))) return '';
+  return String(env.HTTP_PROXY || env.http_proxy || env.HTTPS_PROXY || env.https_proxy || '');
+}
+
 async function fetchOData(entry, path, accept, env) {
   if (entry.destination.demo) return responseForDemo(path);
   const childEnv = { ...sanitizeChildEnv(env), ...(entry.destination.childEnv || {}) };
-  const proxyUrl = childEnv.HTTP_PROXY || childEnv.http_proxy;
-  if (!proxyUrl) throw new Error('No HTTP proxy is configured for the destination');
   const target = new URL(path, entry.destination.url);
   const base = new URL(entry.destination.url);
   if (target.origin !== base.origin || target.username || target.password || target.hash) throw new Error('OData request escaped the connected destination');
-  const dispatcher = new ProxyAgent(proxyUrl);
+  const proxyUrl = proxyUrlFor(target, childEnv);
+  if (!proxyUrl && /\.dest$/i.test(target.hostname)) throw new Error('No HTTP proxy is configured for the .dest destination');
+  const dispatcher = proxyUrl ? new ProxyAgent(proxyUrl) : undefined;
   try {
     const response = await undiciFetch(target, {
       method: 'GET',
       headers: { accept },
-      dispatcher,
+      ...(dispatcher ? { dispatcher } : {}),
       signal: AbortSignal.timeout(10_000),
       redirect: 'manual'
     });
     const body = await readBody(response);
     return { status: response.status, contentType: response.headers.get('content-type') || '', body };
   } finally {
-    await dispatcher.close();
+    await dispatcher?.close();
   }
 }
 
@@ -576,17 +592,23 @@ export function createEngineeringTools(entry, upstreamTools, { env = process.env
     if (response.status < 200 || response.status >= 300) throw new Error(`OData metadata request returned HTTP ${response.status}`);
     const entitySets = parseEntitySets(response.body);
     if (!entitySets.length) throw new Error('OData metadata did not contain entity sets');
+    // Cap generation so the emitted suite is always accepted by
+    // RunRAPRegressionSuite's own 30-case limit; report what was omitted.
+    const included = entitySets.slice(0, MAX_SUITE_CASES - 1);
     return toolJson({
       suite: {
         name: `${entry.destination.name} RAP smoke suite`,
         service_root: serviceRoot,
         cases: [
           { name: 'OData metadata', path: '$metadata', expected_status: 200, expected_content_type: 'xml' },
-          ...entitySets.map(name => ({ name: `Read ${name}`, path: `${name}?$top=1`, expected_status: 200, expected_content_type: 'json' }))
+          ...included.map(name => ({ name: `Read ${name}`, path: `${name}?$top=1`, expected_status: 200, expected_content_type: 'json' }))
         ]
       },
       entity_set_count: entitySets.length,
-      destination: entry.destination.name
+      destination: entry.destination.name,
+      ...(entitySets.length > included.length
+        ? { note: `${entitySets.length - included.length} entity sets were omitted to keep the suite within the ${MAX_SUITE_CASES}-case limit; generate targeted suites for them separately.` }
+        : {})
     });
   });
 

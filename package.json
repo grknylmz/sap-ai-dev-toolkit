@@ -1,6 +1,6 @@
 {
   "name": "sap-ai-dev-toolkit",
-  "version": "0.5.0",
+  "version": "0.5.6",
   "description": "SAP AI development toolkit for BAS, ABAP, RAP, CAP, HANA Cloud, Fiori, UI5, and MCP",
   "author": "Gurkan Yilmaz",
   "type": "module",
@@ -45,11 +45,11 @@
     "scripts/",
     "patches/",
     "dist/",
-    "test/",
     "LICENSE",
     "NOTICE",
     "LICENSE-APACHE-2.0.txt",
     "tools.md",
+    "inventory.md",
     ".github/agents/",
     ".github/skills/"
   ],

@@ -2,6 +2,8 @@
 
 The proxy no longer advertises every VSP tool. To keep the developer-lifecycle MCP surface manageable, each generated one-destination server exposes a cherry-picked set of VSP tools plus local workflow tools (currently 59 tools when all curated VSP capabilities are registered).
 
+The names below are the logical tool names. Publicly, every tool is exposed as `<destination-slug>_<tool>` in lowercase (for example `GetTableContents` on destination `DEMO_ABAP` is `demo-abap_get_table_contents`): BAS/VS Code chat tool references bind only lowercase identifiers, so mixed-case names never reach the model.
+
 Hidden upstream VSP tools are not directly callable through the proxy. Local workflow tools may still call hidden or non-advertised upstream operations internally when they are required for a bounded workflow.
 
 ## Public VSP tools
@@ -64,7 +66,7 @@ Broad/destructive surfaces such as object deletion, SQL trace, arbitrary SAP rou
 
 ## Destination-scoped workflow tools
 
-The proxy adds local multi-step tools to each destination when their required VSP capabilities are available:
+The proxy adds local multi-step tools to each destination when their required VSP capabilities are available. Like the VSP tools above, they are exposed publicly in lowercase snake_case (`lint_abap`, `get_application_log`, `prepare_abap_change_set`, and so on):
 
 - `LintABAP` — local in-memory ABAP linting.
 - `GetApplicationLog` — bounded convenience mapping to the upstream SAP application-log route when available.
@@ -73,7 +75,15 @@ The proxy adds local multi-step tools to each destination when their required VS
 - `PlanABAPCloudMigration` — batch SAP API release-state checks and prioritize recognized unreleased results.
 - `GenerateRAPRegressionSuite` and `RunRAPRegressionSuite` — create and run reusable OData GET-only checks under the selected service root.
 
-`sap-ai-dev-toolkit --doctor` checks destination probing, VSP startup, `GetSystemInfo`, and MCP tool listing. `sap-ai-dev-toolkit --demo` runs the sample tools and OData fixtures without contacting SAP; demo writes and transport creation remain in memory until that process exits.
+`sap-ai-dev --doctor` checks destination probing, VSP startup, the `get_system_info` probe, and MCP tool listing. `sap-ai-dev --demo` runs the sample tools and OData fixtures without contacting SAP; demo writes and transport creation remain in memory until that process exits.
+
+### Read-only mode
+
+Set `SAP_AI_DEV_TOOLKIT_READ_ONLY=true` (or legacy `BAS_VSP_READ_ONLY`) on a destination server to run it strictly read-only: `WriteSource`, `EditSource`, `Activate`, `ActivateMultiple`, `CreateTransport`, `SetBreakpoint`, and the change-set workflow tools are removed from the surface, and the VSP child starts with `--transport-read-only` so transport writes are rejected upstream as well. Inspection, queries, linting, and checks remain available.
+
+### Request timeouts
+
+Calls forwarded to a VSP child time out after `SAP_AI_DEV_TOOLKIT_REQUEST_TIMEOUT_MS` (default 600000 ms; `0` disables). A stalled request fails with a timeout error; the child keeps running so unrelated in-flight requests are unaffected.
 
 ## Separate optional HANA Cloud inspector
 

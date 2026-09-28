@@ -18,11 +18,20 @@ function sapLikeBackend({
   partialRefreshCookies = false,
   omitCookies = false,
   setCookieOnSafeGet = false,
-  secureSessionCookie = false
+  secureSessionCookie = false,
+  postOnlyPaths = [],
+  acceptTokenWithoutCookies = false
 } = {}) {
   const state = { sessionCounter: 0, requests: [] };
   const server = http.createServer((req, res) => {
     state.requests.push({ method: req.method, path: req.url, headers: { ...req.headers } });
+    // POST-only services (ADT data preview among them) reject every GET,
+    // including CSRF token fetches, the way real SAP does.
+    if (req.method === 'GET' && postOnlyPaths.some(prefix => req.url.startsWith(prefix))) {
+      res.writeHead(405, { allow: 'POST' });
+      res.end('<method-not-allowed/>');
+      return;
+    }
     if (req.method === 'GET' && req.headers['x-csrf-token'] === 'Fetch') {
       state.sessionCounter += 1;
       const headers = { 'x-csrf-token': `token-${state.sessionCounter}` };
@@ -63,12 +72,16 @@ function sapLikeBackend({
       const match = String(token || '').match(/^token-(\d+)$/);
       // Without rotation any still-live token+cookie pair is accepted; with
       // rotation only the newest issued session remains valid, matching SAP
-      // server-side session invalidation.
-      const valid = match
-        && cookie.includes(`sap-session-${match[1]}=`)
-        && (!rotateOnFetch || Number(match[1]) === state.sessionCounter)
-        && (!partialRefreshCookies || cookie.includes('sap-usercontext=sap-client=100'))
-        && (!partialRefreshCookies || Number(match[1]) === 1 || !cookie.includes('sap-stale='));
+      // server-side session invalidation. acceptTokenWithoutCookies models a
+      // BAS proxy route where Set-Cookie is stripped yet the backend honors
+      // the token on the proxy-established Basic-auth session.
+      const valid = acceptTokenWithoutCookies
+        ? Boolean(match)
+        : match
+          && cookie.includes(`sap-session-${match[1]}=`)
+          && (!rotateOnFetch || Number(match[1]) === state.sessionCounter)
+          && (!partialRefreshCookies || cookie.includes('sap-usercontext=sap-client=100'))
+          && (!partialRefreshCookies || Number(match[1]) === 1 || !cookie.includes('sap-stale='));
       if (!valid) {
         res.writeHead(403, { 'x-csrf-token': 'Required' });
         res.end('CSRF token validation failed');
@@ -129,6 +142,22 @@ test('pairs CSRF token with its session cookies so unsafe requests succeed', asy
   await withBackend(null, async ({ relayUrl, state }) => {
     const response = await relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', headers: { accept: 'application/xml' }, body: '<x/>' });
     assert.equal(response.status, 201, `expected 201, got ${response.status}: ${response.body}`);
+    const post = state.requests.find(request => request.method === 'POST');
+    assert.match(post.headers['x-csrf-token'], /^token-\d+$/);
+    assert.match(String(post.headers.cookie), /sap-session-\d+=/);
+  });
+});
+
+test('fetches the CSRF token from a GET-capable endpoint when the target is POST-only (ADT data preview)', async () => {
+  await withBackend({ postOnlyPaths: ['/sap/bc/adt/datapreview'] }, async ({ relayUrl, state }) => {
+    const response = await relayFetch(relayUrl, '/sap/bc/adt/datapreview/freestyle', {
+      method: 'POST',
+      headers: { accept: 'application/xml' },
+      body: '<query/>'
+    });
+    assert.equal(response.status, 201, `expected 201, got ${response.status}: ${response.body}`);
+    const tokenFetch = state.requests.find(request => request.headers['x-csrf-token'] === 'Fetch');
+    assert.equal(tokenFetch.path, '/sap/bc/adt/discovery', 'token must be fetched from the GET-capable discovery endpoint');
     const post = state.requests.find(request => request.method === 'POST');
     assert.match(post.headers['x-csrf-token'], /^token-\d+$/);
     assert.match(String(post.headers.cookie), /sap-session-\d+=/);
@@ -216,12 +245,22 @@ test('does not retry generic authorization failures as CSRF errors', async () =>
   });
 });
 
-test('does not repeat a CSRF failure when SAP returns a token without session cookies', async () => {
+test('sends a cookie-less token once and surfaces the rejection without retrying', async () => {
   await withBackend({ omitCookies: true }, async ({ relayUrl, relay, state }) => {
     const response = await relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', body: '<x/>' });
-    assert.equal(response.status, 503, `unsafe calls must fail closed without a paired session, got ${response.status}`);
-    assert.equal(state.requests.filter(request => request.method === 'POST').length, 0);
-    assert.equal(relay.stats.csrfRetries, 0);
+    assert.equal(response.status, 403, `a cookie-less session must surface SAP's verdict, got ${response.status}`);
+    assert.equal(state.requests.filter(request => request.method === 'POST').length, 1);
+    assert.equal(relay.stats.csrfRetries, 0, 'a cookie-less route cannot be fixed by a retry');
+  });
+});
+
+test('completes unsafe requests with a token-only session when the route strips cookies (BAS proxy)', async () => {
+  await withBackend({ omitCookies: true, acceptTokenWithoutCookies: true }, async ({ relayUrl, relay, state }) => {
+    const response = await relayFetch(relayUrl, '/sap/bc/adt/datapreview/freestyle', { method: 'POST', body: '<query/>' });
+    assert.equal(response.status, 201, `expected 201, got ${response.status}: ${response.body}`);
+    const post = state.requests.find(request => request.method === 'POST');
+    assert.match(post.headers['x-csrf-token'], /^token-\d+$/);
+    assert.equal(relay.stats.csrfSessionFailures, 0);
   });
 });
 
@@ -366,7 +405,9 @@ test('keeps OnPremise Basic auth on a BAS proxy tunnel and verifies the CSRF ses
   assert.match(post.headers.authorization, /^Basic /);
   assert.match(String(post.headers.cookie), /sap-session-\d+=/);
   assert.match(String(post.headers.cookie), /sap-secure=secure-value/, 'Secure SAP cookies must be sent through the HTTPS-backed BAS .dest route');
-  assert.ok(connectTargets.length >= 2);
+  // The POST reuses the probe's cached CSRF session (tokens are shared across
+  // paths), so a single pooled tunnel connection can carry both requests.
+  assert.ok(connectTargets.length >= 1, 'upstream traffic must reach the backend through the BAS proxy tunnel');
   assert.ok(connectTargets.every(target => target === 'cc-system.dest:80'));
   assert.equal(relay.stats.direct, false);
   assert.equal(relay.stats.proxyTunnel, true);

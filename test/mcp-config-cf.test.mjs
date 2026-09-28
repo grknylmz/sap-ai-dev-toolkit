@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildMcpEntries, buildSapDevelopmentMcpEntries, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, installMcpConfig, readMcpConfig, repairManagedMcpConfig, resolveMcpConfigPath } from '../src/mcp-config.mjs';
+import { buildMcpEntries, buildSapDevelopmentMcpEntries, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, generatedServerName, installMcpConfig, readMcpConfig, repairManagedMcpConfig, resolveMcpConfigPath } from '../src/mcp-config.mjs';
 
 const bas = {
   source: 'bas', name: 'shared', serverName: 'shared', url: 'http://shared.dest',
@@ -38,11 +38,11 @@ test('writes source-qualified CF entries beside same-named BAS destinations', ()
   const second = cfDestination('space-one', 'instance-two', 'key-two');
   const entries = buildMcpEntries([bas, first, second], { H2O_URL: 'http://h2o.example' });
   assert.deepEqual(Object.keys(entries).sort(), [
-    'cf:space-one:instance-one:shared',
-    'cf:space-one:instance-two:shared',
+    'cf-space-one-instance-one-shared',
+    'cf-space-one-instance-two-shared',
     'shared'
   ]);
-  assert.deepEqual(entries['cf:space-one:instance-one:shared'].env, {
+  assert.deepEqual(entries['cf-space-one-instance-one-shared'].env, {
     H2O_URL: 'http://h2o.example',
     SAP_ALLOW_TRANSPORTABLE_EDITS: 'true',
     SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'cloud-foundry',
@@ -58,7 +58,7 @@ test('writes source-qualified CF entries beside same-named BAS destinations', ()
   assert.equal(JSON.stringify(entries).includes('Password'), false);
 
   const onPremise = buildMcpEntries([cfDestination('space-one', 'onprem-instance', 'destination-key', 'OnPremise')], { H2O_URL: 'http://h2o.example' });
-  assert.equal(onPremise['cf:space-one:onprem-instance:shared'].env.BAS_CF_CONNECTIVITY_KEY, 'connectivity-key');
+  assert.equal(onPremise['cf-space-one-onprem-instance-shared'].env.BAS_CF_CONNECTIVITY_KEY, 'connectivity-key');
 });
 
 test('stores and reconciles the MCP launcher executable location', async t => {
@@ -99,7 +99,7 @@ test('doctor repair updates only discovered toolkit BAS entries and is idempoten
   const strictDestination = { ...bas, name: 'strict', serverName: 'strict', url: 'http://strict.dest' };
   const managed = buildMcpEntries([bas], { H2O_URL: 'http://old-h2o.example' }).shared;
   const strictManaged = buildMcpEntries([strictDestination], { H2O_URL: 'http://old-h2o.example' }).strict;
-  const cfEntry = buildMcpEntries([cf], { H2O_URL: 'http://cf-h2o.example' })[cf.serverName];
+  const cfEntry = buildMcpEntries([cf], { H2O_URL: 'http://cf-h2o.example' })[generatedServerName(cf.serverName)];
   const companion = buildSapDevelopmentMcpEntries(['sap-fiori-tools'])['sap-fiori-tools'];
   const unrelated = { type: 'stdio', command: 'external-server' };
   const unverifiedManaged = {
@@ -112,7 +112,7 @@ test('doctor repair updates only discovered toolkit BAS entries and is idempoten
       shared: { ...managed, env: { ...managed.env, H2O_URL: 'http://old-h2o.example' } },
       strict: { ...strictManaged, env: { ...strictManaged.env, SAP_ALLOW_TRANSPORTABLE_EDITS: 'false' } },
       'temporarily-unavailable': unverifiedManaged,
-      [cf.serverName]: cfEntry,
+      [generatedServerName(cf.serverName)]: cfEntry,
       'sap-fiori-tools': companion,
       ActionS4D_100: unrelated
     }
@@ -128,7 +128,7 @@ test('doctor repair updates only discovered toolkit BAS entries and is idempoten
   assert.equal(repaired.servers.shared.env.SAP_ALLOW_TRANSPORTABLE_EDITS, 'true');
   assert.equal(repaired.servers.strict.env.SAP_ALLOW_TRANSPORTABLE_EDITS, 'false', "doctor must preserve a user's restricted write setting");
   assert.deepEqual(repaired.servers['temporarily-unavailable'], unverifiedManaged);
-  assert.deepEqual(repaired.servers[cf.serverName], cfEntry);
+  assert.deepEqual(repaired.servers[generatedServerName(cf.serverName)], cfEntry);
   assert.deepEqual(repaired.servers['sap-fiori-tools'], companion);
   assert.deepEqual(repaired.servers.ActionS4D_100, unrelated);
   assert.equal(repaired.servers.newDestination, undefined, 'repair must not add unselected destinations');
@@ -209,7 +209,7 @@ test('doctor repair refreshes stale toolkit launchers without changing npx behav
 test('extracts key references only from package-managed Cloud Foundry entries', () => {
   const cloudFoundry = buildMcpEntries([
     cfDestination('space-one', 'instance-one', 'destination-key', 'OnPremise')
-  ], { H2O_URL: 'http://h2o.example' })['cf:space-one:instance-one:shared'];
+  ], { H2O_URL: 'http://h2o.example' })['cf-space-one-instance-one-shared'];
   const managedNpx = {
     ...cloudFoundry,
     command: 'npx',
@@ -320,10 +320,10 @@ test('installs and removes CF entries without deleting unrelated MCP servers', a
     command: 'npx',
     args: ['--yes', '--package=sap-ai-dev-toolkit@0.1.0', 'sap-ai-dev']
   });
-  assert.deepEqual(Object.keys(result.servers).sort(), ['cf:space-one:instance-one:shared', 'shared']);
+  assert.deepEqual(Object.keys(result.servers).sort(), ['cf-space-one-instance-one-shared', 'shared']);
   const written = await readMcpConfig(path);
   assert.equal(written.unrelated, true);
-  assert.deepEqual(Object.keys(written.servers).sort(), ['cf:space-one:instance-one:shared', 'shared', 'userServer']);
+  assert.deepEqual(Object.keys(written.servers).sort(), ['cf-space-one-instance-one-shared', 'shared', 'userServer']);
   assert.deepEqual(collectManagedCloudFoundryKeyReferences(written), [
     { kind: 'destination', spaceGuid: 'space-one', instanceGuid: 'instance-one', instanceName: 'destination-instance-one', keyName: 'managed-key' }
   ]);
@@ -359,7 +359,7 @@ test('wizard replaces legacy launcher entries with the branded command and envir
 });
 
 test('recognizes old npx Cloud Foundry entries so setup can reuse their service keys', () => {
-  const current = buildMcpEntries([cfDestination('space-one', 'instance-one', 'old-key')], { H2O_URL: 'http://h2o.example' })['cf:space-one:instance-one:shared'];
+  const current = buildMcpEntries([cfDestination('space-one', 'instance-one', 'old-key')], { H2O_URL: 'http://h2o.example' })['cf-space-one-instance-one-shared'];
   const legacy = {
     ...current,
     command: 'npx',
@@ -405,3 +405,71 @@ test('setup removes untagged legacy bas-mcp-addon launchers that expose the full
   assert.equal(migrated.servers.shared.command, 'sap-ai-dev');
   assert.equal(migrated.servers.shared.env.SAP_AI_DEV_TOOLKIT_DESTINATION, 'shared');
 });
+
+test('install registers mixed-case destinations under lowercase server names', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-lowercase-install-'));
+  const path = join(directory, 'mcp.json');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const destination = { ...bas, name: 'ActionS4D', serverName: 'ActionS4D', url: 'http://ActionS4D.dest' };
+  await writeFile(path, JSON.stringify({ servers: {} }));
+
+  const result = await installMcpConfig([destination], { env: { H2O_URL: 'http://h2o.example' }, path });
+  assert.deepEqual(Object.keys(result.servers), ['actions4d']);
+  assert.match(Object.keys(result.servers)[0], /^[a-z0-9-]+$/, 'server names must be lowercase slugs');
+  assert.equal(result.servers.actions4d.env.SAP_AI_DEV_TOOLKIT_DESTINATION, 'ActionS4D');
+
+  // Re-running setup replaces a legacy mixed-case managed entry with the slug key.
+  const legacy = { ...result.servers.actions4d };
+  await writeFile(path, JSON.stringify({ servers: { ActionS4D: legacy, userServer: { command: 'other' } } }));
+  await installMcpConfig([destination], { env: { H2O_URL: 'http://h2o.example' }, path });
+  const written = await readMcpConfig(path);
+  assert.deepEqual(Object.keys(written.servers).sort(), ['actions4d', 'userServer']);
+
+  // Destination names that only differ in case or punctuation now collide.
+  assert.throws(
+    () => buildMcpEntries([destination, { ...bas, name: 'actions4d' }], { H2O_URL: 'http://h2o.example' }),
+    /normalize to the same lowercase server name/
+  );
+});
+
+test('doctor repair renames legacy mixed-case managed entries to the lowercase slug', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-doctor-rename-'));
+  const path = join(directory, 'mcp.json');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const destination = { ...bas, name: 'ActionS4D', serverName: 'ActionS4D', url: 'http://ActionS4D.dest' };
+  const legacy = buildMcpEntries([destination], { H2O_URL: 'http://old-h2o.example' }).actions4d;
+  const unrelated = { type: 'stdio', command: 'third-party' };
+  await writeFile(path, JSON.stringify({ servers: { ActionS4D: legacy, ActionS4D_100: unrelated } }));
+
+  const first = await repairManagedMcpConfig([destination], { env: { H2O_URL: 'http://current-h2o.example' }, path, discoveryComplete: true });
+  assert.equal(first.changed, true);
+  assert.equal(first.repaired, 1);
+  const renamed = await readMcpConfig(path);
+  assert.equal(renamed.servers.ActionS4D, undefined, 'the legacy mixed-case key must be removed');
+  assert.equal(renamed.servers.actions4d.env.H2O_URL, 'http://current-h2o.example');
+  assert.equal(renamed.servers.actions4d.env.SAP_AI_DEV_TOOLKIT_DESTINATION, 'ActionS4D');
+  assert.deepEqual(renamed.servers.ActionS4D_100, unrelated);
+
+  const beforeSecond = await readFile(path, 'utf8');
+  const second = await repairManagedMcpConfig([destination], { env: { H2O_URL: 'http://current-h2o.example' }, path, discoveryComplete: true });
+  assert.equal(second.changed, false);
+  assert.equal(second.repaired, 0);
+  assert.equal(await readFile(path, 'utf8'), beforeSecond, 'the rename must be idempotent');
+});
+
+test('doctor repair keeps the legacy entry when a user-owned server holds the slug key', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-doctor-rename-blocked-'));
+  const path = join(directory, 'mcp.json');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const destination = { ...bas, name: 'ActionS4D', serverName: 'ActionS4D', url: 'http://ActionS4D.dest' };
+  const legacy = buildMcpEntries([destination], { H2O_URL: 'http://old-h2o.example' }).actions4d;
+  const userOwned = { type: 'stdio', command: 'user-server' };
+  const initial = { servers: { ActionS4D: legacy, actions4d: userOwned } };
+  await writeFile(path, JSON.stringify(initial));
+
+  const result = await repairManagedMcpConfig([destination], { env: { H2O_URL: 'http://current-h2o.example' }, path, discoveryComplete: true });
+  assert.equal(result.repaired, 0, 'a user-owned entry on the slug key must block the rename');
+  const config = await readMcpConfig(path);
+  assert.deepEqual(config, initial);
+});
+

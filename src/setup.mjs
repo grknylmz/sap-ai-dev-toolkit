@@ -2,7 +2,7 @@ import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { checkboxPrompt, colorText, formatStatus, textPrompt } from './terminal-ui.mjs';
 import { discoverDestinations, remediation } from './bas-discovery.mjs';
-import { discoverCloudFoundryDestinations, getCloudFoundryTarget, deleteManagedCloudFoundryServiceKeys } from './cf-destination.mjs';
+import { discoverCloudFoundryDestinations, getCloudFoundryTarget, deleteManagedCloudFoundryServiceKeys, findOrphanedCloudFoundryServiceKeys } from './cf-destination.mjs';
 import { SAP_DEVELOPMENT_MCP_SERVERS, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, installMcpConfig, readMcpConfig, resolveMcpConfigPath } from './mcp-config.mjs';
 import { readCredentials, removeDestinationCredentials, resolveCredentialsPath, storeDestinationCredentials } from './credentials-store.mjs';
 import { canPromptForCredentials, credentialKeyForDestination, credentialModeForDestination } from './credential-overrides.mjs';
@@ -167,8 +167,9 @@ function printConnectionInstructions(output, result) {
   print(output, '');
   print(output, colorText('📡 MCP servers now available:', 'cyan', output));
   for (const [name, entry] of servers) {
-    const detail = entry.env?.BAS_VSP_DESTINATION
-      ? `destination: ${entry.env.BAS_VSP_DESTINATION}`
+    const destinationName = entry.env?.SAP_AI_DEV_TOOLKIT_DESTINATION || entry.env?.BAS_VSP_DESTINATION;
+    const detail = destinationName
+      ? `destination: ${destinationName}`
       : (entry.displayName ? `tool server: ${entry.displayName}` : 'tool server');
     print(output, `  • ${name} — ${detail}`);
   }
@@ -223,6 +224,35 @@ export async function runSetup({
   if (!target.available) {
     warnings.push(target.reason);
   } else {
+    // Sweep for service keys this toolkit created but no config references
+    // (an interrupted earlier setup leaves them behind; a Destination key
+    // exposes credentials for every destination in its instance).
+    try {
+      const orphans = await findOrphanedCloudFoundryServiceKeys({ env, spaceGuid: target.spaceGuid, managedKeys });
+      if (orphans.length) {
+        print(output, '');
+        print(output, formatStatus(`Found ${orphans.length} unreferenced sap-ai-dev-toolkit service key${orphans.length === 1 ? '' : 's'} in this CF space:`, 'warning', output, 'Cloud Foundry'));
+        for (const orphan of orphans.slice(0, 5)) print(output, `  • ${orphan.keyName} on ${orphan.instanceName}`);
+        const readline = createInterface({ input, output });
+        let removeOrphans = false;
+        try {
+          const answer = await readline.question('Delete these unreferenced service keys? (y + Enter = delete; Enter = keep) ');
+          removeOrphans = /^y(?:es)?$/i.test(answer.trim());
+        } finally {
+          readline.close();
+        }
+        if (removeOrphans) {
+          const result = await deleteManagedCloudFoundryServiceKeys({ env, keys: orphans });
+          warnings.push(...(result.warnings || []));
+          const deleted = orphans.length - (result.warnings || []).length;
+          print(output, formatStatus(`Removed ${deleted} unreferenced service key${deleted === 1 ? '' : 's'}.`, 'success', output, 'Cloud Foundry'));
+        } else {
+          warnings.push(`${orphans.length} unreferenced sap-ai-dev-toolkit service key${orphans.length === 1 ? '' : 's'} were kept; review them with "cf service-keys" and delete manually if unwanted.`);
+        }
+      }
+    } catch {
+      // The sweep is best-effort; a failed lookup must not block setup.
+    }
     let shouldImport = false;
     try {
       shouldImport = await confirmCfImport({ input, output });

@@ -10,8 +10,6 @@ import { brandedEnvValue } from './branding.mjs';
 const CREDENTIALS_FILENAME = 'sap-ai-dev-toolkit-credentials.json';
 const CREDENTIAL_MODES = new Set(['direct', 'bas-tunnel', 'cf-connectivity']);
 
-const SECRET_PATTERN = /(authorization|cookie|password|secret|token|bearer|credential)/i;
-
 async function exists(path) {
   try {
     await stat(path);
@@ -20,10 +18,6 @@ async function exists(path) {
     if (error?.code === 'ENOENT') return false;
     throw error;
   }
-}
-
-export function redactCredentialValue(value) {
-  return SECRET_PATTERN.test(String(value)) ? '[redacted]' : value;
 }
 
 export async function resolveCredentialsPath(env = process.env, mcpConfigPath) {
@@ -116,8 +110,4 @@ export async function removeDestinationCredentials(path, names) {
   }
   if (removed.length) await writeCredentials(path, destinations);
   return { path, removed };
-}
-
-export function listCredentialDestinations(credentials) {
-  return Object.entries(credentials?.destinations || {}).map(([name, entry]) => ({ name, host: entry.host, user: entry.user, updatedAt: entry.updatedAt }));
 }

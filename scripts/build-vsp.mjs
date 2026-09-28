@@ -5,12 +5,13 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import { ensureGo } from './ensure-go.mjs';
+import { UPSTREAM_COMMIT } from '../src/binary.mjs';
 
 const exec = promisify(execFile);
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const source = join(root, '.build', 'vibing-steampunk');
 const dist = join(root, 'dist');
-const commit = '9886d2727f47506368b0a3c2f1c1766f1200f747';
+const commit = UPSTREAM_COMMIT;
 const upstream = 'https://github.com/oisee/vibing-steampunk.git';
 const targets = [
   ['linux', 'amd64', 'linux', 'x64', ''],

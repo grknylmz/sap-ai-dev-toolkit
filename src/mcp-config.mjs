@@ -3,10 +3,27 @@ import { constants } from 'node:fs';
 import { access, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, delimiter, dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { brandedEnvValue } from './branding.mjs';
+import { slugifyDestination } from './bas-discovery.mjs';
 
 const LEGACY_MCP_SERVER_PREFIXES = ['sapAiDev_', 'basVspMcp_'];
 const COMPANION_SERVER_KIND = 'sap-development-companion';
+const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+
+// The self-package companion (HANA inspector) must launch the exact version
+// the user installed; an unpinned `npx sap-ai-dev-toolkit` would re-resolve
+// executable code from the registry at every MCP host start.
+let selfPackageVersion;
+async function runningPackageVersion() {
+  if (selfPackageVersion !== undefined) return selfPackageVersion;
+  try {
+    selfPackageVersion = String(JSON.parse(await readFile(join(packageRoot, 'package.json'), 'utf8')).version || '');
+  } catch {
+    selfPackageVersion = '';
+  }
+  return selfPackageVersion;
+}
 
 export const SAP_DEVELOPMENT_MCP_SERVERS = Object.freeze([
   Object.freeze({
@@ -95,8 +112,10 @@ export async function resolveMcpConfigPath(env = process.env) {
   return candidates[0];
 }
 
+// Server entry names are lowercase slugs: VS Code/BAS derive chat tool
+// references from the server name and only bind lowercase identifiers.
 export function generatedServerName(destinationName) {
-  return String(destinationName);
+  return slugifyDestination(destinationName);
 }
 
 export function buildSapDevelopmentMcpEntries(serverIds = SAP_DEVELOPMENT_MCP_SERVERS.map(server => server.id), { packageVersions = {}, packageManager = 'npx' } = {}) {
@@ -128,7 +147,7 @@ export function buildMcpEntries(destinations, env = process.env) {
   for (const destination of selected) {
     const isCf = destination.source === 'cloud-foundry';
     const name = generatedServerName(isCf ? destination.serverName : destination.name);
-    if (Object.hasOwn(entries, name)) throw new Error(`Duplicate MCP destination server name: ${name}`);
+    if (Object.hasOwn(entries, name)) throw new Error(`Duplicate MCP destination server name: ${name} (two destination names normalize to the same lowercase server name)`);
     const entryEnv = {
       H2O_URL: String(h2oUrl),
       SAP_ALLOW_TRANSPORTABLE_EDITS: 'true'
@@ -291,9 +310,11 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
   const env = options.env || process.env;
   const path = options.path || await resolveMcpConfigPath(env);
   const config = await readConfig(path);
+  const selfVersion = await runningPackageVersion();
+  const companionVersions = selfVersion ? { 'sap-ai-dev-toolkit': selfVersion, 'hana-cloud-inspector': selfVersion } : {};
   const generated = {
     ...buildMcpEntries(destinations, env),
-    ...buildSapDevelopmentMcpEntries(options.sapDevelopmentServers || [])
+    ...buildSapDevelopmentMcpEntries(options.sapDevelopmentServers || [], { packageVersions: companionVersions })
   };
   const launcherCommand = options.command || (destinations.length ? await resolveMcpServerCommand(env) : null);
   if (launcherCommand) {
@@ -339,10 +360,18 @@ export async function repairManagedMcpConfig(discoveredDestinations, { env = pro
   for (const [serverName, entry] of Object.entries(config.servers)) {
     if (!isManagedBasDestinationEntry(entry)) continue;
     const destinationName = destinationValue(entry.env);
-    if (generatedServerName(destinationName) !== serverName) continue;
+    const expectedName = generatedServerName(destinationName);
     const destination = basDestinations.get(destinationName);
     if (!destination) continue;
-    const expected = buildMcpEntries([destination], env)[serverName];
+    if (expectedName !== serverName) {
+      // Legacy mixed-case entries migrate to the normalized lowercase key.
+      // A user-owned entry on the target key blocks the rename; merging is
+      // only safe onto another managed entry for the same destination.
+      const target = config.servers[expectedName];
+      const targetMergable = isManagedBasDestinationEntry(target) && destinationValue(target.env) === destinationName;
+      if (Object.hasOwn(config.servers, expectedName) && !targetMergable) continue;
+    }
+    const expected = buildMcpEntries([destination], env)[expectedName];
     const nextEnvironment = { ...entry.env, ...expected.env };
     if (Object.hasOwn(entry.env, 'SAP_ALLOW_TRANSPORTABLE_EDITS')) {
       nextEnvironment.SAP_ALLOW_TRANSPORTABLE_EDITS = entry.env.SAP_ALLOW_TRANSPORTABLE_EDITS;
@@ -359,8 +388,13 @@ export async function repairManagedMcpConfig(discoveredDestinations, { env = pro
     } else {
       nextEntry.command = localCommand;
     }
-    if (JSON.stringify(nextEntry) === JSON.stringify(entry)) continue;
-    config.servers[serverName] = nextEntry;
+    if (expectedName === serverName) {
+      if (JSON.stringify(nextEntry) === JSON.stringify(entry)) continue;
+      config.servers[serverName] = nextEntry;
+    } else {
+      delete config.servers[serverName];
+      config.servers[expectedName] = nextEntry;
+    }
     repaired += 1;
   }
 

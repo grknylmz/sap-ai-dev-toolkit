@@ -6,8 +6,8 @@ This inventory reflects the current SAP AI Dev Toolkit proxy behavior in `src/mc
 
 | Status | Count | Notes |
 | --- | ---: | --- |
-| VSP tools | Up to 51 | Curated from the child VSP tool list and exposed with a destination prefix, for example `<destination>__GetSource`. |
-| Local lint tool | 1 per destination | `LintABAP` analyzes caller-supplied ABAP source in memory. |
+| VSP tools | Up to 51 | Curated from the child VSP tool list and exposed with a destination prefix in lowercase snake_case, for example `<destination>_get_source`. |
+| Local lint tool | 1 per destination | `LintABAP` analyzes caller-supplied ABAP source in memory; it is exposed publicly as `<destination>_lint_abap`. |
 | Workflow tools | Up to 6 per destination | Review/apply change sets, transport evidence, Clean Core release assessment, and read-only RAP regression suites. Some are exposed only when their upstream VSP tools are registered. |
 | Convenience mapping | Dynamic | `GetApplicationLog` maps to VSP `SAP(action="analyze", type="application_log")` when the SAP router is registered. |
 | Intentionally filtered VSP tools | Dynamic | Destructive, broad-router, trace, and unsupported VSP operations are hidden from direct calls. |
@@ -148,6 +148,8 @@ These names are known from fixtures, README, and historical upstream VSP invento
 - `LintABAP` — local add-on tool; lints caller-supplied ABAP source without contacting SAP.
 - `GetApplicationLog` — add-on convenience tool mapped to VSP `SAP` with `action="analyze"` and `type="application_log"`.
 
+These logical names are exposed through MCP in lowercase snake_case (`lint_abap`, `get_application_log`) because BAS/VS Code chat tool references bind only lowercase identifiers.
+
 ## Destination workflow tools
 
 - `PrepareABAPChangeSet` — stage full-source `WriteSource` changes and return review diffs and source fingerprints.
@@ -159,8 +161,10 @@ These names are known from fixtures, README, and historical upstream VSP invento
 
 ## Notes
 
-- Runtime tool names are namespaced by destination slug, for example `demo-abap__RunQuery`; `tools/call` accepts the exact name returned by `tools/list`.
+- Runtime tool names are `<destination-slug>_<tool>`, for example `demo-abap_run_query`; `tools/call` accepts the exact name returned by `tools/list`.
 - The proxy starts VSP with `--enable-transports`; generated MCP entries set `SAP_ALLOW_TRANSPORTABLE_EDITS=true`.
+- `SAP_AI_DEV_TOOLKIT_READ_ONLY=true` switches a server to read-only: the write/activate/transport-create/breakpoint tools above are removed from the surface, change-set workflows are not registered, and VSP starts with `--transport-read-only` instead.
+- `SAP_AI_DEV_TOOLKIT_REQUEST_TIMEOUT_MS` (default 600000) bounds each forwarded call; stalled requests fail without killing the child.
 - Transport release/deletion and the general-purpose `SAP` router are intentionally hidden from direct proxy calls. `GetApplicationLog` is the bounded convenience mapping for the SAP application-log route.
 
 ## Separate optional HANA Cloud inspector

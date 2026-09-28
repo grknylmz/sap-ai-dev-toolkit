@@ -222,6 +222,9 @@ process.stdin.on('data', async chunk => {
           params: { level: 'info', logger: 'fake-vsp', data: 'fixture log notification' }
         })}\n`);
       }
+      if (message.params?.arguments?.emitListChanged) {
+        process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' })}\n`);
+      }
       const transportTools = [
         'ListTransports', 'GetTransport', 'GetUserTransports', 'GetTransportInfo',
         'CreateTransport', 'ReleaseTransport', 'DeleteTransport'

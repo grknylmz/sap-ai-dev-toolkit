@@ -298,7 +298,7 @@ test('routes a PrincipalPropagation MCP call through CF Connectivity to the SAP 
   }, [], [
     { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } },
     { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
-    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'pp-target__GetSystemInfo', arguments: {} } }
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'pp-target_get_system_info', arguments: {} } }
   ]);
   assert.equal(result.code, 0, `${result.stdout}\\n${result.stderr}`);
   const responses = result.stdout.trim().split('\n').map(line => JSON.parse(line));
@@ -455,7 +455,7 @@ test('overrides CF Basic OnPremise backend auth while retaining the HTTP Connect
   }, [], [
     { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } },
     { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
-    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'basic-onprem__GetSystemInfo', arguments: {} } }
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'basic-onprem_get_system_info', arguments: {} } }
   ]);
 
   assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);

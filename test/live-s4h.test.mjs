@@ -6,11 +6,13 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { slugifyDestination } from '../src/bas-discovery.mjs';
+import { snakeCaseName } from '../src/mcp-proxy.mjs';
 
 const launcher = fileURLToPath(new URL('../src/launcher.mjs', import.meta.url));
 const LIVE = /^(1|true|yes)$/iu.test(process.env.SAP_AI_DEV_LIVE_S4H || '');
 const DESTINATION = process.env.SAP_AI_DEV_LIVE_DESTINATION || 'S4H';
-const SLUG = process.env.SAP_AI_DEV_LIVE_DESTINATION_SLUG || DESTINATION.toLowerCase().replace(/[^a-z0-9_-]+/gu, '-');
+const SLUG = process.env.SAP_AI_DEV_LIVE_DESTINATION_SLUG || slugifyDestination(DESTINATION);
 const REQUEST_TIMEOUT_MS = Number(process.env.SAP_AI_DEV_LIVE_TIMEOUT_MS || 45_000);
 
 async function readConfiguredServer() {
@@ -29,7 +31,7 @@ async function readConfiguredServer() {
     } catch {
       continue;
     }
-    const server = parsed?.servers?.[DESTINATION];
+    const server = parsed?.servers?.[SLUG] || parsed?.servers?.[DESTINATION];
     if (server?.command) return { path, server };
   }
   return null;
@@ -131,7 +133,7 @@ async function withLiveClient(t) {
   t.after(() => client.close());
   const initialized = await client.request('initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'sap-ai-dev-live-test', version: '1.0.0' } });
   client.notify('notifications/initialized');
-  assert.equal(initialized.serverInfo.name, DESTINATION);
+  assert.equal(initialized.serverInfo.name, SLUG);
   return client;
 }
 
@@ -140,7 +142,7 @@ test('live S4H MCP exposes a curated ABAP lifecycle surface under 60 tools', { s
   const listed = await client.request('tools/list', {});
   const tools = listed.tools || [];
   const names = new Set(tools.map(tool => tool.name));
-  const prefix = `${SLUG}__`;
+  const prefix = `${SLUG}_`;
 
   assert.ok(tools.length > 25, `expected a useful ABAP lifecycle surface, got ${tools.length}`);
   assert.ok(tools.length < 60, `curated destination tool count must stay below 60, got ${tools.length}`);
@@ -154,24 +156,24 @@ test('live S4H MCP exposes a curated ABAP lifecycle surface under 60 tools', { s
     'GetTransport', 'GetTransportInfo', 'ListTransports', 'CreateTransport',
     'GetApplicationLog', 'PrepareABAPChangeSet', 'ApplyABAPChangeSet', 'CheckTransportReadiness', 'PlanABAPCloudMigration'
   ]) {
-    assert.ok(names.has(`${prefix}${required}`), `expected curated lifecycle tool ${required}`);
+    assert.ok(names.has(`${prefix}${snakeCaseName(required)}`), `expected curated lifecycle tool ${required}`);
   }
 
   for (const hidden of [
     'SAP', 'ReleaseTransport', 'DeleteTransport', 'DeleteObject', 'ExecuteABAP', 'CallRFC',
     'ListSQLTraces', 'AnalyzeABAPCode', 'CreateObject', 'CreateClassWithTests', 'WriteClass', 'UpdateSource'
   ]) {
-    assert.equal(names.has(`${prefix}${hidden}`), false, `broad/destructive tool ${hidden} must remain hidden`);
+    assert.equal(names.has(`${prefix}${snakeCaseName(hidden)}`), false, `broad/destructive tool ${hidden} must remain hidden`);
   }
 });
 
 test('live S4H MCP handles safe local and read-only SAP calls', { skip: LIVE ? false : 'set SAP_AI_DEV_LIVE_S4H=1 to run against a live BAS/S4H destination' }, async t => {
   const client = await withLiveClient(t);
-  const prefix = `${SLUG}__`;
+  const prefix = `${SLUG}_`;
   await client.request('tools/list', {});
 
   const lint = await client.request('tools/call', {
-    name: `${prefix}LintABAP`,
+    name: `${prefix}lint_abap`,
     arguments: { files: [{ filename: 'zlive_probe.prog.abap', source: "REPORT zlive_probe.\nWRITE / 'ok'.\n" }] }
   });
   const lintJson = JSON.parse(textPayload(lint));
@@ -183,19 +185,19 @@ test('live S4H MCP handles safe local and read-only SAP calls', { skip: LIVE ? f
     ['GetFeatures', {}],
     ['GetInstalledComponents', {}]
   ]) {
-    const result = await client.request('tools/call', { name: `${prefix}${tool}`, arguments: args });
+    const result = await client.request('tools/call', { name: `${prefix}${snakeCaseName(tool)}`, arguments: args });
     assert.notEqual(result.isError, true, `${tool} returned an MCP tool error: ${textPayload(result)}`);
   }
 
   const query = await client.request('tools/call', {
-    name: `${prefix}RunQuery`,
+    name: `${prefix}run_query`,
     arguments: { sql_query: 'SELECT * FROM T000', max_rows: 1 }
   });
   assert.notEqual(query.isError, true, `RunQuery returned an MCP tool error: ${textPayload(query)}`);
   assert.match(textPayload(query), /T000|MANDT|client|rows|\[/iu);
 
   const appLog = await client.request('tools/call', {
-    name: `${prefix}GetApplicationLog`,
+    name: `${prefix}get_application_log`,
     arguments: { max_results: 1 }
   });
   assert.notEqual(appLog.isError, true, `GetApplicationLog returned an MCP tool error: ${textPayload(appLog)}`);

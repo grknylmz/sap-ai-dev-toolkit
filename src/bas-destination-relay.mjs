@@ -2,6 +2,7 @@ import http from 'node:http';
 import { fetch as undiciFetch, ProxyAgent } from 'undici';
 import { CookieJar } from 'tough-cookie';
 import { brandedEnvValue } from './branding.mjs';
+import { redactText } from './redact.mjs';
 
 const DEFAULT_PROXY = 'http://127.0.0.1:8887';
 const MAX_BODY_BYTES = 64 * 1024 * 1024;
@@ -15,6 +16,12 @@ const UNSAFE = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 // Set-Cookie state SAP returned alongside it and replays both on the unsafe
 // request. Without this pairing SAP sees a token from a foreign session and
 // answers "CSRF token validation failed" with HTTP 403.
+// Tokens are session-scoped, not path-scoped, but SAP only issues them from
+// GET-capable endpoints. POST-only services (ADT data preview among them)
+// answer a same-path token fetch with 4xx, so the relay always fetches from
+// the GET-friendly discovery endpoint and accepts that session's token for
+// unsafe requests to any path.
+const CSRF_FETCH_PATH = '/sap/bc/adt/discovery';
 const TOKEN_TTL_MS = 15 * 60 * 1000;
 const DEFAULT_MAX_TOKEN_FAILURES = 3;
 const MAX_CONFIGURED_TOKEN_FAILURES = 10;
@@ -200,10 +207,10 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
     return send(target, method, headers, body);
   }
 
-  async function fetchTokenFresh(requestUrl, requestHeaders) {
-    const key = requestUrl.pathname;
+  async function fetchTokenFresh(requestHeaders) {
+    const key = CSRF_FETCH_PATH;
     stats.csrfFetches += 1;
-    const target = resolveTarget(requestUrl);
+    const target = resolveTarget(new URL(CSRF_FETCH_PATH, base));
     const cookieTarget = resolveCookieTarget(target);
     const jar = copyCookieJar(sharedCookieJar);
     await seedRequestCookies(jar, requestHeaders.cookie, cookieTarget);
@@ -229,13 +236,13 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
     return session;
   }
 
-  async function fetchToken(requestUrl, requestHeaders = {}) {
-    const key = requestUrl.pathname;
+  async function fetchToken(requestHeaders = {}) {
+    const key = CSRF_FETCH_PATH;
     const cached = tokenCache.get(key);
     if (cached && Date.now() - cached.fetchedAt < TOKEN_TTL_MS) return cached;
     const pending = tokenFetches.get(key);
     if (pending) return pending;
-    const fetching = fetchTokenFresh(requestUrl, requestHeaders);
+    const fetching = fetchTokenFresh(requestHeaders);
     tokenFetches.set(key, fetching);
     try {
       return await fetching;
@@ -244,14 +251,17 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
     }
   }
 
-  async function probeCsrfSession(path = '/sap/bc/adt/discovery') {
-    const requestUrl = new URL(path, base);
-    const session = await fetchToken(requestUrl, { accept: 'application/xml,text/xml,*/*' });
+  async function probeCsrfSession() {
+    const session = await fetchToken({ accept: 'application/xml,text/xml,*/*' });
     return {
       httpStatus: session?.httpStatus || 0,
       tokenReceived: Boolean(session?.token),
       cookieCount: session?.cookieCount || 0,
-      sessionUsable: Boolean(session?.token && session.cookieCount > 0)
+      // A token alone makes unsafe requests viable: BAS proxy routes deliver
+      // tokens but strip cookies, and the backend accepts the token on the
+      // proxy-established Basic-auth session. cookieCount stays reported for
+      // diagnosis; setup's override validation requires cookies separately.
+      sessionUsable: Boolean(session?.token)
     };
   }
 
@@ -265,7 +275,14 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
   function authHeaders(extra = {}) {
     if (!credentials?.user || !credentials?.password) return extra;
     const basic = Buffer.from(`${credentials.user}:${credentials.password}`).toString('base64');
-    return { authorization: `Basic ${basic}`, ...extra };
+    // The stored credential override wins over any inbound authorization
+    // header: the override exists precisely to pair Basic auth with the
+    // relay's CSRF session, and silently forwarding a caller-supplied header
+    // would disable that pairing without any diagnostic.
+    const headers = { ...extra };
+    delete headers.authorization;
+    delete headers.Authorization;
+    return { ...headers, authorization: `Basic ${basic}` };
   }
 
   async function forward(method, requestUrl, requestHeaders, body, session) {
@@ -291,27 +308,32 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
   // a failing destination from looping forever.
   async function forwardWithRetry(method, requestUrl, requestHeaders, body, failures = 0) {
     const unsafe = UNSAFE.has(method);
-    const session = unsafe ? await fetchToken(requestUrl, requestHeaders) : null;
-    if (unsafe && (!session?.token || !session.cookieCount)) {
+    const session = unsafe ? await fetchToken(requestHeaders) : null;
+    if (unsafe && !session?.token) {
       stats.csrfSessionFailures += 1;
-      const detail = !session?.token
-        ? 'could not obtain a CSRF token'
-        : 'received a CSRF token without a session cookie';
-      const message = `BAS destination relay ${detail} for ${requestUrl.pathname}; no unsafe request was sent`;
+      const message = `BAS destination relay could not obtain a CSRF token for ${requestUrl.pathname}; no unsafe request was sent`;
       log(`[${destination.name}] ${message}`);
       const status = session?.httpStatus >= 400 ? session.httpStatus : 503;
       const response = new Response(message, { status, headers: { 'content-type': 'text/plain; charset=utf-8' } });
       return { response, body: Buffer.from(message) };
     }
+    // A token without cookies is still sent: BAS proxy routes deliver tokens
+    // but strip Set-Cookie, and the backend accepts the token on the Basic-
+    // auth session the proxy establishes per hop. A retry cannot help there
+    // (a fresh token still arrives cookie-less), so a CSRF rejection on a
+    // cookie-less session is surfaced instead of retried.
+    const tokenOnly = unsafe && !session.cookieCount;
     const { response, body: responseBody } = await forward(method, requestUrl, requestHeaders, body, session);
     const rejected = csrfFailure(response.status, response.headers, responseBody);
-    if (unsafe && rejected && failures < maxFailures) {
+    if (unsafe && rejected && !tokenOnly && failures < maxFailures) {
       log(`[${destination.name}] BAS relay CSRF session rejected for ${requestUrl.pathname}; re-establishing token and session (attempt ${failures + 1}/${maxFailures})`);
       stats.csrfRetries += 1;
-      tokenCache.delete(requestUrl.pathname);
+      tokenCache.delete(CSRF_FETCH_PATH);
       return forwardWithRetry(method, requestUrl, requestHeaders, body, failures + 1);
     }
-    if (unsafe && rejected && failures >= maxFailures) {
+    if (unsafe && rejected && tokenOnly) {
+      log(`[${destination.name}] BAS relay CSRF token rejected without a session cookie for ${requestUrl.pathname}; not retried (route delivers no cookies; a credential override enables a paired session)`);
+    } else if (unsafe && rejected && failures >= maxFailures) {
       log(`[${destination.name}] BAS relay stopped after ${maxFailures} CSRF session retries for ${requestUrl.pathname}`);
     }
     return { response, body: responseBody };
@@ -325,11 +347,17 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
       const body = UNSAFE.has(method) ? await readRequestBody(req) : Buffer.alloc(0);
       const { response, body: responseBody } = await forwardWithRetry(method, requestUrl, req.headers, body);
       const responseHeaders = {};
+      // SAP sessions commonly set several cookies at once; a plain object
+      // assignment would collapse them to the last value. undici exposes the
+      // full list via getSetCookie, and Node's http server serializes an
+      // array as repeated headers.
+      const setCookies = response.headers.getSetCookie?.() || [];
+      if (setCookies.length) responseHeaders['set-cookie'] = setCookies;
       for (const [name, value] of response.headers) {
         const lower = name.toLowerCase();
         // undici decompresses response bodies; the stale content-encoding and
         // content-length would misdescribe the plain bytes handed to VSP.
-        if (HOP_BY_HOP.has(lower) || lower === 'content-encoding' || lower === 'content-length') continue;
+        if (lower === 'set-cookie' || HOP_BY_HOP.has(lower) || lower === 'content-encoding' || lower === 'content-length') continue;
         responseHeaders[name] = value;
       }
       responseHeaders['x-sap-ai-dev-toolkit-relay'] = 'bas-destination';
@@ -337,10 +365,18 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
       res.end(responseBody);
     })().catch(error => {
       if (!res.headersSent) res.writeHead(502, { 'content-type': 'text/plain; charset=utf-8', 'connection': 'close' });
-      res.end(`BAS destination relay failed: ${error.message}\n`);
+      // Proxy and transport errors can embed the full proxy URL including
+      // userinfo; redact before the body reaches the child (and the tool result).
+      res.end(`BAS destination relay failed: ${redactText(error.message)}\n`);
     });
   });
 
+  // Keep an error listener for the server's whole lifetime: after listen()
+  // succeeds, a later 'error' event (port collision cleanup, socket reset)
+  // with no listener would be an uncaught exception that kills the process.
+  server.on('error', error => {
+    log(`[${destination.name}] BAS relay server error: ${redactText(error.message)}`);
+  });
   // Bind eagerly and report the real port through `ready`. Callers must
   // await `ready` before handing the URL to a VSP child; binding failures
   // surface as a rejected promise instead of a silently wrong guessed port.

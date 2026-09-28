@@ -276,14 +276,14 @@ test('global postinstall completes BAS selection before optional Copilot assets'
     await rm(directory, { recursive: true, force: true });
   });
 
-  const declined = await runPostinstallInPty(env, '\r', 'n\r');
+  const declined = await runPostinstallInPty(env, '\r', '\r');
   assert.equal(declined.code, 0, `${declined.stdout}\n${declined.stderr}`);
   assert.equal(declined.selectionSent, true, declined.stdout);
   assert.equal(declined.assetsAnswerSent, true, declined.stdout);
   const declineLogs = `${declined.stdout}\n${declined.stderr}`;
   assert.match(declineLogs, /Configured 0 MCP servers/);
-  assert.match(declineLogs, /\[Y\/n\]/);
-  assert.match(declineLogs, /Press Enter to install the bundled agents and all skills in the path shown below; type n then press Enter to skip/);
+  assert.match(declineLogs, /\[y\/N\]/);
+  assert.match(declineLogs, /Type y then press Enter to install the bundled agents and all skills in the path shown below; press Enter alone to skip/);
   assert.match(declineLogs, /🤖 sap-ai-dev-toolkit/);
   assert.match(declineLogs, /\u001b\[1;35m/);
   assert.match(declineLogs, /Optional Copilot setup is waiting for your choice/);
@@ -296,7 +296,7 @@ test('global postinstall completes BAS selection before optional Copilot assets'
   assert.equal(Object.values(configAfterDecline.servers).filter(entry => entry.BAS_EXT === 'true').length, 0);
   await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
 
-  const accepted = await runPostinstallInPty(env, ' \r', '\r');
+  const accepted = await runPostinstallInPty(env, ' \r', 'y\r');
   assert.equal(accepted.code, 0, `${accepted.stdout}\n${accepted.stderr}`);
   assert.equal(accepted.selectionSent, true, accepted.stdout);
   assert.equal(accepted.assetsAnswerSent, true, accepted.stdout);

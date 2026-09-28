@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { discoverDestinations, remediation, statusRows } from './bas-discovery.mjs';
+import { discoverDestinations, remediation, slugifyDestination, statusRows } from './bas-discovery.mjs';
 import { findBinary } from './binary.mjs';
 import { MCPProxy } from './mcp-proxy.mjs';
 import { installMcpConfig, repairManagedMcpConfig } from './mcp-config.mjs';
@@ -11,12 +11,16 @@ import { runSetup } from './setup.mjs';
 import { resolveConfiguredCloudFoundryDestination } from './cf-destination.mjs';
 import { withBrandedEnvironment } from './branding.mjs';
 import { enrichWithStoredCredentials } from './credential-overrides.mjs';
+import { redactText } from './redact.mjs';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const runtimeEnv = withBrandedEnvironment(process.env);
 
 function hasFlag(name) { return process.argv.slice(2).includes(name); }
 function json(value) { process.stdout.write(`${JSON.stringify(value)}\n`); }
+// Timestamped stderr lines so MCP server output shows when each event
+// happened, not just that it did.
+function logLine(message) { console.error(`[${new Date().toISOString()}] ${message}`); }
 
 function usage() {
   return [
@@ -42,10 +46,6 @@ function usage() {
 
 function doctorRow(name, stage, status, detail) {
   return { name, stage, status, ...(detail ? { detail } : {}) };
-}
-
-function redactText(value) {
-  return String(value).replace(/(authorization|cookie|password|secret|token)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]');
 }
 
 async function runDoctor(destinations) {
@@ -108,10 +108,11 @@ async function runDoctor(destinations) {
       const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
       if (listed?.error) throw new Error(listed.error.message || 'MCP tools/list failed');
       const tools = listed.result?.tools || [];
-      const localNames = new Set(['LintABAP', 'GetApplicationLog', 'PrepareABAPChangeSet', 'ApplyABAPChangeSet', 'CheckTransportReadiness', 'PlanABAPCloudMigration', 'GenerateRAPRegressionSuite', 'RunRAPRegressionSuite']);
-      const upstreamCount = tools.filter(tool => !localNames.has(tool.name.slice(tool.name.indexOf('__') + 2))).length;
+      const toolPrefix = `${slugifyDestination(destination.name)}_`;
+      const localSegments = new Set(['lint_abap', 'get_application_log', 'prepare_abap_change_set', 'apply_abap_change_set', 'check_transport_readiness', 'plan_abap_cloud_migration', 'generate_rap_regression_suite', 'run_rap_regression_suite']);
+      const upstreamCount = tools.filter(tool => tool.name.startsWith(toolPrefix) && !localSegments.has(tool.name.slice(toolPrefix.length))).length;
       checks.push(doctorRow(destination.name, 'MCP tools/list', upstreamCount ? 'passed' : 'failed', `${upstreamCount} VSP tools and ${tools.length} total MCP tools returned; chat-picker binding is host-managed`));
-      const systemInfo = tools.find(tool => tool.name.endsWith('__GetSystemInfo'));
+      const systemInfo = tools.find(tool => tool.name === `${toolPrefix}get_system_info`);
       if (!systemInfo) {
         checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', 'GetSystemInfo is not exposed by this VSP mode.'));
       } else {
@@ -120,7 +121,7 @@ async function runDoctor(destinations) {
           let session;
           let preflightError;
           try {
-            session = await relayedDestination.relay.probeCsrfSession('/sap/bc/adt/datapreview/freestyle');
+            session = await relayedDestination.relay.probeCsrfSession();
           } catch (error) {
             preflightError = redactText(error.message || error).slice(0, 250);
           }
@@ -163,7 +164,8 @@ async function runOfflineDemo() {
     childArgs: () => [demoPath],
     destinations: [{ name: 'demo', url: 'http://demo.dest', client: '001', demo: true }],
     env: { ...runtimeEnv, SAP_AI_DEV_TOOLKIT_DESTINATION: 'demo' },
-    log: message => console.error(message)
+    log: message => console.error(message),
+    version: pkg.version
   });
   console.error('[sap-ai-dev-toolkit] offline demo active; all SAP changes are simulated in memory');
   const shutdown = signal => { void proxy.close().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143)); };
@@ -177,8 +179,7 @@ function probeDiagnostic(destination) {
   const details = [];
   if (probe.httpStatus) details.push(`HTTP ${probe.httpStatus}`);
   if (probe.error) {
-    const error = String(probe.error)
-      .replace(/(authorization|cookie|password|secret|token)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]')
+    const error = redactText(probe.error)
       .replace(/\s+/g, ' ')
       .slice(0, 400);
     details.push(error);
@@ -258,7 +259,7 @@ async function main() {
     let proxy;
     try {
       const binary = await binaryOrError();
-      proxy = new MCPProxy({ binary, destinations: [destination], env: runtimeEnv, log: message => console.error(message) });
+      proxy = new MCPProxy({ binary, destinations: [destination], env: runtimeEnv, log: logLine, version: pkg.version });
       const shutdown = signal => { void proxy.close().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143)); };
       process.once('SIGINT', () => shutdown('SIGINT'));
       process.once('SIGTERM', () => shutdown('SIGTERM'));
@@ -283,19 +284,21 @@ async function main() {
   }
 
   const discovered = await discoverDestinations({ env: runtimeEnv });
-  for (const destination of discovered) console.error(probeDiagnostic(destination));
+  for (const destination of discovered) logLine(probeDiagnostic(destination));
   const destinations = await enrichWithStoredCredentials(discovered, runtimeEnv);
   if (!destinations.length) {
-    console.error('[sap-ai-dev] destination discovery returned no named BAS destinations');
+    logLine('[sap-ai-dev] destination discovery returned no named BAS destinations');
     throw new Error(remediation);
   }
   const binary = await binaryOrError();
+  logLine(`[sap-ai-dev] sap-ai-dev-toolkit v${pkg.version} (node ${process.version}, pid ${process.pid})`);
+  logLine(`[sap-ai-dev] VSP binary: ${binary}`);
   for (const destination of destinations) {
-    if (destination.credentials?.mode === 'bas-tunnel') console.error(`[sap-ai-dev] ${destination.name}: Basic credentials enabled through the BAS proxy tunnel`);
-    else if (destination.credentials?.host) console.error(`[sap-ai-dev] ${destination.name}: direct connect enabled through stored credentials`);
+    if (destination.credentials?.mode === 'bas-tunnel') logLine(`[sap-ai-dev] ${destination.name}: Basic credentials enabled through the BAS proxy tunnel`);
+    else if (destination.credentials?.host) logLine(`[sap-ai-dev] ${destination.name}: direct connect enabled through stored credentials`);
   }
-  console.error(`[sap-ai-dev] starting MCP proxy for ${destinations.map(destination => `${destination.name} (client=${destination.client})`).join(', ')}`);
-  const proxy = new MCPProxy({ binary, destinations, env: process.env, log: message => console.error(message) });
+  logLine(`[sap-ai-dev] starting MCP proxy for ${destinations.map(destination => `${destination.name} (client=${destination.client})`).join(', ')}`);
+  const proxy = new MCPProxy({ binary, destinations, env: process.env, log: logLine, version: pkg.version });
   const shutdown = signal => { void proxy.close().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143)); };
   process.once('SIGINT', () => shutdown('SIGINT'));
   process.once('SIGTERM', () => shutdown('SIGTERM'));

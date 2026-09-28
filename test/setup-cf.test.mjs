@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { installMcpConfig } from '../src/mcp-config.mjs';
+import { generatedServerName, installMcpConfig } from '../src/mcp-config.mjs';
 import { destinationTable } from '../scripts/postinstall.mjs';
 import { readCredentials, resolveCredentialsPath, storeDestinationCredentials } from '../src/credentials-store.mjs';
 import { credentialKeyForDestination } from '../src/credential-overrides.mjs';
@@ -185,8 +185,8 @@ test('imports selected CF destinations, passes managed key references, and remov
     instanceName: 'old-destination-service', keyName: 'old-key'
   }]);
   const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
-  assert.deepEqual(Object.keys(config.servers), ['cf:space-one:new-instance:new-destination']);
-  assert.equal(config.servers['cf:space-one:new-instance:new-destination'].env.BAS_CF_DESTINATION_KEY, 'new-key');
+  assert.deepEqual(Object.keys(config.servers), ['cf-space-one-new-instance-new-destination']);
+  assert.equal(config.servers['cf-space-one-new-instance-new-destination'].env.BAS_CF_DESTINATION_KEY, 'new-key');
   const calls = (await readFile(fixture.callLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(calls.filter(args => args[0] === 'delete-service-key'), [[
     'delete-service-key', '-f', '--wait', 'old-destination-service', 'old-key'
@@ -401,7 +401,7 @@ test('no selectable records leave MCP config unchanged and remove only new keys'
   assert.equal(result.selectionSent, false, result.stdout);
   assert.match(result.stdout, /No Destination service instance exists/);
   const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
-  assert.deepEqual(Object.keys(config.servers), [previous.serverName]);
+  assert.deepEqual(Object.keys(config.servers), [generatedServerName(previous.serverName)]);
   const calls = (await readFile(fixture.callLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(calls.filter(args => args[0] === 'delete-service-key'), [[
     'delete-service-key', '-f', '--wait', 'new-destination-service', 'new-key'
@@ -433,7 +433,7 @@ test('failed config writes remove only unreferenced keys created by that attempt
   assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
   assert.match(`${result.stdout}\n${result.stderr}`, /MCP config writing failed: simulated config write failure/);
   const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
-  assert.deepEqual(Object.keys(config.servers), [previous.serverName]);
+  assert.deepEqual(Object.keys(config.servers), [generatedServerName(previous.serverName)]);
   const calls = (await readFile(fixture.callLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.deepEqual(calls.filter(args => args[0] === 'delete-service-key'), [[
     'delete-service-key', '-f', '--wait', 'new-destination-service', 'new-key'
@@ -450,7 +450,7 @@ test('preserves old CF keys referenced by an unrelated remaining MCP entry', asy
   const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
   config.servers.customServer = {
     command: 'custom-launcher',
-    env: { ...config.servers[previous.serverName].env, SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: undefined }
+    env: { ...config.servers[generatedServerName(previous.serverName)].env, SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: undefined }
   };
   await writeFile(fixture.configPath, JSON.stringify(config));
   fixture.env.TEST_BAS_DESTINATIONS = JSON.stringify([{
@@ -478,7 +478,7 @@ test('setup report labels CF source and matches registration by generated server
       available: false,
       error: 'https://user:secret@backend.example/path token=SECRET'
     }
-  }], new Set(['cf:space-one:destination-instance:friendly-destination']));
+  }], new Set(['cf-space-one-destination-instance-friendly-destination']));
   const row = report.split('\n').find(line => line.includes('friendly-destination'));
   assert.match(report, /Destination.*Source/);
   assert.match(row, /CF destination-service/);

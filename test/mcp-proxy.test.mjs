@@ -5,8 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
-import { childArguments, MCPProxy, PUBLIC_VSP_TOOLS } from '../src/mcp-proxy.mjs';
+import { childArguments, MCPProxy, PUBLIC_VSP_TOOLS, snakeCaseName } from '../src/mcp-proxy.mjs';
+const MCP_LOG_LEVELS = ['debug', 'info', 'notice', 'warning', 'error', 'critical', 'alert', 'emergency'];
 import { PassThrough } from 'node:stream';
+
+const publicName = (destination, name) => `${destination}_${snakeCaseName(name)}`;
 
 const fixture = fileURLToPath(new URL('./fixtures/fake-vsp.mjs', import.meta.url));
 const HIDDEN_VSP_TOOLS = [
@@ -79,7 +82,7 @@ test('restarts a crashed VSP child and retries the tool call once', async t => {
   const exit = once(originalChild.process, 'exit');
   originalChild.process.kill('SIGKILL');
   await exit;
-  const response = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'alpha__GetSystemInfo', arguments: {} } });
+  const response = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'alpha_get_system_info', arguments: {} } });
   assert.equal(response?.error, undefined, `self-healing must recover the call: ${JSON.stringify(response?.error)}`);
   assert.notEqual(proxy.children[0].child, originalChild, 'a replacement child must have been spawned');
   const events = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
@@ -141,37 +144,42 @@ test('merges paged tools and routes calls to the selected child', async t => {
 
   const initialized = await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } });
   assert.equal(initialized.result.serverInfo.name, 'alpha');
+  assert.equal(initialized.result.capabilities.tools.listChanged, true);
   const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const names = new Set(listed.result.tools.map(tool => tool.name));
-  const queryTool = listed.result.tools.find(tool => tool.name === 'beta__RunQuery');
+  const queryTool = listed.result.tools.find(tool => tool.name === 'beta_run_query');
   assert.deepEqual(queryTool.inputSchema, {
     type: 'object',
     properties: { sql_query: { type: 'string' }, max_rows: { type: 'number' }, all_rows: { type: 'boolean' } },
     required: ['sql_query']
   });
   assert.equal(queryTool.description, 'RunQuery [destination: beta]');
-  const lintTool = listed.result.tools.find(tool => tool.name === 'alpha__LintABAP');
+  const lintTool = listed.result.tools.find(tool => tool.name === 'alpha_lint_abap');
   assert.deepEqual(Object.keys(lintTool.inputSchema.properties).sort(), ['config', 'files']);
   assert.deepEqual(lintTool.inputSchema.required, ['files']);
   assert.deepEqual(lintTool.inputSchema.properties.files.items.required, ['filename', 'source']);
 
   const localWorkflowTools = [
-    'LintABAP', 'GetApplicationLog', 'PrepareABAPChangeSet', 'ApplyABAPChangeSet',
-    'CheckTransportReadiness', 'PlanABAPCloudMigration', 'GenerateRAPRegressionSuite', 'RunRAPRegressionSuite'
+    'lint_abap', 'get_application_log', 'prepare_abap_change_set', 'apply_abap_change_set',
+    'check_transport_readiness', 'plan_abap_cloud_migration', 'generate_rap_regression_suite', 'run_rap_regression_suite'
   ];
   for (const destination of ['alpha', 'beta']) {
     for (const toolName of PUBLIC_VSP_TOOLS) {
-      assert.ok(names.has(`${destination}__${toolName}`), `${destination} exposes curated ${toolName}`);
+      assert.ok(names.has(`${destination}_${snakeCaseName(toolName)}`), `${destination} exposes curated ${toolName}`);
     }
     for (const toolName of localWorkflowTools) {
-      assert.ok(names.has(`${destination}__${toolName}`), `${destination} exposes local ${toolName}`);
+      assert.ok(names.has(`${destination}_${toolName}`), `${destination} exposes local ${toolName}`);
     }
     for (const hiddenTool of HIDDEN_VSP_TOOLS) {
-      assert.equal(names.has(`${destination}__${hiddenTool}`), false, `${destination} hides ${hiddenTool}`);
+      assert.equal(names.has(`${destination}_${snakeCaseName(hiddenTool)}`), false, `${destination} hides ${hiddenTool}`);
     }
   }
-  assert.equal(listed.result.tools.filter(tool => tool.name.startsWith('alpha__')).length, PUBLIC_VSP_TOOLS.size + localWorkflowTools.length);
+  assert.equal(listed.result.tools.filter(tool => tool.name.startsWith('alpha_')).length, PUBLIC_VSP_TOOLS.size + localWorkflowTools.length);
   assert.equal(PUBLIC_VSP_TOOLS.size + localWorkflowTools.length, 59);
+  for (const tool of listed.result.tools) {
+    assert.match(tool.name, /^[a-z0-9_-]+$/, `public tool names must be lowercase: ${tool.name}`);
+    assert.ok(tool.name.length <= 128, `public tool names must stay within the MCP limit: ${tool.name}`);
+  }
 
   const requiredArguments = {
     GetFeatures: [],
@@ -185,18 +193,18 @@ test('merges paged tools and routes calls to the selected child', async t => {
     GetApplicationLog: []
   };
   for (const [toolName, required] of Object.entries(requiredArguments)) {
-    const tool = listed.result.tools.find(entry => entry.name === `alpha__${toolName}`);
+    const tool = listed.result.tools.find(entry => entry.name === publicName('alpha', toolName));
     assert.deepEqual(tool.inputSchema.required, required);
   }
-  const applicationLog = listed.result.tools.find(entry => entry.name === 'alpha__GetApplicationLog');
+  const applicationLog = listed.result.tools.find(entry => entry.name === 'alpha_get_application_log');
   assert.deepEqual(Object.keys(applicationLog.inputSchema.properties).sort(), [
     'from', 'max_results', 'messages', 'object', 'program', 'subobject', 'to', 'user'
   ]);
 
-  const read = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'beta__GetSource', arguments: { object: 'ZREAD' } } });
-  const write = await proxy.handle({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'alpha__WriteSource', arguments: { source: 'WRITE' } } });
-  const query = await proxy.handle({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'beta__RunQuery', arguments: { sql_query: 'SELECT * FROM T000' } } });
-  const system = await proxy.handle({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'alpha__GetSystemInfo', arguments: {} } });
+  const read = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'beta_get_source', arguments: { object: 'ZREAD' } } });
+  const write = await proxy.handle({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'alpha_write_source', arguments: { source: 'WRITE' } } });
+  const query = await proxy.handle({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'beta_run_query', arguments: { sql_query: 'SELECT * FROM T000' } } });
+  const system = await proxy.handle({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'alpha_get_system_info', arguments: {} } });
   assert.equal(read.result.content[0].text, 'beta:GetSource');
   assert.equal(write.result.content[0].text, 'alpha:WriteSource');
   assert.equal(query.result.content[0].text, 'beta:RunQuery');
@@ -231,7 +239,7 @@ test('merges paged tools and routes calls to the selected child', async t => {
       jsonrpc: '2.0',
       id: 7 + index,
       method: 'tools/call',
-      params: { name: `alpha__${name}`, arguments: arguments_ }
+      params: { name: publicName('alpha', name), arguments: arguments_ }
     });
     assert.equal(response.result.content[0].text, name === 'GetApplicationLog' ? 'alpha:SAP' : `alpha:${name}`);
   }
@@ -288,7 +296,7 @@ test('routes tools/call using the exact name advertised for a BAS destination', 
   assert.equal(initialized.error, undefined, `${JSON.stringify(initialized.error)} ${logs.join(' | ')}`);
   const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   assert.equal(listed.error, undefined, JSON.stringify(listed.error));
-  const tool = listed.result.tools.find(candidate => candidate.name === 'actions4d-100__WriteSource');
+  const tool = listed.result.tools.find(candidate => candidate.name === 'actions4d-100_write_source');
   assert.ok(tool, 'tools/list must publish the normalized destination namespace');
   const called = await proxy.handle({
     jsonrpc: '2.0',
@@ -307,13 +315,13 @@ test('runs LintABAP locally and returns parser findings', async t => {
 
   await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } });
   const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
-  assert.ok(listed.result.tools.some(tool => tool.name === 'alpha__LintABAP'));
+  assert.ok(listed.result.tools.some(tool => tool.name === 'alpha_lint_abap'));
   const called = await proxy.handle({
     jsonrpc: '2.0',
     id: 3,
     method: 'tools/call',
     params: {
-      name: 'alpha__LintABAP',
+      name: 'alpha_lint_abap',
       arguments: { files: [{ filename: 'zparser_error.prog.abap', source: 'blah blah.' }] }
     }
   });
@@ -333,18 +341,20 @@ test('exposes local lint when a destination tool listing fails', async t => {
   const { directory, proxy } = await fixtureProxy();
   t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
 
-  await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  // Patch before initialize so the post-initialize cache warm sees the failure.
+  await proxy.starting;
   const alpha = proxy.children.find(entry => entry.destination.name === 'alpha');
   alpha.child.listTools = async () => { throw new Error('fixture tools/list failure'); };
+  await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
 
   const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
-  assert.ok(listed.result.tools.some(tool => tool.name === 'alpha__LintABAP'));
-  assert.equal(listed.result.tools.some(tool => tool.name === 'alpha__GetSource'), false);
+  assert.ok(listed.result.tools.some(tool => tool.name === 'alpha_lint_abap'));
+  assert.equal(listed.result.tools.some(tool => tool.name === 'alpha_get_source'), false);
   const called = await proxy.handle({
     jsonrpc: '2.0',
     id: 3,
     method: 'tools/call',
-    params: { name: 'alpha__LintABAP', arguments: { files: [{ filename: 'zparser_error.prog.abap', source: 'blah blah.' }] } }
+    params: { name: 'alpha_lint_abap', arguments: { files: [{ filename: 'zparser_error.prog.abap', source: 'blah blah.' }] } }
   });
   assert.equal(called.result.isError, false);
 });
@@ -355,15 +365,15 @@ test('returns JSON-RPC errors for unknown namespaces and logs child failures', a
   t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
   await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
   await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
-  const unknown = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'missing__GetSource' } });
+  const unknown = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'missing_get_source' } });
   assert.equal(unknown.error.code, -32602);
-  const remoteError = await proxy.handle({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'alpha__GetSource', arguments: { object: 'RPC_ERROR' } } });
+  const remoteError = await proxy.handle({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'alpha_get_source', arguments: { object: 'RPC_ERROR' } } });
   assert.equal(remoteError.error.code, -32042);
   assert.ok(logs.some(message => message.includes('backend connection refused') && message.includes('password=[redacted]') && !message.includes('must-not-log')));
-  const toolError = await proxy.handle({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'beta__GetSource', arguments: { object: 'TOOL_ERROR' } } });
+  const toolError = await proxy.handle({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'beta_get_source', arguments: { object: 'TOOL_ERROR' } } });
   assert.equal(toolError.result.isError, true);
   assert.ok(logs.some(message => message.includes('backend timeout') && message.includes('token=[redacted]') && !message.includes('must-not-log')));
-  const success = await proxy.handle({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'alpha__WriteSource', arguments: { source: 'must-not-log' } } });
+  const success = await proxy.handle({ jsonrpc: '2.0', id: 6, method: 'tools/call', params: { name: 'alpha_write_source', arguments: { source: 'must-not-log' } } });
   assert.equal(success.result.content[0].text, 'alpha:WriteSource');
   assert.ok(logs.some(message => /\[alpha\] tools\/call WriteSource completed in \d+ms/.test(message)));
   assert.equal(logs.some(message => message.includes('must-not-log')), false);
@@ -372,7 +382,7 @@ test('returns JSON-RPC errors for unknown namespaces and logs child failures', a
   await new Promise(resolve => setTimeout(resolve, 25));
   // A crashed child no longer fails the call: self-healing restarts it and
   // retries once, so the request goes through to a fresh child.
-  const healed = await proxy.handle({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'alpha__GetSource' } });
+  const healed = await proxy.handle({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'alpha_get_source' } });
   assert.equal(healed?.error, undefined, `call must heal after child crash: ${JSON.stringify(healed?.error)}`);
   assert.equal(healed.result.content[0].text, 'alpha:GetSource');
   assert.ok(logs.some(message => message.includes('alpha') && message.includes('tools/call GetSource failed')));
@@ -387,13 +397,64 @@ test('stdin EOF shuts down every child process and forwards child logs', async t
   input.end([
     { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
     { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
-    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'alpha__GetSource', arguments: { emitNotification: true } } }
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'alpha_get_source', arguments: { emitNotification: true } } }
   ].map(message => JSON.stringify(message)).join('\n') + '\n');
   await serving;
   assert.ok(output.some(message => message.method === 'notifications/message' && message.params?.data === 'fixture log notification'));
   const entries = (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
   assert.equal(entries.filter(entry => entry.event === 'initialize').length, 2);
   assert.deepEqual([...new Set(entries.filter(entry => entry.event === 'term').map(entry => entry.destination))].sort(), ['alpha', 'beta']);
+});
+
+async function driveUntil(output, predicate, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!output.some(predicate) && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+}
+
+test('streams lifecycle and tool-call events to the client as MCP log notifications', async t => {
+  const { directory, proxy } = await fixtureProxy();
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+  const input = new PassThrough();
+  const output = [];
+  const serving = proxy.serve(input, line => output.push(JSON.parse(line)));
+  input.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }) + '\n');
+  await driveUntil(output, message => message.id === 1);
+  // A real client lists tools before calling one; this also guarantees the
+  // merged namespace is built before the call.
+  input.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }) + '\n');
+  await driveUntil(output, message => message.id === 2);
+  input.write(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: publicName('alpha', 'GetSource'), arguments: {} } }) + '\n');
+  await driveUntil(output, message => message.id === 3);
+  input.end();
+  await serving;
+  const logs = output.filter(message => message.method === 'notifications/message');
+  assert.ok(logs.length > 0, 'proxy events must reach the client as notifications/message');
+  assert.ok(logs.some(message => message.params.level === 'info' && String(message.params.data).includes('VSP MCP session initialized')), 'startup events buffered before initialize must flush');
+  assert.ok(logs.some(message => String(message.params.data).includes('tools/call GetSource started')), 'tool-call start must be logged');
+  assert.ok(logs.some(message => String(message.params.data).includes('tools/call GetSource completed')), 'tool-call completion must be logged');
+  assert.ok(logs.every(message => typeof message.params.logger === 'string' && MCP_LOG_LEVELS.includes(message.params.level)), 'every log notification carries a logger and a valid level');
+});
+
+test('honors logging/setLevel and keeps writing stderr regardless of level', async t => {
+  const stderr = [];
+  const { directory, proxy } = await fixtureProxy(message => stderr.push(message));
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+  const input = new PassThrough();
+  const output = [];
+  const serving = proxy.serve(input, line => output.push(JSON.parse(line)));
+  input.write(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }) + '\n');
+  await driveUntil(output, message => message.id === 1);
+  input.write(JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }) + '\n');
+  await driveUntil(output, message => message.id === 2);
+  input.write(JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'logging/setLevel', params: { level: 'error' } }) + '\n');
+  await driveUntil(output, message => message.id === 3);
+  output.length = 0;
+  input.write(JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: publicName('alpha', 'GetSource'), arguments: {} } }) + '\n');
+  await driveUntil(output, message => message.id === 4);
+  input.end();
+  await serving;
+  assert.equal(output.some(message => message.method === 'notifications/message'), false, 'info events must be suppressed at logging/setLevel=error');
+  assert.ok(stderr.some(message => message.includes('tools/call GetSource completed')), 'stderr keeps receiving every event');
 });
 
 
@@ -405,5 +466,143 @@ test('keeps healthy children when one destination fails initialization', async t
   t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
   await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
   const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
-  assert.ok(listed.result.tools.every(tool => tool.name.startsWith('healthy__')));
+  assert.ok(listed.result.tools.every(tool => tool.name.startsWith('healthy_')));
+});
+
+test('converts upstream tool names to lowercase snake_case for chat binding', () => {
+  const cases = new Map([
+    ['GetTableContents', 'get_table_contents'],
+    ['RunATCCheck', 'run_atc_check'],
+    ['GetCDSDependencies', 'get_cds_dependencies'],
+    ['GetAPIReleaseState', 'get_api_release_state'],
+    ['LintABAP', 'lint_abap'],
+    ['GetApplicationLog', 'get_application_log'],
+    ['PrepareABAPChangeSet', 'prepare_abap_change_set'],
+    ['RunRAPRegressionSuite', 'run_rap_regression_suite'],
+    ['ActivateMultiple', 'activate_multiple'],
+    ['already_snake', 'already_snake'],
+    ['lowercase', 'lowercase']
+  ]);
+  for (const [input, expected] of cases) {
+    assert.equal(snakeCaseName(input), expected, `${input} must convert to ${expected}`);
+    assert.equal(snakeCaseName(snakeCaseName(input)), expected, `${input} conversion must be idempotent`);
+  }
+});
+
+test('warms the tool cache once and serves repeat tools/list without child round trips', async t => {
+  const { directory, proxy } = await fixtureProxy();
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+  await proxy.starting;
+  const alpha = proxy.children.find(entry => entry.destination.name === 'alpha');
+  let calls = 0;
+  const original = alpha.child.listTools.bind(alpha.child);
+  alpha.child.listTools = async () => {
+    calls += 1;
+    await new Promise(resolve => setTimeout(resolve, 40));
+    return original();
+  };
+
+  await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(calls, 1, 'the post-initialize warm performs exactly one child fetch');
+
+  const first = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+  assert.equal(calls, 1, 'a cached tools/list must not fetch from the child');
+  assert.ok(first.result.tools.some(tool => tool.name === 'alpha_get_source'));
+
+  // Single-flight: two concurrent lists after a cache drop share one rebuild.
+  proxy.toolsCache = null;
+  alpha.child.toolsPromise = undefined;
+  const [second, third] = await Promise.all([
+    proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} }),
+    proxy.handle({ jsonrpc: '2.0', id: 4, method: 'tools/list', params: {} })
+  ]);
+  assert.equal(calls, 2, 'concurrent tools/list must share a single child fetch');
+  assert.equal(second.result.tools.length, third.result.tools.length);
+});
+
+test('refetches tool listings after a self-healing restart', async t => {
+  const { directory, proxy } = await fixtureProxy();
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+  await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+
+  const alpha = proxy.children.find(entry => entry.destination.name === 'alpha');
+  const exit = once(alpha.child.process, 'exit');
+  alpha.child.process.kill('SIGKILL');
+  await exit;
+  const healed = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'alpha_get_source', arguments: {} } });
+  assert.equal(healed?.error, undefined);
+  assert.equal(proxy.toolsCache, null, 'a replacement child must invalidate the merged cache');
+  const listed = await proxy.handle({ jsonrpc: '2.0', id: 4, method: 'tools/list', params: {} });
+  assert.ok(listed.result.tools.some(tool => tool.name === 'alpha_get_source'));
+  assert.ok(proxy.toolsCache, 'the rebuilt listing must be cached again');
+});
+
+test('upstream tools/list_changed notifications invalidate the cache', async t => {
+  const { directory, proxy } = await fixtureProxy();
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+  await proxy.starting;
+  const alpha = proxy.children.find(entry => entry.destination.name === 'alpha');
+  let calls = 0;
+  const original = alpha.child.listTools.bind(alpha.child);
+  alpha.child.listTools = async () => { calls += 1; return original(); };
+
+  await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  await new Promise(resolve => setTimeout(resolve, 150));
+  assert.equal(calls, 1);
+
+  // The fixture emits notifications/tools/list_changed before replying, so
+  // both cache layers are cleared by the time the call resolves.
+  await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'alpha_get_source', arguments: { emitListChanged: true } } });
+  const listed = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} });
+  assert.equal(calls, 2, 'a list_changed notification must force a refetch');
+  assert.ok(listed.result.tools.some(tool => tool.name === 'alpha_get_source'));
+});
+
+test('emits tools/list_changed to the client after a self-healing restart', async t => {
+  const { directory, proxy } = await fixtureProxy();
+  t.after(async () => { await rm(directory, { recursive: true, force: true }); });
+  const input = new PassThrough();
+  const output = [];
+  const serving = proxy.serve(input, line => output.push(JSON.parse(line)));
+  input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`);
+  input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })}\n`);
+  await new Promise(resolve => setTimeout(resolve, 150));
+
+  const alpha = proxy.children.find(entry => entry.destination.name === 'alpha');
+  const exit = once(alpha.child.process, 'exit');
+  alpha.child.process.kill('SIGKILL');
+  await exit;
+  input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'alpha_get_source', arguments: {} } })}\n`);
+  // A generous, restart-aware wait: under a loaded parallel test run the
+  // SIGKILL -> restart -> retry cycle can take several seconds, and ending
+  // the input stream too early used to race the in-flight restart.
+  const deadline = Date.now() + 30000;
+  while (!output.some(message => message.id === 3) && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  input.end();
+  await serving;
+  const healed = output.find(message => message.id === 3);
+  assert.ok(healed && !healed.error, `the healed call must succeed: ${healed ? JSON.stringify(healed.error || healed.result).slice(0, 200) : 'no response with id 3'}`);
+  assert.ok(output.some(message => message.method === 'notifications/tools/list_changed'), 'the client must be told the tool surface changed');
+});
+
+test('assembles children in destination order regardless of relay timing', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-vsp-start-order-'));
+  const log = join(directory, 'children.log');
+  const destinations = ['zz-relay', 'aa-relay'].map(name => ({
+    name, url: `http://${name}.dest`, client: '001', authentication: 'BasicAuthentication', proxyType: 'Internet'
+  }));
+  const proxy = new MCPProxy({ binary: fixture, destinations, env: { ...process.env, FAKE_LOG: log }, log: () => {} });
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+  proxy.start();
+  await proxy.starting;
+  assert.deepEqual(proxy.children.map(entry => entry.destination.name), ['zz-relay', 'aa-relay'], 'children keep destination order');
+  const initialized = await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  assert.equal(initialized.result.serverInfo.name, 'zz-relay');
+  const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+  assert.ok(listed.result.tools.some(tool => tool.name.startsWith('zz-relay_')));
+  assert.ok(listed.result.tools.some(tool => tool.name.startsWith('aa-relay_')));
 });

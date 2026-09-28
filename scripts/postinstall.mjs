@@ -2,7 +2,6 @@ import { open, readFile } from 'node:fs/promises';
 import { closeSync, openSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureGo } from './ensure-go.mjs';
 import { installBinary } from '../src/binary.mjs';
 import { runSetup } from '../src/setup.mjs';
 import { installUserCopilotAssets } from './install-user-copilot-assets.mjs';
@@ -11,6 +10,8 @@ import { ReadStream as TTYReadStream, WriteStream as TTYWriteStream } from 'node
 import { homedir } from 'node:os';
 import { colorText, formatStatus } from '../src/terminal-ui.mjs';
 import { brandedEnvValue, withBrandedEnvironment } from '../src/branding.mjs';
+import { generatedServerName } from '../src/mcp-config.mjs';
+import { redactText } from '../src/redact.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
@@ -76,10 +77,10 @@ async function runCopilotAssetInstall() {
     await announce([
       'Optional Copilot setup is waiting for your choice.',
       '',
-      'Press Enter to install the bundled agents and all skills in the path shown below; type n then press Enter to skip.',
+      'Type y then press Enter to install the bundled agents and all skills in the path shown below; press Enter alone to skip.',
       '',
-      `${colorText('✅ Press Enter', 'green', true)} to install the bundled agents and all skills.`,
-      `${colorText('⏭️  Type n then Enter', 'yellow', true)} to skip this optional step.`,
+      `${colorText('✅ Type y then Enter', 'green', true)} to install the bundled agents and all skills.`,
+      `${colorText('⏭️  Press Enter', 'yellow', true)} to skip this optional step (default).`,
       '',
       `${colorText('📁 Target folder:', 'cyan', true)}`,
       `   ${copilotRoot}`,
@@ -88,11 +89,13 @@ async function runCopilotAssetInstall() {
     const prompt = createInterface({ input: terminal.input, output: terminal.output });
     let answer;
     try {
-      answer = await prompt.question(`${colorText('🤖 Install the bundled agents and all skills?', 'magenta', terminal.output)} ${colorText('[Y/n]', 'yellow', terminal.output)} `);
+      answer = await prompt.question(`${colorText('🤖 Install the bundled agents and all skills?', 'magenta', terminal.output)} ${colorText('[y/N]', 'yellow', terminal.output)} `);
     } finally {
       prompt.close();
     }
-    if (/^n(?:o)?$/i.test(answer.trim())) {
+    // Default is skip: writing instruction files into ~/.copilot affects
+    // every Copilot session on the machine, so it needs an explicit yes.
+    if (!/^y(?:es)?$/i.test(answer.trim())) {
       await announce('Copilot agent and skills were skipped. Your files were not changed.', 'info');
       return;
     }
@@ -110,8 +113,7 @@ async function runCopilotAssetInstall() {
 function probeCell(destination) {
   const probe = destination.probe || {};
   if (probe.status === 'skipped') return { text: 'SKIPPED (probe disabled)', color: 'yellow' };
-  const error = destination.source === 'cloud-foundry' ? '' : String(probe.error || '')
-    .replace(/(authorization|cookie|password|secret|token)\s*[:=]\s*[^\s,;]+/gi, '$1=[redacted]')
+  const error = destination.source === 'cloud-foundry' ? '' : redactText(probe.error || '')
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .replace(/\s+/g, ' ')
     .slice(0, 100);
@@ -129,7 +131,7 @@ export function destinationTable(destinations, registeredNames) {
   const headings = ['Destination', 'Source', 'Client', 'Authentication', 'ADT probe', 'MCP server'];
   const rows = destinations.map(destination => {
     const probe = probeCell(destination);
-    const registered = registeredNames.has(destination.serverName || destination.name);
+    const registered = registeredNames.has(generatedServerName(destination.serverName || destination.name));
     const source = destination.source === 'cloud-foundry'
       ? `CF ${destination.cf?.destinationInstanceName || 'unknown instance'}`
       : 'BAS';
@@ -178,7 +180,7 @@ async function announceSetup(result) {
 
   const selected = result.selected || [];
   const destinationsByServer = new Map(selected.map(destination => [
-    destination.serverName || destination.name,
+    generatedServerName(destination.serverName || destination.name),
     destination
   ]));
   const registeredNames = new Set(servers.map(([name]) => name));
@@ -218,17 +220,14 @@ async function announceSetup(result) {
 async function main() {
   if (process.env.npm_config_ignore_scripts === 'true') return;
 
+  // Go is intentionally NOT provisioned here: the installed package never
+  // runs `go` (only the repository-only build:vsp script does), so a toolchain
+  // download at install time was pure cost. The pinned, checksum-verified VSP
+  // binary ships with the package; the download below is the fallback.
   try {
     if (brandedEnvValue(runtimeEnv, 'BINARY')) {
       await announce('Using the SAP_AI_DEV_TOOLKIT_BINARY override.', 'info');
     } else {
-      await announce('Checking for Go. The supported version installs automatically if needed; this may take a few minutes.', 'progress');
-      try {
-        await ensureGo();
-        await announce('Go is ready.', 'success');
-      } catch (error) {
-        throw new Error(`Go provisioning failed: ${error.message}`);
-      }
       await announce('Preparing the pinned VSP runtime for this platform.', 'progress');
       try {
         await installBinary(pkg, { env: runtimeEnv });
@@ -239,7 +238,7 @@ async function main() {
     }
   } catch (error) {
     await announce(error.message, 'error');
-    await announce('Go is provisioned automatically. Set SAP_AI_DEV_TOOLKIT_BINARY only when supplying a trusted prebuilt VSP executable.', 'info');
+    await announce('Set SAP_AI_DEV_TOOLKIT_BINARY only when supplying a trusted prebuilt VSP executable.', 'info');
     process.exitCode = 1;
     return;
   }

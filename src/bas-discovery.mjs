@@ -92,9 +92,15 @@ export function sanitizeChildEnv(input = process.env) {
     if (!SECRET_KEY.test(key)) env[key] = value;
   }
   env.SAP_PROXY_CONTEXTID_GUARD = 'true';
-  const proxy = env.HTTP_PROXY || env.http_proxy || DEFAULT_PROXY;
-  if (!env.HTTP_PROXY && !env.http_proxy) env.HTTP_PROXY = proxy;
-  if (!env.HTTPS_PROXY && !env.https_proxy) env.HTTPS_PROXY = proxy;
+  // The BAS dev-space proxy (127.0.0.1:8887) is only implied inside BAS
+  // (H2O_URL present). Outside a dev space the default would route every
+  // child request — including SAP Basic credentials — to whatever local
+  // process happens to own that port, so it is not applied there.
+  const proxy = env.HTTP_PROXY || env.http_proxy || (env.H2O_URL ? DEFAULT_PROXY : undefined);
+  if (proxy) {
+    if (!env.HTTP_PROXY && !env.http_proxy) env.HTTP_PROXY = proxy;
+    if (!env.HTTPS_PROXY && !env.https_proxy) env.HTTPS_PROXY = proxy;
+  }
   const noProxyKey = env.NO_PROXY != null ? 'NO_PROXY' : (env.no_proxy != null ? 'no_proxy' : 'NO_PROXY');
   const entries = String(env[noProxyKey] || '').split(',').map(value => value.trim()).filter(Boolean).filter(value => !value.toLowerCase().includes('.dest'));
   env[noProxyKey] = entries.join(',');
@@ -203,11 +209,21 @@ export async function discoverDestinations(options = {}) {
   const configuredProxy = brandedProxy !== undefined ? String(brandedProxy) : (env.HTTP_PROXY ?? env.http_proxy);
   const proxyUrl = configuredProxy !== undefined ? configuredProxy : DEFAULT_PROXY;
   const skipProbe = String(brandedEnvValue(env, 'SKIP_PROBE') || '').toLowerCase() === 'true' || options.skipProbe;
-  const result = [];
-  for (const destination of normalized.sort((a, b) => a.name.localeCompare(b.name))) {
-    const probe = await probeADT(destination, { ...options, proxyUrl, skipProbe });
-    result.push({ ...destination, probe });
-  }
+  const sorted = normalized.sort((a, b) => a.name.localeCompare(b.name));
+  // Probes run in parallel so startup and setup pay one probe round trip
+  // instead of one per destination; the pool is capped to avoid saturating
+  // the BAS proxy with large destination counts. Workers claim destinations
+  // in index order (synchronously until the first await), which keeps the
+  // probe invocation and result order deterministic.
+  const result = new Array(sorted.length);
+  let cursor = 0;
+  const probeWorker = async () => {
+    while (cursor < sorted.length) {
+      const index = cursor++;
+      result[index] = { ...sorted[index], probe: await probeADT(sorted[index], { ...options, proxyUrl, skipProbe }) };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(8, sorted.length) }, () => probeWorker()));
   return result;
 }
 

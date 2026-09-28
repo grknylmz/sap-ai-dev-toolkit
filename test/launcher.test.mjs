@@ -169,15 +169,16 @@ test('doctor preflights the failing ADT endpoint through the runtime relay and r
       }]));
       return;
     }
+    if (requestPath === '/sap/bc/adt/discovery' && request.method === 'GET' && request.headers['x-csrf-token'] === 'Fetch') {
+      // Real SAP issues CSRF tokens from GET-capable endpoints only.
+      response.writeHead(200, {
+        'x-csrf-token': 'doctor-token',
+        'set-cookie': 'sap-session=doctor-session; Path=/'
+      });
+      response.end('<ok/>');
+      return;
+    }
     if (requestPath === '/sap/bc/adt/datapreview/freestyle') {
-      if (request.method === 'GET' && request.headers['x-csrf-token'] === 'Fetch') {
-        response.writeHead(200, {
-          'x-csrf-token': 'doctor-token',
-          'set-cookie': 'sap-session=doctor-session; Path=/'
-        });
-        response.end('<ok/>');
-        return;
-      }
       if (request.method === 'POST'
         && request.headers['x-csrf-token'] === 'doctor-token'
         && String(request.headers.cookie).includes('sap-session=doctor-session')) {
@@ -217,14 +218,14 @@ test('doctor preflights the failing ADT endpoint through the runtime relay and r
   assert.ok(report.checks.some(check => check.stage === 'SAP system check' && check.status === 'passed'));
   assert.ok(report.checks.some(check => check.stage === 'MCP config repair' && check.status === 'passed' && /1 managed BAS entry repaired/.test(check.detail)));
   assert.ok(report.checks.some(check => check.stage === 'MCP tools/list' && /total MCP tools returned; chat-picker binding is host-managed/.test(check.detail)));
-  assert.ok(requests.some(request => request.method === 'GET' && request.path === '/sap/bc/adt/datapreview/freestyle' && request.csrf === 'Fetch'));
+  assert.ok(requests.some(request => request.method === 'GET' && request.path === '/sap/bc/adt/discovery' && request.csrf === 'Fetch'));
   assert.ok(requests.some(request => request.method === 'POST' && request.path === '/sap/bc/adt/datapreview/freestyle' && request.csrf === 'doctor-token' && String(request.cookie).includes('sap-session=doctor-session')));
   const repairedConfig = JSON.parse(await readFile(configPath, 'utf8'));
   assert.equal(repairedConfig.servers['doctor-system'].env.H2O_URL, `http://127.0.0.1:${server.address().port}`);
   assert.deepEqual(repairedConfig.servers.ActionS4D_100, config.servers.ActionS4D_100);
 });
 
-test('doctor stops before GetSystemInfo when the runtime CSRF preflight has no session cookie', async t => {
+test('doctor stops before GetSystemInfo when the runtime CSRF preflight receives no token', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-doctor-csrf-missing-cookie-'));
   const configPath = join(directory, 'mcp.json');
   await writeFile(configPath, JSON.stringify({ servers: {} }));
@@ -245,8 +246,9 @@ test('doctor stops before GetSystemInfo when the runtime CSRF preflight has no s
       }]));
       return;
     }
-    if (requestPath === '/sap/bc/adt/datapreview/freestyle') {
-      response.writeHead(200, { 'x-csrf-token': 'orphan-token' });
+    if (requestPath === '/sap/bc/adt/discovery' && request.method === 'GET' && request.headers['x-csrf-token'] === 'Fetch') {
+      // Issues no token at all: the relay must fail closed before any write.
+      response.writeHead(200);
       response.end('<ok/>');
       return;
     }
@@ -276,7 +278,7 @@ test('doctor stops before GetSystemInfo when the runtime CSRF preflight has no s
   assert.equal(report.ok, false);
   assert.ok(report.checks.some(check => check.stage === 'BAS relay CSRF preflight' && check.status === 'failed' && /cookies=0; usableSession=false/.test(check.detail)));
   assert.ok(report.checks.some(check => check.stage === 'SAP system check' && check.status === 'skipped' && /validated BAS proxy tunnel credential override/.test(check.detail)));
-  assert.equal(requests.some(request => request.method === 'GET' && request.path === '/sap/bc/adt/datapreview/freestyle' && request.csrf === 'Fetch'), true);
+  assert.equal(requests.some(request => request.method === 'GET' && request.path === '/sap/bc/adt/discovery' && request.csrf === 'Fetch'), true);
   assert.equal(requests.some(request => request.method === 'POST' && request.path === '/sap/bc/adt/datapreview/freestyle'), false, 'doctor must not call GetSystemInfo after a failed preflight');
 });
 

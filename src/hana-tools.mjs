@@ -7,7 +7,11 @@ const MAX_COLUMNS = 40;
 const MAX_FILTERS = 20;
 const MAX_SELECTED_COLUMN_WIDTH = 8192;
 const UNBOUNDED_COLUMN_TYPES = new Set(['BLOB', 'CLOB', 'NCLOB', 'BINARY', 'VARBINARY', 'ST_GEOMETRY', 'ST_POINT']);
-const SENSITIVE_COLUMN_NAME = /(?:PASS(?:WORD|WD)|SECRET|(?:ACCESS|REFRESH|AUTH)?_?TOKEN|API_?KEY|PRIVATE_?KEY|CREDENTIAL)/i;
+// Denylist of credential-like column names. This is a heuristic — the real
+// control is the dedicated read-only HANA identity — but it keeps obvious
+// secret material (password hashes, salts, signatures, certificates, JWTs,
+// session ids) out of tool results even under that identity.
+const SENSITIVE_COLUMN_NAME = /(?:PASS(?:WORD|WD)?|PWD|PASSPHRASE|SECRET|CREDENTIAL|(?:ACCESS|REFRESH|AUTH|SESSION)?_?TOKEN|API_?KEY|ACCESS_?KEY|PRIVATE_?KEY|SIGNATURE|SALT|CERT(?:IFICATE)?|JWT|BEARER)/i;
 const SAFE_INSPECTION_ERRORS = new Set([
   'HANA result is too large to return safely; request fewer rows or columns.',
   'The requested object was not found in the bound HDI schema.',
@@ -181,7 +185,10 @@ async function readRows(database, schema, args) {
   const where = conditions.length ? ` WHERE ${conditions.join(' AND ')}` : '';
   const sql = `SELECT ${selected} FROM ${quoteHanaIdentifier(schema)}.${quoteHanaIdentifier(args.objectName)}${where}${order} LIMIT ${args.limit}`;
   const values = args.filters.map(filter => filter.value);
-  const rows = rowsOf(await database.query(sql, values));
+  // Defense in depth: the SQL LIMIT and the zod cap already bound the read,
+  // but the returned rows are sliced again so no future query-shape change
+  // can smuggle more than HANA_MAX_ROWS into a tool result.
+  const rows = rowsOf(await database.query(sql, values)).slice(0, HANA_MAX_ROWS);
   return {
     schema,
     ...target,

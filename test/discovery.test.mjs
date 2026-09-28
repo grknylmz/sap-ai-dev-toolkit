@@ -47,6 +47,31 @@ test('accepts the previous destination environment variable during upgrades', as
   });
   assert.deepEqual(destinations.map(destination => destination.name), ['legacy-system']);
 });
+
+test('probes destinations concurrently while preserving order', async () => {
+  const body = [{ Name: 'c-system' }, { Name: 'a-system' }, { Name: 'b-system' }];
+  const started = [];
+  const release = [];
+  const probeImpl = url => new Promise(resolve => {
+    started.push(url);
+    release.push(() => resolve({ status: 200 }));
+  });
+  const discovery = discoverDestinations({ body, env: {}, probeImpl });
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(started.length, 3, 'all probes must be in flight at once');
+  assert.deepEqual(started, [
+    'http://a-system.dest/sap/bc/adt/discovery',
+    'http://b-system.dest/sap/bc/adt/discovery',
+    'http://c-system.dest/sap/bc/adt/discovery'
+  ], 'probes start in sorted destination order');
+  for (const resolve of release) resolve();
+  const destinations = await discovery;
+  assert.deepEqual(destinations.map(destination => [destination.name, destination.probe.status]), [
+    ['a-system', 'available'],
+    ['b-system', 'available'],
+    ['c-system', 'available']
+  ]);
+});
 test('parses sample-style destination records and enables every ADT heartbeat response', async () => {
   const body = [
     {

@@ -114,6 +114,51 @@ export async function deleteManagedCloudFoundryServiceKeys({ env = process.env, 
   return { warnings };
 }
 
+async function listToolkitServiceKeys({ env = process.env, spaceGuid, execFileImpl = nodeExecFile } = {}) {
+  const options = { env, execFileImpl };
+  const keys = [];
+  let path = `/v3/service_credential_instances?space_guids=${encodeURIComponent(spaceGuid)}&type=key&per_page=500`;
+  const visited = new Set();
+  while (path && !visited.has(path)) {
+    visited.add(path);
+    const page = await cfJson(path, options);
+    if (!Array.isArray(page?.resources)) return keys;
+    for (const resource of page.resources) {
+      const name = text(resource?.name);
+      const instanceGuid = resource?.relationships?.service_instance?.data?.guid;
+      if (!name.startsWith(KEY_PREFIX) || !instanceGuid) continue;
+      keys.push({ keyName: name, instanceGuid: String(instanceGuid) });
+    }
+    path = page?.metadata?.pagination?.next?.href ? apiPath(page.metadata.pagination.next.href) : '';
+  }
+  return keys;
+}
+
+// Reconcile toolkit-created service keys against the references recorded in
+// the MCP config. A Destination-instance service key exposes client
+// credentials for every destination in the instance, so a key orphaned by an
+// interrupted setup must not linger unnoticed.
+export async function findOrphanedCloudFoundryServiceKeys({ env = process.env, spaceGuid, managedKeys = [], execFileImpl = nodeExecFile } = {}) {
+  const listed = await listToolkitServiceKeys({ env, spaceGuid, execFileImpl });
+  const referenced = new Set((managedKeys || [])
+    .filter(ref => ref?.spaceGuid === spaceGuid && ref?.instanceGuid && ref?.keyName)
+    .map(ref => `${ref.instanceGuid}\0${ref.keyName}`));
+  const orphans = [];
+  const instanceNames = new Map();
+  for (const key of listed) {
+    if (referenced.has(`${key.instanceGuid}\0${key.keyName}`)) continue;
+    if (!instanceNames.has(key.instanceGuid)) {
+      try {
+        instanceNames.set(key.instanceGuid, text((await cfJson(`/v3/service_instances/${encodeURIComponent(key.instanceGuid)}`, { env, execFileImpl })).name));
+      } catch {
+        instanceNames.set(key.instanceGuid, '');
+      }
+    }
+    orphans.push({ kind: 'toolkit-created', spaceGuid, instanceGuid: key.instanceGuid, instanceName: instanceNames.get(key.instanceGuid) || key.instanceGuid, keyName: key.keyName });
+  }
+  return orphans;
+}
+
 async function cfJson(path, options) {
   const value = await runCf(['curl', path], options);
   try {
@@ -493,10 +538,19 @@ function probeResult(status) {
   return { status: 'unavailable', available: false, httpStatus: status };
 }
 
+function isLoopbackHostname(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  return host === '127.0.0.1' || host === 'localhost' || host === '::1';
+}
+
 async function probeRecord(record, env, { forcedProxy, fetchImpl = undiciFetch } = {}) {
   const target = new URL('/sap/bc/adt/discovery', record.url);
   const headers = { accept: 'application/xml,text/xml,*/*' };
-  if (record.authentication === 'BasicAuthentication') {
+  // Never send SAP Basic credentials over cleartext HTTP to a remote host:
+  // an http:// destination URL is allowed for reachability probing, but the
+  // probe runs unauthenticated then (401/403 still counts as reachable).
+  const plaintextRemote = target.protocol === 'http:' && !isLoopbackHostname(target.hostname);
+  if (record.authentication === 'BasicAuthentication' && !plaintextRemote) {
     headers.authorization = `Basic ${Buffer.from(`${record.user}:${record.password}`).toString('base64')}`;
   }
   let dispatcher;
