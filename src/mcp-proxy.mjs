@@ -34,6 +34,66 @@ const APPLICATION_LOG_SCHEMA = {
 };
 const APPLICATION_LOG_DESCRIPTION = 'Read SAP application log (SLG1) entries. Results are newest first and limited to 100 by default; set messages=true to include log message details.';
 
+// Keep the default public VSP surface small enough for developer-lifecycle use.
+// Hidden upstream tools can still be used by local workflow tools when needed.
+export const PUBLIC_VSP_TOOLS = new Set([
+  'Activate',
+  'ActivateMultiple',
+  'CompareSource',
+  'CreateTransport',
+  'DebuggerAttach',
+  'DebuggerDetach',
+  'DebuggerGetStack',
+  'DebuggerGetVariables',
+  'DebuggerStep',
+  'EditSource',
+  'FindDefinition',
+  'FindReferences',
+  'GetAPIReleaseState',
+  'GetBreakpoints',
+  'GetCDSDependencies',
+  'GetCDSElementInfo',
+  'GetCDSImpactAnalysis',
+  'GetClass',
+  'GetClassComponents',
+  'GetClassInclude',
+  'GetClassInfo',
+  'GetConnectionInfo',
+  'GetContext',
+  'GetFeatures',
+  'GetFunction',
+  'GetFunctionGroup',
+  'GetInactiveObjects',
+  'GetInclude',
+  'GetInstalledComponents',
+  'GetInterface',
+  'GetPackage',
+  'GetProgram',
+  'GetSource',
+  'GetSystemInfo',
+  'GetTable',
+  'GetTableContents',
+  'GetTransport',
+  'GetTransportInfo',
+  'GetUserTransports',
+  'GrepObjects',
+  'GrepPackages',
+  'ListDependencies',
+  'ListTransports',
+  'PrettyPrint',
+  'RunATCCheck',
+  'RunQuery',
+  'RunUnitTests',
+  'SearchObject',
+  'SetBreakpoint',
+  'SyntaxCheck',
+  'WriteSource'
+]);
+
+function exposeVspTool(tool) {
+  return PUBLIC_VSP_TOOLS.has(tool?.name);
+}
+
 function applicationLogArguments(arguments_ = {}) {
   const filters = arguments_ && typeof arguments_ === 'object' && !Array.isArray(arguments_) ? arguments_ : {};
   const params = { type: 'application_log' };
@@ -358,6 +418,7 @@ export class MCPProxy {
             });
           }
 
+          if (!exposeVspTool(tool)) continue;
           const name = `${slug}__${tool.name}`;
           this.namespace.set(name, { entry, upstream: tool.name });
           merged.push({ ...tool, name, description: `${tool.description || tool.name} [destination: ${entry.destination.name}]` });

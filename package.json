@@ -1,7 +1,7 @@
 {
   "name": "sap-ai-dev-toolkit",
-  "version": "0.3.4",
-  "description": "SAP AI development toolkit for BAS, ABAP, RAP, CAP, Fiori, UI5, and MCP",
+  "version": "0.4.2",
+  "description": "SAP AI development toolkit for BAS, ABAP, RAP, CAP, HANA Cloud, Fiori, UI5, and MCP",
   "author": "Gurkan Yilmaz",
   "type": "module",
   "engines": {
@@ -9,16 +9,21 @@
   },
   "dependencies": {
     "@abaplint/core": "2.119.0",
+    "@modelcontextprotocol/sdk": "1.30.1",
+    "@sap/hana-client": "2.30.27",
     "terminal-kit": "^3.1.4",
-    "undici": "^6.21.3"
+    "undici": "^6.21.3",
+    "zod": "4.6.5"
   },
   "bin": {
-    "sap-ai-dev": "src/launcher.mjs"
+    "sap-ai-dev": "src/launcher.mjs",
+    "sap-ai-hana": "src/hana-inspector.mjs"
   },
   "scripts": {
     "postinstall": "node scripts/postinstall.mjs",
     "install:local": "node scripts/install-local.mjs",
     "test": "node --test test/*.test.mjs",
+    "test:live:s4h": "SAP_AI_DEV_LIVE_S4H=1 node --test test/live-s4h.test.mjs",
     "test:visibility": "node --test test/setup.test.mjs test/terminal-ui.test.mjs",
     "test:mutation": "node scripts/mutation-terminal-ui.mjs",
     "publish:npm": "node scripts/publish-npm.mjs",

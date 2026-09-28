@@ -70,7 +70,7 @@ function runPostinstallInPty(env, keys, assetsAnswer = '\r') {
         selectionSent = true;
         child.stdin.write(keys);
       }
-      if (!assetsAnswerSent && stdout.includes('Install the bundled agents and eleven skills')) {
+      if (!assetsAnswerSent && stdout.includes('Install the bundled agents and all skills')) {
         assetsAnswerSent = true;
         child.stdin.write(assetsAnswer);
       }
@@ -90,6 +90,7 @@ function runPostinstallInPty(env, keys, assetsAnswer = '\r') {
 async function assertUserCopilotAssets(home) {
   const copilotRoot = join(home, '.copilot');
   assert.equal((await stat(join(copilotRoot, 'agents', 'abap-developer.agent.md'))).isFile(), true);
+  assert.equal((await stat(join(copilotRoot, 'agents', 'hana-cloud-hdi-specialist.agent.md'))).isFile(), true);
   const skillNames = (await readdir(join(copilotRoot, 'skills'))).sort();
   assert.deepEqual(skillNames, [
     'abap-debugging',
@@ -98,6 +99,9 @@ async function assertUserCopilotAssets(home) {
     'abap-testing-quality',
     'cds-development',
     'clean-core-extensibility',
+    'hana-cloud-inspection',
+    'hana-cloud-native-development',
+    'hana-cloud-validation',
     'rap-development',
     'rap-service-delivery',
     'sap-sdlc-orchestration',
@@ -279,13 +283,13 @@ test('global postinstall completes BAS selection before optional Copilot assets'
   const declineLogs = `${declined.stdout}\n${declined.stderr}`;
   assert.match(declineLogs, /Configured 0 MCP servers/);
   assert.match(declineLogs, /\[Y\/n\]/);
-  assert.match(declineLogs, /Press Enter to install the bundled agents and eleven skills in the path shown below; type n then press Enter to skip/);
+  assert.match(declineLogs, /Press Enter to install the bundled agents and all skills in the path shown below; type n then press Enter to skip/);
   assert.match(declineLogs, /🤖 sap-ai-dev-toolkit/);
   assert.match(declineLogs, /\u001b\[1;35m/);
   assert.match(declineLogs, /Optional Copilot setup is waiting for your choice/);
   assert.match(declineLogs, /Copilot agent and skills were skipped\. Your files were not changed/);
   assert.ok(declineLogs.indexOf('Optional Copilot setup is waiting for your choice') > declineLogs.indexOf('Configured 0 MCP servers'), declineLogs);
-  assert.ok(declineLogs.indexOf('Install the bundled agents and eleven skills') > declineLogs.indexOf('Optional Copilot setup is waiting for your choice'), declineLogs);
+  assert.ok(declineLogs.indexOf('Install the bundled agents and all skills') > declineLogs.indexOf('Optional Copilot setup is waiting for your choice'), declineLogs);
   assert.ok(declineLogs.indexOf('No MCP server entries are configured for this add-on.') > declineLogs.indexOf('Copilot agent and skills were skipped'), declineLogs);
   assert.ok(declineLogs.includes(`MCP config file: ${config}`), declineLogs);
   const configAfterDecline = JSON.parse(await readFile(config, 'utf8'));
@@ -297,12 +301,12 @@ test('global postinstall completes BAS selection before optional Copilot assets'
   assert.equal(accepted.selectionSent, true, accepted.stdout);
   assert.equal(accepted.assetsAnswerSent, true, accepted.stdout);
   const acceptLogs = `${accepted.stdout}\n${accepted.stderr}`;
-  assert.ok(acceptLogs.indexOf('Install the bundled agents and eleven skills') > acceptLogs.indexOf('Configured 1 MCP server'), acceptLogs);
-  assert.match(acceptLogs, /Installed 15 Copilot files/);
-  assert.ok(acceptLogs.indexOf('Installation configuration summary') > acceptLogs.indexOf('Installed 15 Copilot files'), acceptLogs);
+  assert.ok(acceptLogs.indexOf('Install the bundled agents and all skills') > acceptLogs.indexOf('Configured 1 MCP server'), acceptLogs);
+  assert.match(acceptLogs, /Installed 19 Copilot files/);
+  assert.ok(acceptLogs.indexOf('Installation configuration summary') > acceptLogs.indexOf('Installed 19 Copilot files'), acceptLogs);
   assert.ok(acceptLogs.includes(`MCP config file: ${config}`), acceptLogs);
   assert.ok(acceptLogs.includes('Destination: BAS · alpha-system · client 100 · Basic'), acceptLogs);
-  assert.ok(acceptLogs.includes('Launch: stdio · sap-ai-dev'), acceptLogs);
+  assert.match(acceptLogs, /Launch: stdio · (?:[^\r\n]*[\\/])?sap-ai-dev(?:\.cmd)?(?:\r?\n|$)/, acceptLogs);
   assert.ok(acceptLogs.includes('Environment keys: H2O_URL, SAP_AI_DEV_TOOLKIT_DESTINATION, SAP_ALLOW_TRANSPORTABLE_EDITS'), acceptLogs);
   const configAfterAccept = JSON.parse(await readFile(config, 'utf8'));
   assert.deepEqual(Object.values(configAfterAccept.servers)

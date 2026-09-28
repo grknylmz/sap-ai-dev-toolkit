@@ -61,6 +61,23 @@ test('writes source-qualified CF entries beside same-named BAS destinations', ()
   assert.equal(onPremise['cf:space-one:onprem-instance:shared'].env.BAS_CF_CONNECTIVITY_KEY, 'connectivity-key');
 });
 
+test('stores and reconciles the MCP launcher executable location', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-launcher-location-'));
+  const path = join(directory, 'mcp.json');
+  const command = join(directory, 'sap-ai-dev');
+  await writeFile(command, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  await writeFile(path, JSON.stringify({ servers: { userServer: { command: 'custom-server' } } }));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const env = { H2O_URL: 'http://h2o.example', PATH: directory };
+  const installed = await installMcpConfig([bas], { env, path });
+  assert.equal(installed.servers.shared.command, command);
+  assert.equal((await readMcpConfig(path)).servers.shared.command, command);
+
+  await installMcpConfig([], { env, path });
+  assert.deepEqual(Object.keys((await readMcpConfig(path)).servers), ['userServer']);
+});
+
 test('extracts key references only from package-managed Cloud Foundry entries', () => {
   const cloudFoundry = buildMcpEntries([
     cfDestination('space-one', 'instance-one', 'destination-key', 'OnPremise')
@@ -100,6 +117,17 @@ test('builds SAP development companion MCP entries', () => {
   assert.throws(() => buildSapDevelopmentMcpEntries(['missing-tool']), /Unknown SAP development MCP server id/);
 });
 
+test('configures the HANA inspector without persisting credentials', () => {
+  const entry = buildSapDevelopmentMcpEntries(['hana-cloud-inspector'])['hana-cloud-inspector'];
+  assert.equal(entry.command, 'npx');
+  assert.deepEqual(entry.args, ['--yes', '--ignore-scripts', '--package=sap-ai-dev-toolkit', 'sap-ai-hana']);
+  assert.equal(entry.BAS_EXT_KIND, 'sap-development-companion');
+  assert.equal(entry.displayName, 'HANA Cloud inspector');
+  assert.equal(entry.env, undefined);
+  assert.doesNotMatch(JSON.stringify(entry), /"(?:HANA_RO_PASSWORD|VCAP_SERVICES)"\s*:/);
+  assert.doesNotMatch(JSON.stringify(entry), /"(?:password|pwd)"\s*:/i);
+});
+
 test('installs and removes SAP development companion entries', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-tools-config-'));
   const path = join(directory, 'mcp.json');
@@ -118,6 +146,35 @@ test('installs and removes SAP development companion entries', async t => {
   await installMcpConfig([], { env: { H2O_URL: 'http://h2o.example' }, path });
   const cleared = await readMcpConfig(path);
   assert.deepEqual(Object.keys(cleared.servers), ['userServer']);
+});
+
+test('installs and removes the HANA inspector without changing unrelated MCP servers', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-hana-config-'));
+  const path = join(directory, 'mcp.json');
+  const initial = {
+    custom: true,
+    servers: { userServer: { type: 'stdio', command: 'custom-server' } }
+  };
+  await writeFile(path, JSON.stringify(initial));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const installed = await installMcpConfig([], {
+    env: { H2O_URL: 'http://h2o.example' },
+    path,
+    sapDevelopmentServers: ['hana-cloud-inspector']
+  });
+  assert.deepEqual(Object.keys(installed.servers), ['hana-cloud-inspector']);
+  const configured = await readMcpConfig(path);
+  assert.deepEqual(Object.keys(configured.servers).sort(), ['hana-cloud-inspector', 'userServer']);
+  assert.equal(configured.custom, true);
+  assert.equal(configured.servers['hana-cloud-inspector'].env, undefined);
+  assert.doesNotMatch(JSON.stringify(configured), /"(?:HANA_RO_PASSWORD|VCAP_SERVICES)"\s*:/);
+  assert.doesNotMatch(JSON.stringify(configured), /"(?:password|pwd)"\s*:/i);
+
+  await installMcpConfig([], { env: { H2O_URL: 'http://h2o.example' }, path });
+  const removed = await readMcpConfig(path);
+  assert.deepEqual(removed.servers, initial.servers);
+  assert.equal(removed.custom, true);
 });
 
 test('installs and removes CF entries without deleting unrelated MCP servers', async t => {
@@ -185,9 +242,38 @@ test('recognizes old npx Cloud Foundry entries so setup can reuse their service 
       BAS_VSP_DESTINATION: current.env.SAP_AI_DEV_TOOLKIT_DESTINATION
     }
   };
+  delete legacy.BAS_EXT;
   delete legacy.env.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE;
   delete legacy.env.SAP_AI_DEV_TOOLKIT_DESTINATION;
   assert.deepEqual(collectManagedCloudFoundryKeyReferences({ servers: { legacy } }), [
     { kind: 'destination', spaceGuid: 'space-one', instanceGuid: 'instance-one', instanceName: 'destination-instance-one', keyName: 'old-key' }
   ]);
+});
+
+test('setup removes untagged legacy bas-mcp-addon launchers that expose the full VSP surface', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-untagged-legacy-'));
+  const path = join(directory, 'mcp.json');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(path, JSON.stringify({
+    servers: {
+      shared: {
+        type: 'stdio',
+        command: 'npx',
+        args: ['--yes', '--package=bas-mcp-addon@0.2.0', 'bas-vsp-mcp'],
+        env: { H2O_URL: 'http://old-h2o.example', BAS_VSP_DESTINATION: 'shared' }
+      },
+      legacyCommand: {
+        type: 'stdio',
+        command: 'bas-vsp-mcp',
+        env: { H2O_URL: 'http://old-h2o.example', BAS_VSP_DESTINATION: 'other' }
+      },
+      userServer: { type: 'stdio', command: 'custom-server' }
+    }
+  }));
+
+  await installMcpConfig([bas], { env: { H2O_URL: 'http://h2o.example' }, path });
+  const migrated = await readMcpConfig(path);
+  assert.deepEqual(Object.keys(migrated.servers).sort(), ['shared', 'userServer']);
+  assert.equal(migrated.servers.shared.command, 'sap-ai-dev');
+  assert.equal(migrated.servers.shared.env.SAP_AI_DEV_TOOLKIT_DESTINATION, 'shared');
 });

@@ -160,3 +160,16 @@ These are known from the repository fixtures, README, and historical proxy allow
 - Runtime tool names are namespaced by destination slug, for example `demo-abap__RunQuery`.
 - The proxy starts VSP with `--enable-transports`; generated MCP entries set `SAP_ALLOW_TRANSPORTABLE_EDITS=true`.
 - Transport release/deletion and the general-purpose `SAP` router are now exposed when registered by VSP; use SAP authorizations and client-side approvals to control access.
+
+## Separate optional HANA Cloud inspector
+
+The HANA inspector is a standalone companion MCP process launched as `sap-ai-hana`; it is not a VSP child and is not destination-prefixed. It uses a read-only identity selected from `HANA_RO_*` variables or one unambiguous `VCAP_SERVICES` binding. Its host/schema target is fixed by process configuration; tool arguments cannot change it.
+
+| Tool | Behavior |
+| --- | --- |
+| `hana_connection_info` | Report selected endpoint, service/binding name, configured and current schema, database user, and TLS validation state. Does not return credentials. |
+| `hana_list_objects` | List tables and/or views in the configured schema, capped at 200 objects. |
+| `hana_describe_object` | Return columns for a table or view verified in the configured schema. |
+| `hana_read_rows` | Read selected catalog-verified columns with bound filter values and a hard 200-row maximum; credential-like columns are blocked. No free-form SQL. |
+
+The process exposes no DDL, DML, arbitrary SQL, procedure-call, deployment, undeploy, grant, or service-key management tools. The separate HANA identity should also be granted only the reads required for the intended HDI container.

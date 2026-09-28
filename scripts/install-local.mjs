@@ -61,6 +61,9 @@ async function verify() {
   const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   const prefix = await resolveGlobalBinaryPath();
   const expected = resolvePath(prefix, 'lib', 'node_modules', pkg.name);
+  const serverCommand = process.platform === 'win32'
+    ? join(prefix, 'sap-ai-dev.cmd')
+    : join(prefix, 'bin', 'sap-ai-dev');
   const installedRoot = await new Promise((resolve, reject) => {
     const child = spawn(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['list', '-g', pkg.name, '--parseable'], {
       cwd: root,
@@ -73,13 +76,15 @@ async function verify() {
     child.once('error', reject);
     child.once('close', code => resolve(code === 0 ? stdout.trim().split('\n').filter(Boolean).pop() : null));
   });
-  console.log(`Global prefix:      ${prefix}`);
-  console.log(`Installed location: ${installedRoot || '(not installed)'}`);
+  console.log(`MCP server location: ${serverCommand}`);
   console.log(`Workspace root:     ${root}`);
   if (!installedRoot) throw new Error(`${pkg.name} is not installed globally`);
   if (installedRoot !== expected) {
     console.log(`Expected location:  ${expected}`);
     throw new Error('Global installation does not match the expected npm layout');
+  }
+  if (!await lstat(serverCommand).catch(() => null)) {
+    throw new Error(`Global sap-ai-dev command is missing at ${serverCommand}`);
   }
   const stats = await lstat(installedRoot).catch(() => null);
   console.log(`Install mode:       ${stats?.isSymbolicLink() ? 'npm link (live workspace)' : 'tarball (snapshot)'}`);

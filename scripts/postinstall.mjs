@@ -76,9 +76,9 @@ async function runCopilotAssetInstall() {
     await announce([
       'Optional Copilot setup is waiting for your choice.',
       '',
-      'Press Enter to install the bundled agents and eleven skills in the path shown below; type n then press Enter to skip.',
+      'Press Enter to install the bundled agents and all skills in the path shown below; type n then press Enter to skip.',
       '',
-      `${colorText('✅ Press Enter', 'green', true)} to install the bundled agents and eleven skills.`,
+      `${colorText('✅ Press Enter', 'green', true)} to install the bundled agents and all skills.`,
       `${colorText('⏭️  Type n then Enter', 'yellow', true)} to skip this optional step.`,
       '',
       `${colorText('📁 Target folder:', 'cyan', true)}`,
@@ -88,7 +88,7 @@ async function runCopilotAssetInstall() {
     const prompt = createInterface({ input: terminal.input, output: terminal.output });
     let answer;
     try {
-      answer = await prompt.question(`${colorText('🤖 Install the bundled agents and eleven skills?', 'magenta', terminal.output)} ${colorText('[Y/n]', 'yellow', terminal.output)} `);
+      answer = await prompt.question(`${colorText('🤖 Install the bundled agents and all skills?', 'magenta', terminal.output)} ${colorText('[Y/n]', 'yellow', terminal.output)} `);
     } finally {
       prompt.close();
     }

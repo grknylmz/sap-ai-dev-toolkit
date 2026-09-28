@@ -10,6 +10,7 @@ const skillsRoot = join(root, '.github', 'skills');
 const expectedAgents = [
   'abap-developer.agent.md',
   'abap-runtime-debugger.agent.md',
+  'hana-cloud-hdi-specialist.agent.md',
   'rap-service-developer.agent.md',
   'sap-solution-architect.agent.md'
 ];
@@ -20,6 +21,9 @@ const expectedSkills = [
   'abap-testing-quality',
   'cds-development',
   'clean-core-extensibility',
+  'hana-cloud-inspection',
+  'hana-cloud-native-development',
+  'hana-cloud-validation',
   'rap-development',
   'rap-service-delivery',
   'sap-sdlc-orchestration',
@@ -136,6 +140,7 @@ test('SAP Solution Architect agent has valid metadata and planning/handoff polic
   assert.match(markdown, /ABAP Developer/i);
   assert.match(markdown, /RAP Service Developer/i);
   assert.match(markdown, /ABAP Runtime Debugger/i);
+  assert.match(markdown, /HANA Cloud\/HDI Specialist/i);
   assert.match(markdown, /SDLC|lifecycle/i);
   assertPlanFirstPolicy(markdown, path);
   assertLocalFirstPolicy(markdown, path);
@@ -156,6 +161,27 @@ test('RAP Service Developer agent has valid metadata and plan-first local-first 
   assertPlanFirstPolicy(markdown, path);
   assertLocalFirstPolicy(markdown, path);
   assertNoUnsafeTransportClaims(markdown, path);
+});
+
+test('HANA Cloud/HDI Specialist agent has a read-only target-bound workflow', async () => {
+  const path = join(agentsRoot, 'hana-cloud-hdi-specialist.agent.md');
+  const markdown = await readMarkdown(path);
+  const metadata = parseFrontmatter(markdown, path);
+  assert.deepEqual(Object.keys(metadata).sort(), ['description', 'name', 'target', 'user-invocable']);
+  assert.equal(metadata.name, 'HANA Cloud/HDI Specialist');
+  assert.equal(metadata.target, 'vscode');
+  assert.equal(metadata['user-invocable'], 'true');
+  assert.match(metadata.description, /HANA Cloud/i);
+  assertDirectMcpUsage(markdown, path);
+  assertMentionsLiveToolDiscovery(markdown, path);
+  for (const tool of ['hana_connection_info', 'hana_list_objects', 'hana_describe_object', 'hana_read_rows']) {
+    assert.match(markdown, new RegExp(tool));
+  }
+  assert.match(markdown, /read-only/i);
+  assert.match(markdown, /HANA_RO_\*/);
+  assert.match(markdown, /cds build --for hana/);
+  assert.match(markdown, /user-run deployment|deployment is performed by the user/i);
+  assert.match(markdown, /never execute HANA DDL\/DML|Never execute HANA DDL\/DML/i);
 });
 
 test('each skill has valid metadata, matching name, and enforceable live-tool validation policy', async () => {
@@ -198,4 +224,26 @@ test('debugging skill requires evidence before fixes and bounded debugger use', 
   assert.match(markdown, /DebuggerDetach/i);
   assert.match(markdown, /Avoid attaching to another user's session|do not.*another user's session/i);
   assert.match(markdown, /before changing code|before proposing a cause/i);
+});
+
+test('HANA skills describe the read-only tool surface and safe CAP/HDI generation', async () => {
+  const inspection = await readMarkdown(join(skillsRoot, 'hana-cloud-inspection', 'SKILL.md'));
+  for (const tool of ['hana_connection_info', 'hana_list_objects', 'hana_describe_object', 'hana_read_rows']) {
+    assert.match(inspection, new RegExp(tool));
+  }
+  assert.match(inspection, /200-row limit/);
+  assert.match(inspection, /Do not launch `sap-ai-dev` or `sap-ai-hana` for MCP operations/);
+  assert.match(inspection, /schema-bound/);
+  assert.match(inspection, /credential-like columns/);
+
+  const development = await readMarkdown(join(skillsRoot, 'hana-cloud-native-development', 'SKILL.md'));
+  assert.match(development, /cds build --for hana/);
+  assert.match(development, /CAP-owned database models/);
+  assert.match(development, /Never execute `cds deploy` against HANA/);
+  assert.match(development, /HANA DDL\/DML/);
+
+  const validation = await readMarkdown(join(skillsRoot, 'hana-cloud-validation', 'SKILL.md'));
+  assert.match(validation, /deployment handoff/);
+  assert.match(validation, /HANA tools are metadata and bounded read-only inspection only/);
+  assert.match(validation, /Never claim HANA activation\/deployment/);
 });

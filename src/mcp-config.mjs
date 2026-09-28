@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, dirname, join } from 'node:path';
+import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { brandedEnvValue } from './branding.mjs';
 
 const LEGACY_MCP_SERVER_PREFIXES = ['sapAiDev_', 'basVspMcp_'];
@@ -39,6 +40,15 @@ export const SAP_DEVELOPMENT_MCP_SERVERS = Object.freeze([
     packageName: '@playwright/mcp',
     bin: 'playwright-mcp',
     priority: 'recommended'
+  }),
+  Object.freeze({
+    id: 'hana-cloud-inspector',
+    name: 'HANA Cloud inspector',
+    description: 'Read-only HANA Cloud/HDI metadata and bounded row inspection using host-provided HANA_RO_* or VCAP_SERVICES credentials.',
+    packageName: 'sap-ai-dev-toolkit',
+    bin: 'sap-ai-hana',
+    ignoreScripts: true,
+    priority: 'optional'
   })
 ]);
 
@@ -50,6 +60,25 @@ async function exists(path) {
     if (error?.code === 'ENOENT') return false;
     throw error;
   }
+}
+
+export async function resolveMcpServerCommand(env = process.env) {
+  const executableNames = process.platform === 'win32'
+    ? ['sap-ai-dev.cmd', 'sap-ai-dev.exe', 'sap-ai-dev']
+    : ['sap-ai-dev'];
+  const searchPath = String(env.PATH || env.Path || '').split(delimiter).filter(Boolean);
+  for (const directory of searchPath) {
+    for (const executableName of executableNames) {
+      const candidate = resolve(directory, executableName);
+      try {
+        await access(candidate, constants.X_OK);
+        return candidate;
+      } catch {
+        // Continue searching PATH; use the command name as a portable fallback.
+      }
+    }
+  }
+  return 'sap-ai-dev';
 }
 
 export async function resolveMcpConfigPath(env = process.env) {
@@ -78,7 +107,7 @@ export function buildSapDevelopmentMcpEntries(serverIds = SAP_DEVELOPMENT_MCP_SE
     entries[server.id] = {
       type: 'stdio',
       command: packageManager,
-      args: ['--yes', `--package=${packageSpec}`, server.bin],
+      args: ['--yes', ...(server.ignoreScripts ? ['--ignore-scripts'] : []), `--package=${packageSpec}`, server.bin],
       BAS_EXT: 'true',
       BAS_EXT_KIND: COMPANION_SERVER_KIND,
       displayName: server.name,
@@ -140,13 +169,31 @@ function isCompanionServer(entry) {
 }
 
 function isPackageLauncher(entry) {
-  const commands = new Set(['sap-ai-dev', 'sap-ai-dev-toolkit', 'bas-vsp-mcp']);
-  const packages = [/^--package=sap-ai-dev-toolkit(?:@[^/]+)?$/, /^--package=bas-mcp-addon(?:@[^/]+)?$/];
-  const npxLauncher = entry?.command === 'npx'
+  const currentCommands = new Set(['sap-ai-dev', 'sap-ai-dev-toolkit']);
+  const legacyCommands = new Set(['bas-vsp-mcp']);
+  const commandName = typeof entry?.command === 'string'
+    ? entry.command.slice(Math.max(entry.command.lastIndexOf('/'), entry.command.lastIndexOf('\\')) + 1).replace(/\.(?:cmd|exe)$/i, '')
+    : '';
+  const currentCommand = currentCommands.has(entry?.command) || currentCommands.has(commandName);
+  const legacyCommand = legacyCommands.has(entry?.command) || legacyCommands.has(commandName);
+  const currentPackages = [/^--package=sap-ai-dev-toolkit(?:@[^/]+)?$/];
+  const legacyPackages = [/^--package=bas-mcp-addon(?:@[^/]+)?$/];
+  const hasPackage = patterns => Array.isArray(entry?.args)
+    && entry.args.some(argument => typeof argument === 'string' && patterns.some(pattern => pattern.test(argument)));
+  const currentNpxLauncher = entry?.command === 'npx'
     && Array.isArray(entry.args)
-    && entry.args.some(argument => commands.has(argument))
-    && entry.args.some(argument => typeof argument === 'string' && packages.some(pattern => pattern.test(argument)));
-  return entry?.BAS_EXT === 'true' && (commands.has(entry?.command) || npxLauncher);
+    && entry.args.some(argument => currentCommands.has(argument))
+    && hasPackage(currentPackages);
+  const legacyNpxLauncher = entry?.command === 'npx'
+    && Array.isArray(entry.args)
+    && entry.args.some(argument => legacyCommands.has(argument))
+    && hasPackage(legacyPackages);
+  // Current launchers are treated as managed only when tagged by this add-on.
+  // Some early bas-mcp-addon entries were not tagged with BAS_EXT, though, and
+  // leaving them behind keeps advertising the old full VSP surface (~159 tools).
+  return (entry?.BAS_EXT === 'true' && (currentCommand || currentNpxLauncher || legacyCommand || legacyNpxLauncher))
+    || legacyCommand
+    || legacyNpxLauncher;
 }
 
 function destinationValue(env) {
@@ -231,11 +278,12 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
     ...buildMcpEntries(destinations, env),
     ...buildSapDevelopmentMcpEntries(options.sapDevelopmentServers || [])
   };
-  if (options.command) {
+  const launcherCommand = options.command || (destinations.length ? await resolveMcpServerCommand(env) : null);
+  if (launcherCommand) {
     for (const entry of Object.values(generated)) {
       if (isCompanionServer(entry)) continue;
-      entry.command = options.command;
-      if (options.args?.length) entry.args = [...options.args];
+      entry.command = launcherCommand;
+      if (options.command && options.args?.length) entry.args = [...options.args];
     }
   }
   const servers = Object.create(null);

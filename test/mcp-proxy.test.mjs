@@ -5,24 +5,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { once } from 'node:events';
-import { childArguments, MCPProxy } from '../src/mcp-proxy.mjs';
+import { childArguments, MCPProxy, PUBLIC_VSP_TOOLS } from '../src/mcp-proxy.mjs';
 import { PassThrough } from 'node:stream';
 
 const fixture = fileURLToPath(new URL('./fixtures/fake-vsp.mjs', import.meta.url));
-const REQUESTED_TOOLS = [
-  'AnalyzeABAPCode', 'AnalyzeCallGraph', 'CodeCompletion', 'GetAbapHelp',
-  'GetCallGraph', 'GetCalleesOf', 'GetCallersOf', 'GetCodeCoverage',
-  'GetConnectionInfo', 'GetObjectStructure', 'GetTypeHierarchy', 'GetTypeInfo',
-  'GrepObject', 'GrepPackage', 'CallRFC', 'DebuggerAttach', 'DebuggerDetach',
-  'DebuggerGetStack', 'DebuggerGetVariables', 'DebuggerListen', 'DebuggerStep',
-  'DeleteBreakpoint', 'GetBreakpoints', 'GetDump', 'GetSQLTraceState', 'GetTrace',
-  'ListDumps', 'SetBreakpoint', 'CloneObject', 'CreateAndActivateProgram',
-  'CreateClassWithTests', 'CreateObject', 'CreateTestInclude', 'DeleteObject',
-  'ExecuteABAP', 'GetClass', 'GetClassComponents', 'GetClassInclude', 'GetFunction',
-  'GetInclude', 'GetInterface', 'GetProgram', 'GetStructure', 'GetTransaction',
-  'LockObject', 'MoveObject', 'RecoverFailedCreate', 'RenameObject', 'SaveToFile',
-  'UnlockObject', 'UpdateClassInclude', 'UpdateSource', 'WriteClass', 'WriteProgram',
-  'CreateTransport', 'ListDependencies', 'PublishServiceBinding', 'UnpublishServiceBinding'
+const HIDDEN_VSP_TOOLS = [
+  'AnalyzeABAPCode', 'DebuggerListen', 'DeleteBreakpoint', 'DeleteObject', 'ExecuteABAP', 'ReleaseTransport',
+  'DeleteTransport', 'SAP', 'ListSQLTraces', 'PublishServiceBinding', 'UnpublishServiceBinding'
 ];
 
 
@@ -166,22 +155,23 @@ test('merges paged tools and routes calls to the selected child', async t => {
   assert.deepEqual(lintTool.inputSchema.required, ['files']);
   assert.deepEqual(lintTool.inputSchema.properties.files.items.required, ['filename', 'source']);
 
+  const localWorkflowTools = [
+    'LintABAP', 'GetApplicationLog', 'PrepareABAPChangeSet', 'ApplyABAPChangeSet',
+    'CheckTransportReadiness', 'PlanABAPCloudMigration', 'GenerateRAPRegressionSuite', 'RunRAPRegressionSuite'
+  ];
   for (const destination of ['alpha', 'beta']) {
-    for (const toolName of REQUESTED_TOOLS) {
-      assert.ok(names.has(`${destination}__${toolName}`), `${destination} exposes ${toolName}`);
+    for (const toolName of PUBLIC_VSP_TOOLS) {
+      assert.ok(names.has(`${destination}__${toolName}`), `${destination} exposes curated ${toolName}`);
     }
-    for (const coreTool of [
-      'GetSource', 'RunQuery', 'GetSystemInfo', 'GetInstalledComponents',
-      'GetFeatures', 'GetAPIReleaseState', 'PrettyPrint', 'ListTransports',
-      'GetTransport', 'GetUserTransports', 'GetTransportInfo',
-      'GetApplicationLog', 'ActivateMultiple'
-    ]) {
-      assert.ok(names.has(`${destination}__${coreTool}`), `${destination} exposes ${coreTool}`);
+    for (const toolName of localWorkflowTools) {
+      assert.ok(names.has(`${destination}__${toolName}`), `${destination} exposes local ${toolName}`);
     }
-    for (const formerlyExcludedTool of ['ListSQLTraces', 'ReleaseTransport', 'DeleteTransport', 'SAP']) {
-      assert.ok(names.has(`${destination}__${formerlyExcludedTool}`), `${destination} exposes ${formerlyExcludedTool}`);
+    for (const hiddenTool of HIDDEN_VSP_TOOLS) {
+      assert.equal(names.has(`${destination}__${hiddenTool}`), false, `${destination} hides ${hiddenTool}`);
     }
   }
+  assert.equal(listed.result.tools.filter(tool => tool.name.startsWith('alpha__')).length, PUBLIC_VSP_TOOLS.size + localWorkflowTools.length);
+  assert.equal(PUBLIC_VSP_TOOLS.size + localWorkflowTools.length, 59);
 
   const requiredArguments = {
     GetFeatures: [],
@@ -234,11 +224,7 @@ test('merges paged tools and routes calls to the selected child', async t => {
       params: { type: 'delete' }
     }],
     ['ActivateMultiple', { objects: ['PROG ZDEMO'] }],
-    ['CreateTransport', {}],
-    ['ReleaseTransport', {}],
-    ['DeleteTransport', {}],
-    ['ListSQLTraces', {}],
-    ['SAP', { action: 'analyze', params: { type: 'application_log' } }]
+    ['CreateTransport', {}]
   ];
   for (const [index, [name, arguments_]] of additionalCalls.entries()) {
     const response = await proxy.handle({

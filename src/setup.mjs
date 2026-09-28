@@ -306,8 +306,9 @@ export async function runSetup({
   let sapDevelopmentServers = [];
   if (includeSapDevelopmentToolsPrompt) {
     print(output, '');
-    print(output, formatStatus('Optionally add companion MCP servers for full-stack SAP development.', 'step', output, 'Tools'));
-    print(output, '  Recommended for RAP/Fiori/CAP/UI validation work. Leave empty to only configure ABAP/ADT destination servers.');
+    print(output, formatStatus('Optionally add companion MCP servers for full-stack SAP development and HANA inspection.', 'step', output, 'Tools'));
+    print(output, '  HANA Cloud inspector is read-only and uses HANA_RO_* or VCAP_SERVICES already present in the MCP host environment; credentials are not written to mcp.json.');
+    print(output, '  Leave empty to only configure ABAP/ADT destination servers.');
     print(output, '');
     sapDevelopmentServers = await checkboxPrompt({
       message: colorText('🧰 Select companion tools', 'cyan', output),

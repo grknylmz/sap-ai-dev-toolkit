@@ -62,7 +62,7 @@ Then connect a destination in SAP Business Application Studio:
 1. Open the Command Palette.
 2. Run **MCP: List Servers**.
 3. Start the server named after your selected BAS destination.
-4. In GitHub Copilot Chat, choose the best-fit bundled agent from the agent picker: **SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, or **RAP Service Developer**.
+4. In GitHub Copilot Chat, choose the best-fit bundled agent from the agent picker: **SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, or **HANA Cloud/HDI Specialist**.
 5. In the Chat tools picker, enable the server for that BAS destination.
 6. Ask Copilot to inspect, build, test, or verify something in your SAP landscape.
 
@@ -72,7 +72,7 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 
 ## 🤖 Available agents and skills
 
-**Agents:** Four user-invocable custom agents are included. Select the best fit from the agent picker in GitHub Copilot Chat, as shown in Quick start.
+**Agents:** Five user-invocable custom agents are included. Select the best fit from the agent picker in GitHub Copilot Chat, as shown in Quick start.
 
 | | Agent | Best for |
 | --- | --- | --- |
@@ -80,8 +80,9 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 | 🧑‍💻 | **ABAP Developer** | General ABAP, CDS, and RAP implementation, validation, and transport-preparation tasks |
 | 🐞 | **ABAP Runtime Debugger** | Runtime incidents, dumps, logs, traces, debugger sessions, call graphs, and performance symptoms |
 | 🚀 | **RAP Service Developer** | RAP business objects, behavior implementations, projections, service definitions, service bindings, and OData validation |
+| 🗃️ | **HANA Cloud/HDI Specialist** | Read-only HANA Cloud container inspection, CAP/HDI artifact generation, local validation, and user-run deployment handoffs |
 
-**Included skills:** `abap-development` · `abap-testing-quality` · `cds-development` · `rap-development` · `abap-debugging` · `abap-runtime-analysis` · `rap-service-delivery` · `sap-standard-api-analysis` · `clean-core-extensibility` · `sap-sdlc-orchestration` · `sap-transport-release`
+**Included skills:** `abap-development` · `abap-testing-quality` · `cds-development` · `rap-development` · `abap-debugging` · `abap-runtime-analysis` · `rap-service-delivery` · `sap-standard-api-analysis` · `clean-core-extensibility` · `sap-sdlc-orchestration` · `sap-transport-release` · `hana-cloud-inspection` · `hana-cloud-native-development` · `hana-cloud-validation`
 
 If the agents are not listed, install the optional agents and skills under `$HOME/.copilot` when prompted during an interactive global install, then reload BAS if needed. Repository-scoped installation instructions appear below.
 
@@ -102,7 +103,8 @@ The workflow covers ABAP, CDS, RAP, repository analysis, table and query access,
 | 🔎 | **Understand before editing** | Trace source, callers, definitions, package contents, dependencies, and CDS impact in one workflow. |
 | 🧩 | **CDS + RAP development** | Explore models and dependencies, then build RAP business objects and services with system context. |
 | 🗃️ | **Ground decisions in SAP data** | Inspect DDIC structures, read table contents, and run controlled ABAP SQL queries. |
-| ✍️ | **Create + edit ABAP objects** | Update supported source, create packages and tables, and run syntax checks before requested activation. |
+| ☁️ | **Read-only HANA Cloud inspection** | Inspect an environment-bound HDI schema, object metadata, and capped query results without exposing deployment credentials. |
+| ✍️ | **Edit ABAP safely** | Update supported source, stage reviewed change sets, create transport requests, and run syntax checks before requested activation. |
 | ✅ | **Quality built into the flow** | Pair local ABAP linting with SAP syntax checks, ABAP Unit, ATC, editor diagnostics, and formatting. |
 | 🐞 | **Debug with system context** | Investigate dumps, traces, application logs, runtime failures, capabilities, and installed components. |
 | 🚚 | **Transport-aware workflows** | Check request and lock context before preparing a change; create transports only when authorized. |
@@ -152,9 +154,9 @@ The catalog below covers source inspection, data, editing, quality, transports, 
 - Read SLG1 application logs
 - Review and create transport requests
 
-## 🧠 Four agents, eleven focused skills
+## 🧠 Five agents, fourteen focused skills
 
-The package ships with four custom agents plus eleven task-focused Copilot Agent Skills:
+The package ships with five custom agents plus fourteen task-focused Copilot Agent Skills:
 
 | | Skill | Best for |
 | --- | --- | --- |
@@ -169,6 +171,9 @@ The package ships with four custom agents plus eleven task-focused Copilot Agent
 | 🔬 | `abap-runtime-analysis` | Incident triage, traces, debugger state, call graphs, and performance analysis |
 | 🚀 | `rap-service-delivery` | RAP service activation, publication, OData validation, and end-to-end runtime checks |
 | 🚚 | `sap-transport-release` | Dependency checks and transport preparation; release itself is intentionally unavailable here |
+| 🔎 | `hana-cloud-inspection` | Verify the selected HANA Cloud binding and inspect bounded HDI catalog/data results |
+| 🧱 | `hana-cloud-native-development` | Generate CAP-owned CDS models or required native HDI artifacts without duplicating generated sources |
+| ✅ | `hana-cloud-validation` | Run local CAP/HANA builds and prepare a reviewed, user-run deployment handoff |
 
 ## 🗺️ How it fits together
 
@@ -176,13 +181,13 @@ Each selected BAS destination becomes its own isolated MCP server identity. The 
 
 ## 🧰 Optional full-stack companion MCP servers
 
-ABAP/RAP backend access is provided by this add-on's BAS/VSP proxy. For end-to-end SAP development, setup can also add managed companion MCP entries for frontend, CAP, and browser validation work:
+ABAP/RAP backend access is provided by this add-on's BAS/VSP proxy. For end-to-end SAP development, setup can also add managed companion MCP entries for frontend, CAP, browser validation, and read-only HANA inspection:
 
 ```sh
 sap-ai-dev --setup --tools
 ```
 
-The companion entries are optional and are launched through `npx` only when the MCP client starts them. They are marked as managed by `sap-ai-dev-toolkit`, so rerunning setup can update or remove them without touching unrelated MCP servers.
+The companion entries are optional and are launched through `npx` only when the MCP client starts them. They are marked as managed by `sap-ai-dev-toolkit`, so rerunning setup can update or remove them without touching unrelated MCP servers. The HANA companion uses `--ignore-scripts` so the toolkit postinstall wizard cannot run during MCP startup.
 
 | MCP entry | Package | Launches | Use when the agent needs to |
 | --- | --- | --- | --- |
@@ -190,12 +195,25 @@ The companion entries are optional and are launched through `npx` only when the 
 | `ui5-tools` | `@ui5/mcp-server` | `ui5mcp` | Inspect SAPUI5/OpenUI5 projects, manifests, routing, views, controllers, and UI5-specific issues |
 | `cap-tools` | `@cap-js/mcp-server` | `cds-mcp` | Inspect CAP CDS models, services, entities, actions, and local CAP application structure |
 | `browser-validation` | `@playwright/mcp` | `playwright-mcp` | Open BAS previews, smoke-test Fiori/UI flows, collect screenshots, and verify browser runtime behavior |
+| `hana-cloud-inspector` | `sap-ai-dev-toolkit` | `sap-ai-hana` | Inspect a bound HANA Cloud HDI schema using read-only catalog tools and capped row reads |
 
 Recommended profiles:
 
 - **RAP + Fiori:** select your BAS destination plus `sap-fiori-tools`, `ui5-tools`, and `browser-validation`.
 - **CAP on BTP:** select `cap-tools`, `sap-fiori-tools`, `ui5-tools`, and `browser-validation`.
+- **CAP + HANA Cloud:** select `cap-tools` and `hana-cloud-inspector`; provide the inspector's read-only connection through MCP-host environment variables.
 - **UI-only:** select `sap-fiori-tools`, `ui5-tools`, and optionally `browser-validation`.
+
+### HANA Cloud/HDI inspector
+
+Select `hana-cloud-inspector` in the optional companion-server setup, then start it from **MCP: List Servers**. The process reads its connection from the MCP host's environment; setup never copies HANA credentials into `mcp.json`. Make sure variables are available to the BAS/VS Code MCP host process (not only to a later terminal session), then reload/restart the MCP host if needed.
+
+Use either:
+
+- A dedicated read-only VCAP binding with `credentials.host`, `port`, `user`, `password`, and `schema` in `VCAP_SERVICES`; optionally set `HANA_RO_VCAP_SERVICE` to the exact VCAP service key and `HANA_RO_BINDING` to the binding/instance name when selection is ambiguous.
+- Explicit `HANA_RO_HOST`, `HANA_RO_PORT`, `HANA_RO_USER`, `HANA_RO_PASSWORD`, and `HANA_RO_SCHEMA` variables. `HANA_RO_TRUST_STORE` is optional; TLS and certificate verification are always enabled.
+
+The configured identity must be a separate least-privileged read-only HANA user. The server rejects bindings that offer only HDI deployment credentials and never falls back to `hdi_user`/`hdi_password`. Its tools are limited to connection identity, object listing/descriptions, and parameterized row reads capped at 200 rows; credential-like columns are blocked, and there is no arbitrary SQL, DDL/DML, grant, deployment, or undeploy tool. Use the existing project deployment workflow yourself after reviewing the exact generated artifact diff and target. The SAP HANA Node.js driver is provided under the SAP Developer License Agreement.
 
 ## 💡 Example requests
 
@@ -209,6 +227,8 @@ Once the destination server is enabled in Copilot Chat, ask for outcomes instead
 
 > Read company codes from `T001` for this destination and return `BUKRS`, `BUTXT`, `WAERS`, and `LAND1`.
 
+> Inspect the HANA HDI container attached to this workspace, describe the relevant tables, and show at most 20 rows for the columns needed to explain the issue. Do not change database state.
+
 > Check the current object's transport context, prepare the change for transport, but do not release anything.
 
 ## 🔐 Enterprise-friendly safety model
@@ -219,7 +239,7 @@ Once the destination server is enabled in Copilot Chat, ask for outcomes instead
 | 🚦 **Explicit state change** | Activation, service publication, and transport creation happen only when requested and authorized. |
 | 🧪 **Verification first** | The agent uses available lint, syntax, unit-test, ATC, and diagnostics workflows and reports what actually ran. |
 | 🔒 **SAP authorization remains authoritative** | The add-on does not bypass backend SAP permissions. |
-| 🚚 **Full VSP tool surface** | The proxy exposes every tool registered by the active VSP child, including transport tools; SAP authorizations and VSP safety checks still apply. |
+| 🚚 **Curated VSP tool surface** | The proxy exposes a cherry-picked developer-lifecycle set from VSP plus local workflow tools, keeping one destination below 60 tools; SAP authorizations and VSP safety checks still apply. |
 | 🧱 **Per-destination isolation** | Generated MCP entries are scoped to a single `SAP_AI_DEV_TOOLKIT_DESTINATION`. |
 | 🔑 **No credentials in `mcp.json`** | Authentication material stays in BAS destination configuration rather than MCP config. |
 
@@ -294,7 +314,7 @@ At the end of a global install, the color-coded summary shows the MCP config pat
 
 ## 🤖 GitHub Copilot ABAP agents and skills
 
-The package includes four user-invocable custom agents (**SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, and **RAP Service Developer**) and eleven task-focused Agent Skills for GitHub Copilot in BAS.
+The package includes five user-invocable custom agents (**SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, and **HANA Cloud/HDI Specialist**) and fourteen task-focused Agent Skills for GitHub Copilot in BAS.
 
 ### 🧠 How the SAP Solution Architect and ABAP Developer agents work
 
@@ -322,10 +342,13 @@ The package includes four user-invocable custom agents (**SAP Solution Architect
 | 🔬 | `abap-runtime-analysis` | Analyze incidents, traces, debugger state, call graphs, and performance symptoms. |
 | 🚀 | `rap-service-delivery` | Validate RAP service bindings, activation, publication, and end-to-end OData behavior. |
 | 🚚 | `sap-transport-release` | Check dependencies and prepare changes for transport; release is not available here. |
+| 🔎 | `hana-cloud-inspection` | Verify the attached HANA target and inspect bounded HDI metadata and rows. |
+| 🧱 | `hana-cloud-native-development` | Create CAP CDS or required native HDI source artifacts while avoiding duplicate models. |
+| ✅ | `hana-cloud-validation` | Build locally, review deployment risks, and hand off deployment to the user. |
 
 ### 📥 Install for your BAS user
 
-After destination setup, the installer prints a 🤖 notice that it is waiting for confirmation, then offers to install the bundled agents and all eleven skills under `$HOME/.copilot`. Press **Enter** to install; type **n** then **Enter** to skip. Declining leaves those files unchanged.
+After destination setup, the installer prints a 🤖 notice that it is waiting for confirmation, then offers to install all bundled agents and skills under `$HOME/.copilot`. Press **Enter** to install; type **n** then **Enter** to skip. Declining leaves those files unchanged.
 
 These user-level customizations are available across workspaces opened by the same BAS user in the same dev space. Copilot must be available in BAS and may need a window reload to discover new files. A non-interactive install skips the optional prompt; `npm install --ignore-scripts` skips the postinstall wizard entirely.
 
@@ -457,7 +480,7 @@ The file must be strict JSON with an object-valued `servers` property. Existing 
 
 With `H2O_URL` set, the normal command starts the MCP proxy. Each generated entry supplies one `SAP_AI_DEV_TOOLKIT_DESTINATION`, so each server stays in its own lane and exposes only its selected SAP system.
 
-The proxy exposes every VSP tool registered by the installed VSP mode, plus local `LintABAP`, destination-scoped workflow tools, and the convenience `GetApplicationLog` mapping when the VSP SAP router is available. It enables transport support and transportable source edits in generated MCP entries. Direct VSP invocation remains unchanged.
+The proxy exposes a curated subset of VSP tools, plus local `LintABAP`, destination-scoped workflow tools, and the convenience `GetApplicationLog` mapping when the VSP SAP router is available. Hidden VSP tools remain available only behind local workflow chaining where required; they are not advertised or directly callable through the proxy. Direct VSP invocation remains unchanged.
 
 Without `H2O_URL`, the command passes arguments directly to the installed VSP binary—no BAS proxy detour.
 
@@ -535,7 +558,8 @@ For an ABAP Cloud assessment, get object URIs from `SearchObject` and pass them 
 | `GetPackage` | Read package details. |
 | `GetAPIReleaseState` | Check whether an object is released for S/4HANA Clean Core / ABAP Cloud development; use the URI returned by `SearchObject`. |
 | `GetFunctionGroup` | Read function-group source. |
-| `GetMessages` | Read the messages defined by an ABAP message class (SE91). |
+| `GetFunction`, `GetClass`, `GetClassComponents`, `GetClassInclude`, `GetProgram`, `GetInclude`, `GetInterface` | Read supported object-specific source or metadata views. |
+| `ListDependencies` | List dependencies for impact and transport-readiness planning. |
 | `GetInactiveObjects` | List objects changed by the current user but not yet activated. |
 
 ### 🗃️ Read SAP tables and metadata
@@ -559,14 +583,13 @@ SAP authorizations and the destination's available APIs still apply.
 | --- | --- |
 | `WriteSource` | Create or update supported ABAP source objects; detects create versus update in upsert mode. |
 | `EditSource` | Replace a specific source fragment; syntax checking is enabled by default. |
-| `CreatePackage` | Create a package; transportable packages need a transport and software component. |
-| `CreateTable` | Create a transparent DDIC table from a JSON field definition. |
+| `PrepareABAPChangeSet` | Stage reviewed full-source diffs for up to 12 `WriteSource` changes. |
+| `ApplyABAPChangeSet` | Re-read each staged object and apply reviewed writes when the source still matches. |
 | `SyntaxCheck` | Ask SAP to syntax-check source before saving or activation. |
 | `Activate` | Activate one named ABAP object. |
-| `ActivatePackage` | Activate inactive objects in dependency order. If package is omitted, it can activate all inactive objects for the current user. |
 | `ActivateMultiple` | Activate related objects together while resolving mutual dependencies, such as an include and its main program. |
 
-The write, create, and activation tools change SAP state. Confirm the target, package, and transport before using them. `EditSource` performs a focused replacement; its default syntax check prevents saving when syntax errors are reported.
+The write and activation tools change SAP state. Confirm the target, package, and transport before using them. `EditSource` performs a focused replacement; its default syntax check prevents saving when syntax errors are reported.
 
 ### ✅ Test and inspect the system
 
@@ -588,8 +611,9 @@ The write, create, and activation tools change SAP state. Confirm the target, pa
 | `GetTransport` | Read a transport request's details, objects, and tasks. |
 | `GetTransportInfo` | Find eligible transports and lock status for an ABAP object or package. |
 | `CreateTransport` | Create a transport request. |
-| `ReleaseTransport` | Release a transport request when registered by VSP and authorized in SAP. |
-| `DeleteTransport` | Delete a transport request when registered by VSP and authorized in SAP. |
+| `CheckTransportReadiness` | Collect a whitelisted bundle of transport, dependency, inactive-object, ABAP Unit, and ATC evidence. |
+
+Transport release and deletion are not exposed by the curated proxy surface; release or delete transports outside this add-on after review.
 
 The proxy starts VSP with `--enable-transports` and omits `--transport-read-only`. Generated MCP entries set `SAP_ALLOW_TRANSPORTABLE_EDITS=true` so source edits in transportable packages are permitted. VSP safety checks and SAP authorizations still apply.
 
@@ -602,9 +626,9 @@ The proxy starts VSP with `--enable-transports` and omits `--transport-read-only
 - Filter by program, user, object, subobject, from, and to.
 - `max_results` defaults to 100. Date-only `to` values include the full day.
 - `messages: true` adds BALDAT details and T100 message text; otherwise, the tool returns log headers only.
-- The proxy maps this convenience tool to the single `SAP(action="analyze", type="application_log")` operation. The general-purpose `SAP` router is also exposed when VSP registers it.
+- The proxy maps this convenience tool to the single upstream `SAP(action="analyze", type="application_log")` operation. The general-purpose `SAP` router itself is hidden from direct calls.
 
-The proxy exposes all tools registered by the child VSP process. The object deletion, debugger, trace, general-purpose SAP router, and transport tools are callable when VSP registers them. Direct VSP invocation without `H2O_URL` retains the VSP binary's own tool surface.
+The proxy intentionally does not expose the full child VSP process. Object deletion, broad trace surfaces, arbitrary SAP router/RFC calls, debugger helper/delete-breakpoint routes, and transport release/delete tools are hidden from direct MCP calls. The curated debugger tools (`SetBreakpoint`, `GetBreakpoints`, `DebuggerAttach`, `DebuggerGetStack`, `DebuggerGetVariables`, `DebuggerStep`, and `DebuggerDetach`) remain available when VSP and the target system expose them. Direct VSP invocation without `H2O_URL` retains the VSP binary's own tool surface.
 
 ### 🚀 Ready to put the tools to work from chat?
 
@@ -700,7 +724,7 @@ The response contains a `tools` array. A `RunQuery` entry resembles this excerpt
 | --- | --- |
 | `H2O_URL` | BAS endpoint used to discover destinations. Required for BAS discovery. |
 | `SAP_AI_DEV_TOOLKIT_DESTINATION` | Comma-separated destination allowlist for normal runtime discovery. Setup clears this temporarily so it can display all eligible systems. |
-| `SAP_AI_DEV_TOOLKIT_MODE` | VSP child mode (`expert` by default; `focused` omits `ActivateMultiple`, `GetUserTransports`, and `GetTransportInfo`). The proxy exposes its curated tools plus tools listed in `tools.md` when registered by that mode, including local `LintABAP`. |
+| `SAP_AI_DEV_TOOLKIT_MODE` | VSP child mode (`expert` by default; `focused` omits `ActivateMultiple`, `GetUserTransports`, and `GetTransportInfo`). The proxy exposes its curated tool subset and local workflow tools, including `LintABAP`. |
 | `SAP_ALLOW_TRANSPORTABLE_EDITS` | Generated MCP entries set this to `true` to permit source edits in transportable packages; VSP safety checks and SAP authorizations still apply. |
 | `SAP_AI_DEV_TOOLKIT_DISABLE_BAS_RELAY=true` | Disable the built-in BAS destination relay. By default the add-on self-heals `.dest` destinations through a local relay that keeps all access destination-based while handling ADT CSRF fetch/retry behavior before VSP calls SAP. |
 | `SAP_AI_DEV_TOOLKIT_HTTP_PROXY` | Egress proxy for relay and discovery traffic (falls back to `HTTP_PROXY`/`http_proxy`; unset means the default BAS proxy for `.dest` hosts, empty means direct except for OnPremise credential overrides, which require a BAS proxy tunnel). |
