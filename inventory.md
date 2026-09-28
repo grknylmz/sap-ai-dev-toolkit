@@ -1,21 +1,23 @@
 # SAP AI Dev Toolkit Tool Inventory
 
-This inventory reflects the current SAP AI Dev Toolkit proxy behavior in `src/mcp-proxy.mjs`. The proxy exposes every tool registered by the active VSP process. The live MCP `tools/list` response remains authoritative because available tools vary by VSP mode and SAP system.
+This inventory reflects the current SAP AI Dev Toolkit proxy behavior in `src/mcp-proxy.mjs`. The proxy exposes a curated VSP allowlist plus destination-scoped local workflows; it does not expose every tool registered by VSP. The live MCP `tools/list` response remains authoritative because capabilities vary by VSP mode and SAP system.
 
 ## Summary
 
 | Status | Count | Notes |
 | --- | ---: | --- |
-| VSP tools | Dynamic | All registered child VSP tools are exposed with a destination prefix, for example `<destination>__GetSource`. |
+| VSP tools | Up to 51 | Curated from the child VSP tool list and exposed with a destination prefix, for example `<destination>__GetSource`. |
 | Local lint tool | 1 per destination | `LintABAP` analyzes caller-supplied ABAP source in memory. |
 | Workflow tools | Up to 6 per destination | Review/apply change sets, transport evidence, Clean Core release assessment, and read-only RAP regression suites. Some are exposed only when their upstream VSP tools are registered. |
 | Convenience mapping | Dynamic | `GetApplicationLog` maps to VSP `SAP(action="analyze", type="application_log")` when the SAP router is registered. |
-| Intentionally filtered VSP tools | 0 | No VSP tool names are filtered by the proxy. |
+| Intentionally filtered VSP tools | Dynamic | Destructive, broad-router, trace, and unsupported VSP operations are hidden from direct calls. |
 | Mode-dependent | Dynamic | Focused/expert mode and backend capabilities determine what VSP registers. |
 
-## Currently known VSP tools
+The maximum fixture surface is 59 tools per destination when expert-mode capabilities and all local workflows are available. Multiple selected destinations create separate MCP servers; this add-on cannot inspect VS Code's aggregate tool budget or per-chat tool binding.
 
-These are known from the repository fixtures, README, and historical proxy allowlist. All are enabled when VSP registers them.
+## Known upstream VSP tools
+
+These names are known from fixtures, README, and historical upstream VSP inventories. They are not a statement that the proxy exposes them; only the curated list in [tools.md](tools.md) is public through the proxy. Names absent from that allowlist are filtered even when VSP registers them.
 
 ### Baseline/source inspection
 
@@ -157,9 +159,9 @@ These are known from the repository fixtures, README, and historical proxy allow
 
 ## Notes
 
-- Runtime tool names are namespaced by destination slug, for example `demo-abap__RunQuery`.
+- Runtime tool names are namespaced by destination slug, for example `demo-abap__RunQuery`; `tools/call` accepts the exact name returned by `tools/list`.
 - The proxy starts VSP with `--enable-transports`; generated MCP entries set `SAP_ALLOW_TRANSPORTABLE_EDITS=true`.
-- Transport release/deletion and the general-purpose `SAP` router are now exposed when registered by VSP; use SAP authorizations and client-side approvals to control access.
+- Transport release/deletion and the general-purpose `SAP` router are intentionally hidden from direct proxy calls. `GetApplicationLog` is the bounded convenience mapping for the SAP application-log route.
 
 ## Separate optional HANA Cloud inspector
 

@@ -9,22 +9,31 @@ const destination = url.replace(/^https?:\/\//, '').replace(/\.dest$/, '');
 const logPath = process.env.FAKE_LOG;
 function log(entry) { if (logPath) appendFileSync(logPath, `${JSON.stringify({ destination, ...entry })}\n`); }
 function reply(id, result) { process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`); }
-function requestADTThroughProxy(targetUrl, proxyUrl) {
+function requestADTThroughProxy(targetUrl, proxyUrl, { method = 'GET', body = '', bypassProxyForLoopback = false } = {}) {
   const target = new URL(targetUrl);
   const proxy = new URL(proxyUrl);
   if (target.protocol !== 'http:') throw new Error('fixture ADT request supports HTTP only');
   const headers = { host: target.host, accept: 'application/xml,text/xml,*/*' };
+  if (body) headers['content-type'] = 'application/xml';
   if (process.env.SAP_USER && process.env.SAP_PASSWORD) {
     headers.authorization = `Basic ${Buffer.from(`${process.env.SAP_USER}:${process.env.SAP_PASSWORD}`).toString('base64')}`;
   }
+  const loopback = bypassProxyForLoopback && ['127.0.0.1', 'localhost'].includes(target.hostname);
   return new Promise((resolve, reject) => {
-    const request = httpRequest({
+    const requestOptions = loopback ? {
+      hostname: target.hostname,
+      port: Number(target.port),
+      method,
+      path: `${target.pathname}${target.search}`,
+      headers
+    } : {
       hostname: proxy.hostname,
       port: Number(proxy.port),
-      method: 'GET',
+      method,
       path: target.href,
       headers
-    }, response => {
+    };
+    const request = httpRequest(requestOptions, response => {
       let body = '';
       response.setEncoding('utf8');
       response.on('data', chunk => { body += chunk; });
@@ -32,6 +41,7 @@ function requestADTThroughProxy(targetUrl, proxyUrl) {
     });
     request.setTimeout(5_000, () => request.destroy(new Error('fixture ADT request timed out')));
     request.on('error', reject);
+    if (body) request.write(body);
     request.end();
   });
 }
@@ -233,6 +243,15 @@ process.stdin.on('data', async chunk => {
           reply(message.id, { content: [{ type: 'text', text: adt.body }], isError: false });
         } catch {
           reply(message.id, { content: [{ type: 'text', text: 'fixture ADT request failed' }], isError: true });
+        }
+      } else if (process.env.FAKE_RELAY_CSRF_TEST === 'true' && name === 'GetSystemInfo') {
+        try {
+          const target = new URL('/sap/bc/adt/datapreview/freestyle', url);
+          const proxy = process.env.HTTP_PROXY || process.env.http_proxy;
+          const adt = await requestADTThroughProxy(target.href, proxy, { method: 'POST', body: '<probe/>', bypassProxyForLoopback: true });
+          reply(message.id, { content: [{ type: 'text', text: `fixture ADT HTTP ${adt.status}: ${adt.body}` }], isError: adt.status < 200 || adt.status >= 300 });
+        } catch {
+          reply(message.id, { content: [{ type: 'text', text: 'fixture ADT write failed' }], isError: true });
         }
       } else {
         reply(message.id, { content: [{ type: 'text', text: `${destination}:${name}` }], isError: false });

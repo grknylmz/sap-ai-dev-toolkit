@@ -158,6 +158,35 @@ test('probes .dest only through configured HTTP proxy and accepts proxy-auth res
   assert.deepEqual(requests, [{ host: 'proxy-system.dest', path: 'http://proxy-system.dest/sap/bc/adt/discovery' }]);
 });
 
+test('uses the documented branded HTTP proxy for destination probes and respects explicit direct mode', async t => {
+  const requests = [];
+  const proxy = createServer((request, response) => {
+    requests.push({ host: request.headers.host, path: request.url });
+    response.writeHead(200);
+    response.end('<ok/>');
+  });
+  await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => proxy.close(resolve)));
+  const proxyUrl = `http://127.0.0.1:${proxy.address().port}`;
+  const found = await discoverDestinations({
+    body: [{ Name: 'branded-proxy-system' }],
+    env: { HTTP_PROXY: 'http://127.0.0.1:1', SAP_AI_DEV_TOOLKIT_HTTP_PROXY: proxyUrl }
+  });
+  assert.equal(found[0].probe.status, 'available');
+  assert.deepEqual(requests, [{ host: 'branded-proxy-system.dest', path: 'http://branded-proxy-system.dest/sap/bc/adt/discovery' }]);
+
+  const direct = await discoverDestinations({
+    body: [{ Name: 'direct-system' }],
+    env: { HTTP_PROXY: proxyUrl, SAP_AI_DEV_TOOLKIT_HTTP_PROXY: '' },
+    probeImpl: async (_url, options) => {
+      assert.equal(options.proxyUrl, '', 'explicit empty branded proxy must bypass the configured proxy');
+      return { status: 200 };
+    }
+  });
+  assert.equal(direct[0].probe.status, 'available');
+  assert.equal(requests.length, 1);
+});
+
 test('fetches BAS destination lists through configured HTTP and HTTPS proxies', async t => {
   const proxyRequests = [];
   const directRequests = [];
@@ -200,6 +229,26 @@ test('fetches BAS destination lists through configured HTTP and HTTPS proxies', 
     path: '/api/listDestinations'
   }]);
   assert.equal(proxyRequests.length, 2);
+});
+
+test('branded HTTP proxy takes precedence over HTTPS_PROXY for secure BAS discovery', async () => {
+  let capturedDispatcher = 'not-called';
+  const body = await fetchDestinationList('https://bas.example', {
+    env: {
+      SAP_AI_DEV_TOOLKIT_HTTP_PROXY: '',
+      HTTPS_PROXY: 'http://127.0.0.1:1',
+      https_proxy: 'http://127.0.0.1:1'
+    },
+    fetchImpl: async (_url, options) => {
+      capturedDispatcher = options.dispatcher;
+      return new Response(JSON.stringify([{ Name: 'secure-system' }]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+  });
+  assert.deepEqual(body, [{ Name: 'secure-system' }]);
+  assert.equal(capturedDispatcher, undefined, 'explicit branded empty proxy must disable inherited HTTPS_PROXY too');
 });
 
 test('redacts credential-bearing diagnostics without exposing payloads', () => {

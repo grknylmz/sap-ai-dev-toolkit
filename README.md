@@ -456,9 +456,10 @@ Credentials, cookies, SAP usernames, passwords, and raw BAS destination payloads
 The configuration path is selected in this order:
 
 1. `SAP_AI_DEV_MCP_CONFIG`, when set.
-2. `BAS_VSP_MCP_CONFIG`, when set for compatibility with earlier releases.
-3. An existing MCP user configuration detected automatically.
-4. The default MCP user configuration location.
+2. `SAP_AI_DEV_TOOLKIT_MCP_CONFIG`, when set.
+3. `BAS_VSP_MCP_CONFIG`, when set for compatibility with earlier releases.
+4. An existing MCP user configuration detected automatically.
+5. The default MCP user configuration location.
 
 Set `SAP_AI_DEV_MCP_CONFIG` to use a specific configuration file:
 
@@ -538,7 +539,9 @@ For a transport report, include exactly one `GetTransport` check whose `transpor
 
 For an ABAP Cloud assessment, get object URIs from `SearchObject` and pass them to `PlanABAPCloudMigration`. It reports release evidence; it does not guess replacement APIs. Save the JSON from `GenerateRAPRegressionSuite` and pass it to `RunRAPRegressionSuite` after relevant service changes.
 
-`sap-ai-dev-toolkit --doctor` probes each discovered destination, starts VSP, calls `GetSystemInfo` when available, and lists MCP tools. `--doctor --json` prints redacted results and exits unsuccessfully when a required check fails.
+`sap-ai-dev --doctor` probes each discovered destination, checks that each managed MCP entry still matches its selected BAS destination, starts VSP, lists MCP tools, and preflights `/sap/bc/adt/datapreview/freestyle` through the runtime relay before calling `GetSystemInfo`. It repairs only tagged toolkit-owned BAS entries that can be verified against complete destination discovery; it does not add destinations, remove stale or third-party entries, or overwrite malformed configuration. `--doctor --json` reports redacted session diagnostics (HTTP status, cookie count, retry/fallback counters; never token or cookie values) and exits unsuccessfully when a required check fails.
+
+`tools/list` confirms what this MCP server exposes; it does not prove that VS Code attached the server to the active chat. Start the selected destination in **MCP: List Servers**, enable it in the Chat tools picker, and reload/reselect the agent if the host binding is stale. This add-on cannot inspect or repair another MCP server's registration or a host-wide tool budget.
 
 `sap-ai-dev-toolkit --demo` starts an isolated server with sample ABAP objects, test and ATC results, a sample transport, and synthetic OData metadata and rows. Source edits and transport creation stay in process memory and disappear on exit. The demo does not discover or contact BAS or SAP destinations.
 
@@ -727,21 +730,11 @@ The response contains a `tools` array. A `RunQuery` entry resembles this excerpt
 | `SAP_AI_DEV_TOOLKIT_MODE` | VSP child mode (`expert` by default; `focused` omits `ActivateMultiple`, `GetUserTransports`, and `GetTransportInfo`). The proxy exposes its curated tool subset and local workflow tools, including `LintABAP`. |
 | `SAP_ALLOW_TRANSPORTABLE_EDITS` | Generated MCP entries set this to `true` to permit source edits in transportable packages; VSP safety checks and SAP authorizations still apply. |
 | `SAP_AI_DEV_TOOLKIT_DISABLE_BAS_RELAY=true` | Disable the built-in BAS destination relay. By default the add-on self-heals `.dest` destinations through a local relay that keeps all access destination-based while handling ADT CSRF fetch/retry behavior before VSP calls SAP. |
-| `SAP_AI_DEV_TOOLKIT_HTTP_PROXY` | Egress proxy for relay and discovery traffic (falls back to `HTTP_PROXY`/`http_proxy`; unset means the default BAS proxy for `.dest` hosts, empty means direct except for OnPremise credential overrides, which require a BAS proxy tunnel). |
-| `SAP_AI_DEV_TOOLKIT_MAX_CSRF_RETRIES` | Bounded CSRF/session self-healing retries per unsafe request (default 3). |
-
-#### Self-healing modes
-
-The relay between the VSP child and each BAS destination recovers from the failure modes that break ADT writes over `.dest` proxies:
-
-1. **CSRF session pairing** — every token is stored together with the `Set-Cookie` state SAP returned alongside it, and both are replayed on POST/PUT/PATCH/DELETE. This fixes `403 CSRF token validation failed` caused by token/session separation.
-2. **Session refresh** — when SAP rejects or rotates a session (401/403 after a token was already accepted), the cached session is dropped, a fresh token+cookie pair is fetched, and the request retried, bounded by the retry limit.
-3. **Proxy tunnel fallback** — when the BAS proxy refuses absolute-form requests (502/504 or transport errors), the relay switches to a CONNECT tunnel through the same proxy and keeps going.
-4. **Child crash recovery** — a crashed VSP child is restarted transparently, re-initialized, tools re-registered, and the interrupted `tools/call` retried once before any error reaches the client.
-5. **Direct connect for Internet destinations** — the BAS `.dest` proxy strips SAP `Set-Cookie` headers, which makes CSRF token/session binding impossible for ADT writes (`403 CSRF token validation failed`). When you select an Internet destination with BasicAuthentication, setup asks whether to override its credentials. A Yes prompts for SAP user/password and stores them in `sap-ai-dev-toolkit-credentials.json` **next to** `mcp.json` (never inside it, permissions `0600`). The relay connects straight to the backend host so cookies survive and ADT writes can use the paired CSRF session.
-6. **Cloud Connector credential overrides** — setup also offers per-destination overrides for BasicAuthentication OnPremise destinations. BAS OnPremise credentials travel through an HTTP CONNECT tunnel to the BAS `.dest` endpoint, retaining its Cloud Connector mapping; setup saves the override only after a read-only probe returns both a CSRF token and a session cookie. If that route check fails, the override is not saved. Cloud Foundry OnPremise overrides replace only the SAP backend user/password; Connectivity service-key authentication and its proxy route remain unchanged. PrincipalPropagation is never overridden. Rerun `sap-ai-dev --setup` to change credentials or answer No to disable a stored override. Deselecting a destination (or selecting none) removes stale overrides.
-| `SAP_AI_DEV_MCP_CONFIG` | Explicit MCP user configuration path. |
-| `BAS_VSP_MCP_CONFIG` | Backward-compatible alias for the MCP user configuration path. |
+| `SAP_AI_DEV_TOOLKIT_HTTP_PROXY` | Egress proxy for relay and discovery traffic. Takes precedence over `HTTP_PROXY`/`http_proxy`; unset means the default BAS proxy for `.dest` hosts, empty means direct except for OnPremise credential overrides, which require a BAS proxy tunnel. |
+| `SAP_AI_DEV_TOOLKIT_MAX_CSRF_RETRIES` | Bounded retries after explicit CSRF-session rejection per unsafe request (default 3, maximum 10). Invalid values use the default. |
+| `SAP_AI_DEV_MCP_CONFIG` | Explicit MCP configuration path; highest precedence. |
+| `SAP_AI_DEV_TOOLKIT_MCP_CONFIG` | Branded compatibility alias for the MCP configuration path. |
+| `BAS_VSP_MCP_CONFIG` | Backward-compatible alias for the MCP configuration path. |
 | `BAS_VSP_BINARY` | Trusted prebuilt VSP executable; skips Go and binary provisioning. |
 | `BAS_VSP_BINARY_URL` | Alternate VSP binary download URL. |
 | `BAS_VSP_CACHE_DIR` | Binary cache directory. |
@@ -750,6 +743,16 @@ The relay between the VSP child and each BAS destination recovers from the failu
 | `HTTP_PROXY` / `HTTPS_PROXY` | BAS proxy settings used for destination-list requests, destination probing, and child processes. |
 | `NO_PROXY` | Proxy bypass list for BAS destination-list requests; `.dest` hosts remain routed through the BAS proxy. |
 
+#### Self-healing modes
+
+The relay between the VSP child and each BAS destination recovers from the failure modes that break ADT writes over `.dest` proxies:
+
+1. **CSRF session pairing** — a scoped cookie jar retains session cookies received during safe reads and token fetches, applies updates and expirations, and replays the matching token/cookie pair on POST/PUT/PATCH/DELETE. If SAP returns a token without a usable session cookie, the relay fails closed and does not send the unsafe request.
+2. **Session refresh** — when SAP explicitly rejects a CSRF token, the cached session is dropped, a fresh token+cookie pair is fetched, and the request is retried within the configured bound. Generic authorization 401/403 responses are returned without being mislabeled or retried as CSRF failures.
+3. **Proxy tunnel fallback** — when the BAS proxy refuses absolute-form requests (502/504 or transport errors), the relay switches to a CONNECT tunnel through the same proxy and keeps going.
+4. **Child crash recovery** — a crashed VSP child is restarted transparently, re-initialized, tools re-registered, and the interrupted `tools/call` retried once before any error reaches the client.
+5. **Direct connect for Internet destinations** — the BAS `.dest` proxy strips SAP `Set-Cookie` headers, which makes CSRF token/session binding impossible for ADT writes (`403 CSRF token validation failed`). When you select an Internet destination with BasicAuthentication, setup asks whether to override its credentials. A Yes prompts for SAP user/password and stores them in `sap-ai-dev-toolkit-credentials.json` **next to** `mcp.json` (never inside it, permissions `0600`). The relay connects straight to the backend host so cookies survive and ADT writes can use the paired CSRF session.
+6. **Cloud Connector credential overrides** — setup also offers per-destination overrides for BasicAuthentication OnPremise destinations. BAS OnPremise credentials travel through an HTTP CONNECT tunnel to the BAS `.dest` endpoint, retaining its Cloud Connector mapping; setup saves the override only after a read-only probe returns both a CSRF token and a session cookie. If that route check fails, the override is not saved. Cloud Foundry OnPremise overrides replace only the SAP backend user/password; Connectivity service-key authentication and its proxy route remain unchanged. PrincipalPropagation is never overridden. Rerun `sap-ai-dev --setup` to change credentials or answer No to disable a stored override. Deselecting a destination (or selecting none) removes stale overrides.
 Existing installs that still set the previous `BAS_VSP_*` environment variables remain supported. The setup wizard writes new MCP entries with the `SAP_AI_DEV_TOOLKIT_*` names.
 
 <a id="troubleshooting"></a>

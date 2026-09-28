@@ -134,6 +134,152 @@ test('doctor reports missing BAS configuration as redacted JSON', async () => {
   });
 });
 
+test('doctor preflights the failing ADT endpoint through the runtime relay and repairs its owned config', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-doctor-csrf-'));
+  const configPath = join(directory, 'mcp.json');
+  const config = {
+    servers: {
+      'doctor-system': {
+        type: 'stdio',
+        command: 'sap-ai-dev',
+        env: {
+          H2O_URL: 'http://stale-bas.example',
+          SAP_AI_DEV_TOOLKIT_DESTINATION: 'doctor-system'
+        },
+        BAS_EXT: 'true'
+      },
+      ActionS4D_100: { type: 'stdio', command: 'third-party' }
+    }
+  };
+  await writeFile(configPath, JSON.stringify(config));
+  const requests = [];
+  const server = createServer((request, response) => {
+    let requestPath;
+    try { requestPath = new URL(request.url, `http://${request.headers.host}`).pathname; }
+    catch { requestPath = request.url; }
+    requests.push({ method: request.method, path: requestPath, csrf: request.headers['x-csrf-token'], cookie: request.headers.cookie });
+    if (request.url === '/api/listDestinations') {
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify([{
+        Name: 'doctor-system',
+        WebIDEEnabled: true,
+        'HTML5.DynamicDestination': true,
+        WebIDEUsage: 'dev_abap',
+        Authentication: 'BasicAuthentication'
+      }]));
+      return;
+    }
+    if (requestPath === '/sap/bc/adt/datapreview/freestyle') {
+      if (request.method === 'GET' && request.headers['x-csrf-token'] === 'Fetch') {
+        response.writeHead(200, {
+          'x-csrf-token': 'doctor-token',
+          'set-cookie': 'sap-session=doctor-session; Path=/'
+        });
+        response.end('<ok/>');
+        return;
+      }
+      if (request.method === 'POST'
+        && request.headers['x-csrf-token'] === 'doctor-token'
+        && String(request.headers.cookie).includes('sap-session=doctor-session')) {
+        response.writeHead(200);
+        response.end('<written/>');
+        return;
+      }
+      response.writeHead(403, { 'x-csrf-token': 'Required' });
+      response.end('CSRF token validation failed');
+      return;
+    }
+    response.writeHead(200);
+    response.end('<ok/>');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    await new Promise(resolve => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  });
+  const proxy = `http://127.0.0.1:${server.address().port}`;
+  const result = await runLauncher(['--doctor', '--json'], {
+    ...process.env,
+    SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
+    FAKE_RELAY_CSRF_TEST: 'true',
+    SAP_AI_DEV_MCP_CONFIG: configPath,
+    SAP_AI_DEV_TOOLKIT_DESTINATION: 'doctor-system',
+    H2O_URL: `http://127.0.0.1:${server.address().port}`,
+    HTTP_PROXY: proxy,
+    http_proxy: proxy,
+    NO_PROXY: '127.0.0.1,localhost',
+    no_proxy: '127.0.0.1,localhost'
+  });
+  assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.ok, true);
+  assert.ok(report.checks.some(check => check.stage === 'BAS relay CSRF preflight' && check.status === 'passed'));
+  assert.ok(report.checks.some(check => check.stage === 'SAP system check' && check.status === 'passed'));
+  assert.ok(report.checks.some(check => check.stage === 'MCP config repair' && check.status === 'passed' && /1 managed BAS entry repaired/.test(check.detail)));
+  assert.ok(report.checks.some(check => check.stage === 'MCP tools/list' && /total MCP tools returned; chat-picker binding is host-managed/.test(check.detail)));
+  assert.ok(requests.some(request => request.method === 'GET' && request.path === '/sap/bc/adt/datapreview/freestyle' && request.csrf === 'Fetch'));
+  assert.ok(requests.some(request => request.method === 'POST' && request.path === '/sap/bc/adt/datapreview/freestyle' && request.csrf === 'doctor-token' && String(request.cookie).includes('sap-session=doctor-session')));
+  const repairedConfig = JSON.parse(await readFile(configPath, 'utf8'));
+  assert.equal(repairedConfig.servers['doctor-system'].env.H2O_URL, `http://127.0.0.1:${server.address().port}`);
+  assert.deepEqual(repairedConfig.servers.ActionS4D_100, config.servers.ActionS4D_100);
+});
+
+test('doctor stops before GetSystemInfo when the runtime CSRF preflight has no session cookie', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-doctor-csrf-missing-cookie-'));
+  const configPath = join(directory, 'mcp.json');
+  await writeFile(configPath, JSON.stringify({ servers: {} }));
+  const requests = [];
+  const server = createServer((request, response) => {
+    let requestPath;
+    try { requestPath = new URL(request.url, `http://${request.headers.host}`).pathname; }
+    catch { requestPath = request.url; }
+    requests.push({ method: request.method, path: requestPath, csrf: request.headers['x-csrf-token'] });
+    if (request.url === '/api/listDestinations') {
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify([{
+        Name: 'doctor-system',
+        WebIDEEnabled: true,
+        'HTML5.DynamicDestination': true,
+        WebIDEUsage: 'dev_abap',
+        Authentication: 'BasicAuthentication'
+      }]));
+      return;
+    }
+    if (requestPath === '/sap/bc/adt/datapreview/freestyle') {
+      response.writeHead(200, { 'x-csrf-token': 'orphan-token' });
+      response.end('<ok/>');
+      return;
+    }
+    response.writeHead(200);
+    response.end('<ok/>');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {
+    await new Promise(resolve => server.close(resolve));
+    await rm(directory, { recursive: true, force: true });
+  });
+  const proxy = `http://127.0.0.1:${server.address().port}`;
+  const result = await runLauncher(['--doctor', '--json'], {
+    ...process.env,
+    SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
+    FAKE_RELAY_CSRF_TEST: 'true',
+    SAP_AI_DEV_MCP_CONFIG: configPath,
+    SAP_AI_DEV_TOOLKIT_DESTINATION: 'doctor-system',
+    H2O_URL: `http://127.0.0.1:${server.address().port}`,
+    HTTP_PROXY: proxy,
+    http_proxy: proxy,
+    NO_PROXY: '127.0.0.1,localhost',
+    no_proxy: '127.0.0.1,localhost'
+  });
+  assert.equal(result.code, 1);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.ok, false);
+  assert.ok(report.checks.some(check => check.stage === 'BAS relay CSRF preflight' && check.status === 'failed' && /cookies=0; usableSession=false/.test(check.detail)));
+  assert.ok(report.checks.some(check => check.stage === 'SAP system check' && check.status === 'skipped' && /validated BAS proxy tunnel credential override/.test(check.detail)));
+  assert.equal(requests.some(request => request.method === 'GET' && request.path === '/sap/bc/adt/datapreview/freestyle' && request.csrf === 'Fetch'), true);
+  assert.equal(requests.some(request => request.method === 'POST' && request.path === '/sap/bc/adt/datapreview/freestyle'), false, 'doctor must not call GetSystemInfo after a failed preflight');
+});
+
 test('list-destinations JSON is redacted and probes through the BAS proxy', async () => {
   const requests = [];
   const server = createServer((request, response) => {

@@ -120,8 +120,9 @@ function proxyBypasses(url, noProxy) {
 
 function proxyDispatcher(target, env) {
   const url = new URL(target);
-  const httpProxy = env.http_proxy ?? env.HTTP_PROXY ?? '';
-  const httpsProxy = env.https_proxy ?? env.HTTPS_PROXY ?? '';
+  const brandedProxy = brandedEnvValue(env, 'HTTP_PROXY');
+  const httpProxy = brandedProxy !== undefined ? String(brandedProxy) : (env.http_proxy ?? env.HTTP_PROXY ?? '');
+  const httpsProxy = brandedProxy !== undefined ? String(brandedProxy) : (env.https_proxy ?? env.HTTPS_PROXY ?? '');
   const proxy = url.protocol === 'https:' ? httpsProxy || httpProxy : httpProxy;
   const noProxy = env.no_proxy ?? env.NO_PROXY ?? '';
   if (!proxy || proxyBypasses(url, noProxy)) return undefined;
@@ -182,7 +183,7 @@ export async function probeADT(destination, options = {}) {
   const url = `${destinationUrl(destination.name)}/sap/bc/adt/discovery`;
   if (options.skipProbe) return { status: 'skipped', available: true, url };
   try {
-    const result = options.probeImpl ? await options.probeImpl(url, options) : await requestProbe(url, options.proxyUrl || DEFAULT_PROXY, options.timeoutMs || 5000);
+    const result = options.probeImpl ? await options.probeImpl(url, options) : await requestProbe(url, options.proxyUrl ?? DEFAULT_PROXY, options.timeoutMs || 5000);
     if ([401, 403].includes(result.status) || (result.status >= 200 && result.status < 300)) return { status: result.status === 401 || result.status === 403 ? 'auth-required' : 'available', available: true, httpStatus: result.status, url };
     if (result.status === 404) return { status: 'not-found', available: false, httpStatus: result.status, url };
     return { status: 'unavailable', available: false, httpStatus: result.status, url };
@@ -198,7 +199,9 @@ export async function discoverDestinations(options = {}) {
   if (!list) throw new Error(`Unrecognized BAS destination response shape; top-level keys: ${Object.keys(body || {}).map(String).join(', ') || '<none>'}`);
   const allow = text(brandedEnvValue(env, 'DESTINATION')).split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
   const normalized = list.map(normalizeDestination).filter(item => item.name).filter(item => !allow.length || allow.includes(item.name.toLowerCase()));
-  const proxyUrl = env.HTTP_PROXY || env.http_proxy || DEFAULT_PROXY;
+  const brandedProxy = brandedEnvValue(env, 'HTTP_PROXY');
+  const configuredProxy = brandedProxy !== undefined ? String(brandedProxy) : (env.HTTP_PROXY ?? env.http_proxy);
+  const proxyUrl = configuredProxy !== undefined ? configuredProxy : DEFAULT_PROXY;
   const skipProbe = String(brandedEnvValue(env, 'SKIP_PROBE') || '').toLowerCase() === 'true' || options.skipProbe;
   const result = [];
   for (const destination of normalized.sort((a, b) => a.name.localeCompare(b.name))) {

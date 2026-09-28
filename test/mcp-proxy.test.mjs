@@ -271,6 +271,36 @@ test('merges paged tools and routes calls to the selected child', async t => {
     assert.equal(init.env.allowTransportableEdits, 'true');
   }
 });
+
+test('routes tools/call using the exact name advertised for a BAS destination', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-namespaced-tool-roundtrip-'));
+  const log = join(directory, 'children.log');
+  const logs = [];
+  const proxy = new MCPProxy({
+    binary: fixture,
+    destinations: [{ name: 'ActionS4D_100', url: 'http://ActionS4D_100.dest', client: '100' }],
+    env: { ...process.env, SAP_AI_DEV_TOOLKIT_MODE: 'expert', FAKE_LOG: log },
+    log: message => logs.push(message)
+  });
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+  proxy.start();
+  const initialized = await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } });
+  assert.equal(initialized.error, undefined, `${JSON.stringify(initialized.error)} ${logs.join(' | ')}`);
+  const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+  assert.equal(listed.error, undefined, JSON.stringify(listed.error));
+  const tool = listed.result.tools.find(candidate => candidate.name === 'actions4d-100__WriteSource');
+  assert.ok(tool, 'tools/list must publish the normalized destination namespace');
+  const called = await proxy.handle({
+    jsonrpc: '2.0',
+    id: 3,
+    method: 'tools/call',
+    params: { name: tool.name, arguments: { source: 'REPORT zself_heal.' } }
+  });
+  assert.equal(called.error, undefined);
+  assert.equal(called.result.content[0].text, 'ActionS4D_100:WriteSource');
+  const calls = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(entry => entry.event === 'call');
+  assert.deepEqual(calls.map(entry => entry.name), ['WriteSource']);
+});
 test('runs LintABAP locally and returns parser findings', async t => {
   const { directory, log, proxy } = await fixtureProxy();
   t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });

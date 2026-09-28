@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { discoverDestinations, remediation, statusRows } from './bas-discovery.mjs';
 import { findBinary } from './binary.mjs';
 import { MCPProxy } from './mcp-proxy.mjs';
-import { installMcpConfig } from './mcp-config.mjs';
+import { installMcpConfig, repairManagedMcpConfig } from './mcp-config.mjs';
 import { runSetup } from './setup.mjs';
 import { resolveConfiguredCloudFoundryDestination } from './cf-destination.mjs';
 import { withBrandedEnvironment } from './branding.mjs';
@@ -30,7 +30,7 @@ function usage() {
     '  --list-destinations      List discovered BAS destinations',
     '  --list-destinations --json  Print redacted JSON status',
     '  --check                  Probe destination availability',
-    '  --doctor                 Check destination, VSP, SAP, and MCP connectivity',
+    '  --doctor                 Check SAP/MCP connectivity and repair safe toolkit config drift',
     '  --doctor --json          Print redacted JSON diagnostics',
     '  --demo                   Start an isolated, offline SAP MCP playground',
     '  --help, -h               Show this help and exit',
@@ -58,6 +58,20 @@ async function runDoctor(destinations) {
   try { binary = await binaryOrError(); }
   catch (error) { binaryError = error.message; }
 
+
+  try {
+    const repair = await repairManagedMcpConfig(destinations, {
+      env: runtimeEnv,
+      discoveryComplete: true,
+      packageVersion: pkg.version
+    });
+    const detail = repair.skipped
+      ? repair.skipped
+      : `${repair.repaired} managed BAS entr${repair.repaired === 1 ? 'y' : 'ies'} repaired; ${repair.managedEntries || 0} managed BAS entries recognized`;
+    checks.push(doctorRow('-', 'MCP config repair', 'passed', detail));
+  } catch (error) {
+    checks.push(doctorRow('-', 'MCP config repair', 'failed', redactText(error.message || error).slice(0, 300)));
+  }
   for (const destination of destinations) {
     const probe = destination.probe;
     const probeStatus = !probe || probe.status === 'skipped' ? 'skipped' : (probe.available === true ? 'passed' : 'failed');
@@ -78,7 +92,7 @@ async function runDoctor(destinations) {
       checks.push(doctorRow(destination.name, 'VSP MCP startup', 'passed', 'initialized'));
       const relayedDestination = proxy.children[0]?.destination;
       if (relayedDestination?.relay) {
-        checks.push(doctorRow(destination.name, 'BAS destination relay', 'passed', `enabled (${relayedDestination.url}); CSRF token/session pairing active`));
+        checks.push(doctorRow(destination.name, 'BAS destination relay', 'passed', `enabled (${relayedDestination.url}); runtime session preflight pending`));
       } else if (destination.source === 'cloud-foundry') {
         checks.push(doctorRow(destination.name, 'BAS destination relay', 'skipped', 'Cloud Foundry destinations connect through the connectivity proxy directly.'));
       } else if (String(runtimeEnv.SAP_AI_DEV_TOOLKIT_DISABLE_BAS_RELAY || '').toLowerCase() === 'true') {
@@ -96,14 +110,37 @@ async function runDoctor(destinations) {
       const tools = listed.result?.tools || [];
       const localNames = new Set(['LintABAP', 'GetApplicationLog', 'PrepareABAPChangeSet', 'ApplyABAPChangeSet', 'CheckTransportReadiness', 'PlanABAPCloudMigration', 'GenerateRAPRegressionSuite', 'RunRAPRegressionSuite']);
       const upstreamCount = tools.filter(tool => !localNames.has(tool.name.slice(tool.name.indexOf('__') + 2))).length;
-      checks.push(doctorRow(destination.name, 'MCP tools/list', upstreamCount ? 'passed' : 'failed', `${upstreamCount} VSP tools available`));
+      checks.push(doctorRow(destination.name, 'MCP tools/list', upstreamCount ? 'passed' : 'failed', `${upstreamCount} VSP tools and ${tools.length} total MCP tools returned; chat-picker binding is host-managed`));
       const systemInfo = tools.find(tool => tool.name.endsWith('__GetSystemInfo'));
       if (!systemInfo) {
         checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', 'GetSystemInfo is not exposed by this VSP mode.'));
       } else {
-        const inspected = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: systemInfo.name, arguments: {} } });
-        const failed = inspected?.error || inspected?.result?.isError;
-        checks.push(doctorRow(destination.name, 'SAP system check', failed ? 'failed' : 'passed', failed ? redactText(inspected?.error?.message || inspected?.result?.content?.[0]?.text || 'GetSystemInfo failed') : 'GetSystemInfo returned successfully'));
+        let sessionReady = true;
+        if (relayedDestination?.relay?.probeCsrfSession) {
+          let session;
+          let preflightError;
+          try {
+            session = await relayedDestination.relay.probeCsrfSession('/sap/bc/adt/datapreview/freestyle');
+          } catch (error) {
+            preflightError = redactText(error.message || error).slice(0, 250);
+          }
+          sessionReady = session?.sessionUsable === true;
+          const status = sessionReady ? 'passed' : 'failed';
+          const stats = relayedDestination.relay.stats || {};
+          const detail = preflightError
+            ? `preflight request failed: ${preflightError}`
+            : `HTTP ${session?.httpStatus || 0}; token=${session?.tokenReceived ? 'received' : 'missing'}; cookies=${session?.cookieCount || 0}; usableSession=${sessionReady}; csrfFetches=${stats.csrfFetches || 0}; csrfRetries=${stats.csrfRetries || 0}; sessionFailures=${stats.csrfSessionFailures || 0}; tunnelFallbacks=${stats.tunnelFallbacks || 0}`;
+          checks.push(doctorRow(destination.name, 'BAS relay CSRF preflight', status, detail));
+          if (!sessionReady) {
+            const remediation = 'GetSystemInfo was not called because the relay could not establish a paired CSRF token/session. For OnPremise BasicAuth, run sap-ai-dev --setup and use a validated BAS proxy tunnel credential override.';
+            checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', preflightError ? `${remediation} Relay error: ${preflightError}` : remediation));
+          }
+        }
+        if (sessionReady) {
+          const inspected = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: systemInfo.name, arguments: {} } });
+          const failed = inspected?.error || inspected?.result?.isError;
+          checks.push(doctorRow(destination.name, 'SAP system check', failed ? 'failed' : 'passed', failed ? redactText(inspected?.error?.message || inspected?.result?.content?.[0]?.text || 'GetSystemInfo failed') : 'GetSystemInfo returned successfully'));
+        }
       }
     } catch (error) {
       const detail = redactText(error.message || error).slice(0, 300);

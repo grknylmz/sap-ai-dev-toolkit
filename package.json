@@ -1,6 +1,6 @@
 {
   "name": "sap-ai-dev-toolkit",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "SAP AI development toolkit for BAS, ABAP, RAP, CAP, HANA Cloud, Fiori, UI5, and MCP",
   "author": "Gurkan Yilmaz",
   "type": "module",
@@ -12,6 +12,7 @@
     "@modelcontextprotocol/sdk": "1.30.1",
     "@sap/hana-client": "2.30.27",
     "terminal-kit": "^3.1.4",
+    "tough-cookie": "^5.1.2",
     "undici": "^6.21.3",
     "zod": "4.6.5"
   },

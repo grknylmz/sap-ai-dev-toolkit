@@ -302,7 +302,10 @@ export class MCPProxy {
             destination = {
               ...originalDestination,
               url: relayUrl,
-              relay: true,
+              relay: {
+                probeCsrfSession: relay.probeCsrfSession,
+                stats: relay.stats
+              },
               async close() {
                 await originalClose?.();
                 await relay.close();

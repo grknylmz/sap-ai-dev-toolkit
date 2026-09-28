@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildMcpEntries, buildSapDevelopmentMcpEntries, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, installMcpConfig, readMcpConfig } from '../src/mcp-config.mjs';
+import { buildMcpEntries, buildSapDevelopmentMcpEntries, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, installMcpConfig, readMcpConfig, repairManagedMcpConfig, resolveMcpConfigPath } from '../src/mcp-config.mjs';
 
 const bas = {
   source: 'bas', name: 'shared', serverName: 'shared', url: 'http://shared.dest',
@@ -76,6 +76,134 @@ test('stores and reconciles the MCP launcher executable location', async t => {
 
   await installMcpConfig([], { env, path });
   assert.deepEqual(Object.keys((await readMcpConfig(path)).servers), ['userServer']);
+});
+
+test('resolves documented, toolkit, and legacy MCP config paths in order', async () => {
+  assert.equal(await resolveMcpConfigPath({
+    SAP_AI_DEV_MCP_CONFIG: '/tmp/documented-mcp.json',
+    SAP_AI_DEV_TOOLKIT_MCP_CONFIG: '/tmp/toolkit-mcp.json',
+    BAS_VSP_MCP_CONFIG: '/tmp/legacy-mcp.json'
+  }), '/tmp/documented-mcp.json');
+  assert.equal(await resolveMcpConfigPath({
+    SAP_AI_DEV_TOOLKIT_MCP_CONFIG: '/tmp/toolkit-mcp.json',
+    BAS_VSP_MCP_CONFIG: '/tmp/legacy-mcp.json'
+  }), '/tmp/toolkit-mcp.json');
+  assert.equal(await resolveMcpConfigPath({ BAS_VSP_MCP_CONFIG: '/tmp/legacy-mcp.json' }), '/tmp/legacy-mcp.json');
+});
+
+test('doctor repair updates only discovered toolkit BAS entries and is idempotent', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-doctor-repair-'));
+  const path = join(directory, 'mcp.json');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const cf = cfDestination('space-one', 'instance-one', 'cf-key');
+  const strictDestination = { ...bas, name: 'strict', serverName: 'strict', url: 'http://strict.dest' };
+  const managed = buildMcpEntries([bas], { H2O_URL: 'http://old-h2o.example' }).shared;
+  const strictManaged = buildMcpEntries([strictDestination], { H2O_URL: 'http://old-h2o.example' }).strict;
+  const cfEntry = buildMcpEntries([cf], { H2O_URL: 'http://cf-h2o.example' })[cf.serverName];
+  const companion = buildSapDevelopmentMcpEntries(['sap-fiori-tools'])['sap-fiori-tools'];
+  const unrelated = { type: 'stdio', command: 'external-server' };
+  const unverifiedManaged = {
+    ...managed,
+    env: { ...managed.env, SAP_AI_DEV_TOOLKIT_DESTINATION: 'temporarily-unavailable' }
+  };
+  const config = {
+    userFlag: true,
+    servers: {
+      shared: { ...managed, env: { ...managed.env, H2O_URL: 'http://old-h2o.example' } },
+      strict: { ...strictManaged, env: { ...strictManaged.env, SAP_ALLOW_TRANSPORTABLE_EDITS: 'false' } },
+      'temporarily-unavailable': unverifiedManaged,
+      [cf.serverName]: cfEntry,
+      'sap-fiori-tools': companion,
+      ActionS4D_100: unrelated
+    }
+  };
+  await writeFile(path, JSON.stringify(config, null, 2));
+
+  const first = await repairManagedMcpConfig([bas, strictDestination], { env: { H2O_URL: 'http://current-h2o.example' }, path, discoveryComplete: true });
+  assert.equal(first.changed, true);
+  assert.equal(first.repaired, 2);
+  const repaired = await readMcpConfig(path);
+  assert.equal(repaired.userFlag, true);
+  assert.equal(repaired.servers.shared.env.H2O_URL, 'http://current-h2o.example');
+  assert.equal(repaired.servers.shared.env.SAP_ALLOW_TRANSPORTABLE_EDITS, 'true');
+  assert.equal(repaired.servers.strict.env.SAP_ALLOW_TRANSPORTABLE_EDITS, 'false', "doctor must preserve a user's restricted write setting");
+  assert.deepEqual(repaired.servers['temporarily-unavailable'], unverifiedManaged);
+  assert.deepEqual(repaired.servers[cf.serverName], cfEntry);
+  assert.deepEqual(repaired.servers['sap-fiori-tools'], companion);
+  assert.deepEqual(repaired.servers.ActionS4D_100, unrelated);
+  assert.equal(repaired.servers.newDestination, undefined, 'repair must not add unselected destinations');
+
+  const beforeSecondRepair = await readFile(path, 'utf8');
+  const second = await repairManagedMcpConfig([bas, strictDestination], { env: { H2O_URL: 'http://current-h2o.example' }, path, discoveryComplete: true });
+  assert.equal(second.changed, false);
+  assert.equal(second.repaired, 0);
+  assert.equal(await readFile(path, 'utf8'), beforeSecondRepair, 'an already-healed config must not be rewritten');
+});
+
+test('doctor repair leaves malformed config untouched', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-doctor-repair-invalid-'));
+  const path = join(directory, 'mcp.json');
+  const malformed = '{ "servers": ';
+  await writeFile(path, malformed);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await assert.rejects(
+    () => repairManagedMcpConfig([bas], { env: { H2O_URL: 'http://h2o.example' }, path, discoveryComplete: true }),
+    /invalid JSON/
+  );
+  assert.equal(await readFile(path, 'utf8'), malformed);
+});
+
+test('doctor repair skips config changes if destination discovery is incomplete', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-doctor-repair-incomplete-'));
+  const path = join(directory, 'mcp.json');
+  const entry = buildMcpEntries([bas], { H2O_URL: 'http://old-h2o.example' }).shared;
+  const initial = JSON.stringify({ servers: { shared: entry } });
+  await writeFile(path, initial);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const result = await repairManagedMcpConfig([bas], { env: { H2O_URL: 'http://new-h2o.example' }, path });
+  assert.equal(result.changed, false);
+  assert.match(result.skipped, /incomplete/);
+  assert.equal(await readFile(path, 'utf8'), initial);
+});
+
+test('doctor repair refreshes stale toolkit launchers without changing npx behavior', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-doctor-launcher-repair-'));
+  const path = join(directory, 'mcp.json');
+  const bin = join(directory, 'bin');
+  await import('node:fs/promises').then(({ mkdir }) => mkdir(bin));
+  const command = join(bin, 'sap-ai-dev');
+  await writeFile(command, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const npx = {
+    ...buildMcpEntries([bas], { H2O_URL: 'http://old-h2o.example' }).shared,
+    command: 'npx',
+    args: ['--yes', '--package=sap-ai-dev-toolkit@0.4.2', 'sap-ai-dev'],
+    env: {
+      ...buildMcpEntries([bas], { H2O_URL: 'http://old-h2o.example' }).shared.env,
+      SAP_AI_DEV_TOOLKIT_DESTINATION: 'shared',
+      OPERATOR_SETTING: 'preserve'
+    }
+  };
+  const direct = {
+    ...buildMcpEntries([bas], { H2O_URL: 'http://old-h2o.example' }).shared,
+    command: 'stale-sap-ai-dev'
+  };
+  await writeFile(path, JSON.stringify({ servers: { shared: npx, other: { ...direct, env: { ...direct.env, SAP_AI_DEV_TOOLKIT_DESTINATION: 'other' } }, userServer: { command: 'other' } } }));
+
+  const result = await repairManagedMcpConfig([bas], {
+    env: { H2O_URL: 'http://current-h2o.example', PATH: bin },
+    path,
+    discoveryComplete: true,
+    packageVersion: '0.4.5'
+  });
+  assert.equal(result.repaired, 1, 'only the entry that maps to the discovered destination is repaired');
+  const repaired = await readMcpConfig(path);
+  assert.equal(repaired.servers.shared.command, 'npx');
+  assert.deepEqual(repaired.servers.shared.args, ['--yes', '--package=sap-ai-dev-toolkit@0.4.5', 'sap-ai-dev']);
+  assert.equal(repaired.servers.shared.env.OPERATOR_SETTING, 'preserve');
+  assert.equal(repaired.servers.shared.env.H2O_URL, 'http://current-h2o.example');
+  assert.equal(repaired.servers.other.command, 'stale-sap-ai-dev', 'unmatched toolkit entry must remain untouched');
+  assert.deepEqual(repaired.servers.userServer, { command: 'other' });
 });
 
 test('extracts key references only from package-managed Cloud Foundry entries', () => {

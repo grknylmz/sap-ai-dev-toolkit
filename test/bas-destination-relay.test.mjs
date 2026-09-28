@@ -11,20 +11,48 @@ const UNSAFE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
 // request carries BOTH the token and the session cookies that were set
 // together with it. This reproduces the 403 "CSRF token validation failed"
 // seen on the BAS .dest proxy path before the relay paired sessions.
-function sapLikeBackend({ neverAcceptUnsafe = false, rotateOnFetch = false } = {}) {
+function sapLikeBackend({
+  neverAcceptUnsafe = false,
+  rotateOnFetch = false,
+  genericForbidden = false,
+  partialRefreshCookies = false,
+  omitCookies = false,
+  setCookieOnSafeGet = false,
+  secureSessionCookie = false
+} = {}) {
   const state = { sessionCounter: 0, requests: [] };
   const server = http.createServer((req, res) => {
     state.requests.push({ method: req.method, path: req.url, headers: { ...req.headers } });
     if (req.method === 'GET' && req.headers['x-csrf-token'] === 'Fetch') {
       state.sessionCounter += 1;
-      res.writeHead(200, {
-        'x-csrf-token': `token-${state.sessionCounter}`,
-        'set-cookie': [`sap-session-${state.sessionCounter}=s${state.sessionCounter}; path=/`, 'sap-usercontext=sap-client=100; path=/']
-      });
+      const headers = { 'x-csrf-token': `token-${state.sessionCounter}` };
+      if (!omitCookies) {
+        headers['set-cookie'] = [`sap-session-${state.sessionCounter}=s${state.sessionCounter}; path=/`];
+        if (!partialRefreshCookies || state.sessionCounter === 1) {
+          headers['set-cookie'].push('sap-usercontext=sap-client=100; path=/');
+        }
+        if (partialRefreshCookies) {
+          headers['set-cookie'].push(state.sessionCounter === 1
+            ? 'sap-stale=delete-me; path=/'
+            : 'sap-stale=; Expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/');
+        }
+        if (secureSessionCookie) headers['set-cookie'].push('sap-secure=secure-value; Secure; Path=/');
+      }
+      res.writeHead(200, headers);
       res.end('<ok/>');
       return;
     }
+    if (req.method === 'GET' && req.url === '/sap/bc/adt/discovery' && setCookieOnSafeGet) {
+      res.writeHead(200, { 'set-cookie': 'bas-read-session=kept; path=/sap/bc/adt' });
+      res.end('<read/>');
+      return;
+    }
     if (UNSAFE_METHODS.includes(req.method)) {
+      if (genericForbidden) {
+        res.writeHead(403);
+        res.end('User is not authorized to change this object');
+        return;
+      }
       if (neverAcceptUnsafe) {
         res.writeHead(403, { 'x-csrf-token': 'Required' });
         res.end('CSRF token validation failed');
@@ -36,7 +64,11 @@ function sapLikeBackend({ neverAcceptUnsafe = false, rotateOnFetch = false } = {
       // Without rotation any still-live token+cookie pair is accepted; with
       // rotation only the newest issued session remains valid, matching SAP
       // server-side session invalidation.
-      const valid = match && cookie.includes(`sap-session-${match[1]}=`) && (!rotateOnFetch || Number(match[1]) === state.sessionCounter);
+      const valid = match
+        && cookie.includes(`sap-session-${match[1]}=`)
+        && (!rotateOnFetch || Number(match[1]) === state.sessionCounter)
+        && (!partialRefreshCookies || cookie.includes('sap-usercontext=sap-client=100'))
+        && (!partialRefreshCookies || Number(match[1]) === 1 || !cookie.includes('sap-stale='));
       if (!valid) {
         res.writeHead(403, { 'x-csrf-token': 'Required' });
         res.end('CSRF token validation failed');
@@ -79,7 +111,7 @@ async function withBackend(options, handler) {
   const relay = createBasDestinationRelay(
     { name: 'TEST', url: `http://127.0.0.1:${backendPort}`, authentication: 'BasicAuthentication' },
     {
-      env: { HTTP_PROXY: '' },
+      env: { HTTP_PROXY: '', ...(options?.env || {}) },
       fetchImpl: options?.fetchImpl || ((url, init) => globalThis.fetch(url, init)),
       log: message => logs.push(message)
     }
@@ -115,6 +147,30 @@ test('reuses the cached CSRF session for subsequent unsafe requests', async () =
   });
 });
 
+test('coalesces concurrent CSRF token fetches for the same ADT endpoint', async () => {
+  await withBackend(null, async ({ relayUrl, state }) => {
+    const responses = await Promise.all([
+      relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', body: '<x/>' }),
+      relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', body: '<y/>' })
+    ]);
+    assert.deepEqual(responses.map(response => response.status), [201, 201]);
+    assert.equal(state.requests.filter(request => request.headers['x-csrf-token'] === 'Fetch').length, 1);
+    assert.equal(state.requests.filter(request => request.method === 'POST').length, 2);
+  });
+});
+
+test('seeds the relay cookie jar from the incoming MCP request cookie', async () => {
+  await withBackend(null, async ({ relayUrl, state }) => {
+    await relayFetch(relayUrl, '/sap/bc/adt/oo/classes', {
+      method: 'POST',
+      headers: { cookie: 'sap-initial-session=from-vsp' },
+      body: '<x/>'
+    });
+    const tokenFetch = state.requests.find(request => request.headers['x-csrf-token'] === 'Fetch');
+    assert.match(String(tokenFetch.headers.cookie), /sap-initial-session=from-vsp/);
+  });
+});
+
 test('self-heals when SAP rotates the session: refetches token and cookies', async () => {
   await withBackend({ rotateOnFetch: true }, async ({ relay, relayUrl, state }) => {
     // A first POST establishes session token-1. SAP then invalidates it
@@ -129,6 +185,46 @@ test('self-heals when SAP rotates the session: refetches token and cookies', asy
   });
 });
 
+test('merges partial session-cookie updates and applies cookie deletion on refresh', async () => {
+  await withBackend({ rotateOnFetch: true, partialRefreshCookies: true }, async ({ relayUrl, state }) => {
+    await relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', body: '<x/>' });
+    state.sessionCounter += 1;
+    const response = await relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', body: '<y/>' });
+    assert.equal(response.status, 201, `partial cookie refresh must heal, got ${response.status}`);
+    const posts = state.requests.filter(request => request.method === 'POST');
+    assert.match(String(posts[2].headers.cookie), /sap-usercontext=sap-client=100/);
+    assert.doesNotMatch(String(posts[2].headers.cookie), /sap-stale=/);
+  });
+});
+
+test('retains cookies received on a safe GET for later CSRF requests', async () => {
+  await withBackend({ setCookieOnSafeGet: true }, async ({ relayUrl, state }) => {
+    await relayFetch(relayUrl, '/sap/bc/adt/discovery');
+    const response = await relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', body: '<x/>' });
+    assert.equal(response.status, 201);
+    const tokenFetch = state.requests.find(request => request.headers['x-csrf-token'] === 'Fetch');
+    assert.match(String(tokenFetch.headers.cookie), /bas-read-session=kept/);
+  });
+});
+
+test('does not retry generic authorization failures as CSRF errors', async () => {
+  await withBackend({ genericForbidden: true }, async ({ relayUrl, relay, state }) => {
+    const response = await relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', body: '<x/>' });
+    assert.equal(response.status, 403);
+    assert.equal(state.requests.filter(request => request.method === 'POST').length, 1);
+    assert.equal(relay.stats.csrfRetries, 0);
+  });
+});
+
+test('does not repeat a CSRF failure when SAP returns a token without session cookies', async () => {
+  await withBackend({ omitCookies: true }, async ({ relayUrl, relay, state }) => {
+    const response = await relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', body: '<x/>' });
+    assert.equal(response.status, 503, `unsafe calls must fail closed without a paired session, got ${response.status}`);
+    assert.equal(state.requests.filter(request => request.method === 'POST').length, 0);
+    assert.equal(relay.stats.csrfRetries, 0);
+  });
+});
+
 test('stops retrying after bounded attempts and surfaces the failure', async () => {
   await withBackend({ neverAcceptUnsafe: true }, async ({ relay, relayUrl, state }) => {
     const response = await relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', body: '<x/>' });
@@ -137,6 +233,45 @@ test('stops retrying after bounded attempts and surfaces the failure', async () 
     assert.equal(attempts.length, 1 + 3, 'one initial try plus three bounded retries');
     assert.equal(relay.stats.csrfRetries, 3);
   });
+});
+
+test('honors the configured bounded CSRF retry count', async () => {
+  await withBackend({ neverAcceptUnsafe: true, env: { SAP_AI_DEV_TOOLKIT_MAX_CSRF_RETRIES: '1' } }, async ({ relayUrl, relay, state }) => {
+    const response = await relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', body: '<x/>' });
+    assert.equal(response.status, 403);
+    assert.equal(state.requests.filter(request => request.method === 'POST').length, 1 + 1);
+    assert.equal(relay.stats.csrfRetries, 1);
+  });
+});
+
+test('uses the default for invalid retry settings and caps excessive retry counts', async () => {
+  await withBackend({ neverAcceptUnsafe: true, env: { SAP_AI_DEV_TOOLKIT_MAX_CSRF_RETRIES: '1.5' } }, async ({ relayUrl, state }) => {
+    await relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', body: '<x/>' });
+    assert.equal(state.requests.filter(request => request.method === 'POST').length, 4, 'invalid values use the default of three retries');
+  });
+  await withBackend({ neverAcceptUnsafe: true, env: { SAP_AI_DEV_TOOLKIT_MAX_CSRF_RETRIES: '100' } }, async ({ relayUrl, state }) => {
+    await relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', body: '<x/>' });
+    assert.equal(state.requests.filter(request => request.method === 'POST').length, 11, 'retry counts are capped at ten');
+  });
+});
+
+test('prefers the documented branded proxy setting including an explicit direct-connection override', async t => {
+  let dispatchedWithProxy = false;
+  const relay = createBasDestinationRelay(
+    { name: 'TEST', url: 'http://test.dest', authentication: 'BasicAuthentication' },
+    {
+      env: { HTTP_PROXY: 'http://127.0.0.1:1', SAP_AI_DEV_TOOLKIT_HTTP_PROXY: '' },
+      fetchImpl: async (_url, options = {}) => {
+        dispatchedWithProxy = Boolean(options.dispatcher);
+        return new Response('<ok/>', { status: 200, headers: { 'x-csrf-token': 'token', 'set-cookie': 'sap-session=s; path=/' } });
+      }
+    }
+  );
+  t.after(() => relay.close());
+  await relay.ready;
+  const probe = await relay.probeCsrfSession();
+  assert.equal(probe.sessionUsable, true);
+  assert.equal(dispatchedWithProxy, false, 'an explicit empty branded proxy setting means direct traffic');
 });
 
 test('GET requests pass through without CSRF handling', async () => {
@@ -189,7 +324,7 @@ test('falls back to a proxy tunnel when the absolute-form request is refused', a
 });
 
 test('keeps OnPremise Basic auth on a BAS proxy tunnel and verifies the CSRF session', async t => {
-  const { state, server } = sapLikeBackend();
+  const { state, server } = sapLikeBackend({ secureSessionCookie: true });
   const backendPort = await startServer(server);
   const connectTargets = [];
   const proxy = http.createServer();
@@ -224,12 +359,13 @@ test('keeps OnPremise Basic auth on a BAS proxy tunnel and verifies the CSRF ses
   });
 
   const probe = await relay.probeCsrfSession();
-  assert.deepEqual(probe, { httpStatus: 200, tokenReceived: true, cookieCount: 2 });
+  assert.deepEqual(probe, { httpStatus: 200, tokenReceived: true, cookieCount: 3, sessionUsable: true });
   const response = await relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', body: '<x/>' });
   assert.equal(response.status, 201, `expected a paired CSRF session, got ${response.status}: ${response.body}`);
   const post = state.requests.find(request => request.method === 'POST');
   assert.match(post.headers.authorization, /^Basic /);
   assert.match(String(post.headers.cookie), /sap-session-\d+=/);
+  assert.match(String(post.headers.cookie), /sap-secure=secure-value/, 'Secure SAP cookies must be sent through the HTTPS-backed BAS .dest route');
   assert.ok(connectTargets.length >= 2);
   assert.ok(connectTargets.every(target => target === 'cc-system.dest:80'));
   assert.equal(relay.stats.direct, false);

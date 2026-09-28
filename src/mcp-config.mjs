@@ -82,7 +82,8 @@ export async function resolveMcpServerCommand(env = process.env) {
 }
 
 export async function resolveMcpConfigPath(env = process.env) {
-  const configuredPath = brandedEnvValue(env, 'MCP_CONFIG');
+  const configuredPath = [env.SAP_AI_DEV_MCP_CONFIG, brandedEnvValue(env, 'MCP_CONFIG')]
+    .find(value => typeof value === 'string' && value.length > 0);
   if (configuredPath) return configuredPath;
   const home = env.HOME || homedir();
   const candidates = [
@@ -204,6 +205,22 @@ function destinationSource(env) {
   return env?.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE ?? env?.BAS_VSP_DESTINATION_SOURCE;
 }
 
+function isManagedBasDestinationEntry(entry) {
+  const currentCommands = new Set(['sap-ai-dev', 'sap-ai-dev-toolkit']);
+  const commandName = typeof entry?.command === 'string'
+    ? entry.command.slice(Math.max(entry.command.lastIndexOf('/'), entry.command.lastIndexOf('\\')) + 1).replace(/\.(?:cmd|exe)$/i, '')
+    : '';
+  const currentCommand = currentCommands.has(entry?.command) || currentCommands.has(commandName);
+  const currentNpxLauncher = entry?.command === 'npx'
+    && Array.isArray(entry.args)
+    && entry.args.some(argument => currentCommands.has(argument))
+    && entry.args.some(argument => typeof argument === 'string' && /^--package=sap-ai-dev-toolkit(?:@[^/]+)?$/.test(argument));
+  return entry?.BAS_EXT === 'true'
+    && (currentCommand || currentNpxLauncher)
+    && typeof destinationValue(entry?.env) === 'string'
+    && destinationSource(entry.env) === undefined;
+}
+
 function collectCloudFoundryKeyReferences(config, managedOnly) {
   const refs = new Map();
   for (const entry of Object.values(config?.servers || {})) {
@@ -292,7 +309,7 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
       && typeof destinationValue(entry?.env) === 'string'
       && (destinationSource(entry.env) === 'cloud-foundry'
         ? typeof entry.env.BAS_CF_DESTINATION_KEY === 'string'
-        : entry.env.BAS_VSP_DESTINATION_SOURCE === undefined);
+        : destinationSource(entry.env) === undefined);
     if (!LEGACY_MCP_SERVER_PREFIXES.some(prefix => name.startsWith(prefix)) && !managed && !isCompanionServer(entry)) servers[name] = entry;
   }
   for (const name of Object.keys(generated)) {
@@ -303,6 +320,53 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
   config.servers = { ...servers, ...generated };
   await writeConfig(path, config);
   return { path, servers: generated };
+}
+
+export async function repairManagedMcpConfig(discoveredDestinations, { env = process.env, path, discoveryComplete = false, packageVersion } = {}) {
+  const configPath = path || await resolveMcpConfigPath(env);
+  if (!discoveryComplete) {
+    return { path: configPath, changed: false, repaired: 0, skipped: 'Destination discovery was incomplete.' };
+  }
+  if (!Array.isArray(discoveredDestinations)) throw new Error('Destination discovery result must be an array');
+  const basDestinations = new Map(discoveredDestinations
+    .filter(destination => destination?.source !== 'cloud-foundry' && destination?.name)
+    .map(destination => [String(destination.name), destination]));
+  const config = await readConfig(configPath);
+  const managedEntries = Object.values(config.servers).filter(isManagedBasDestinationEntry).length;
+  if (!basDestinations.size) return { path: configPath, changed: false, repaired: 0, managedEntries };
+  const localCommand = await resolveMcpServerCommand(env);
+  let repaired = 0;
+  for (const [serverName, entry] of Object.entries(config.servers)) {
+    if (!isManagedBasDestinationEntry(entry)) continue;
+    const destinationName = destinationValue(entry.env);
+    if (generatedServerName(destinationName) !== serverName) continue;
+    const destination = basDestinations.get(destinationName);
+    if (!destination) continue;
+    const expected = buildMcpEntries([destination], env)[serverName];
+    const nextEnvironment = { ...entry.env, ...expected.env };
+    if (Object.hasOwn(entry.env, 'SAP_ALLOW_TRANSPORTABLE_EDITS')) {
+      nextEnvironment.SAP_ALLOW_TRANSPORTABLE_EDITS = entry.env.SAP_ALLOW_TRANSPORTABLE_EDITS;
+    }
+    delete nextEnvironment.BAS_VSP_DESTINATION;
+    delete nextEnvironment.BAS_VSP_DESTINATION_SOURCE;
+    const nextEntry = { ...entry, type: 'stdio', env: nextEnvironment, BAS_EXT: 'true' };
+    if (entry.command === 'npx') {
+      if (packageVersion && Array.isArray(entry.args)) {
+        nextEntry.args = entry.args.map(argument => typeof argument === 'string' && /^--package=sap-ai-dev-toolkit(?:@[^/]+)?$/.test(argument)
+          ? `--package=sap-ai-dev-toolkit@${packageVersion}`
+          : argument);
+      }
+    } else {
+      nextEntry.command = localCommand;
+    }
+    if (JSON.stringify(nextEntry) === JSON.stringify(entry)) continue;
+    config.servers[serverName] = nextEntry;
+    repaired += 1;
+  }
+
+  if (!repaired) return { path: configPath, changed: false, repaired: 0, managedEntries };
+  await writeConfig(configPath, config);
+  return { path: configPath, changed: true, repaired, managedEntries };
 }
 
 export async function readMcpConfig(path) {
