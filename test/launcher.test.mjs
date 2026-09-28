@@ -7,6 +7,8 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnWithPty } from './pty.mjs';
+import { storeDestinationCredentials } from '../src/credentials-store.mjs';
+import { credentialKeyForDestination, enrichWithStoredCredentials } from '../src/credential-overrides.mjs';
 
 const launcher = fileURLToPath(new URL('../src/launcher.mjs', import.meta.url));
 const fakeVsp = fileURLToPath(new URL('./fixtures/fake-vsp.mjs', import.meta.url));
@@ -42,6 +44,56 @@ function runLauncherTty(env, input, args = ['--setup']) {
     child.on('exit', (code, signal) => { clearTimeout(timeout); resolve({ code, signal, stdout, stderr, inputSent }); });
   });
 }
+
+test('enriches stored credentials without switching BAS OnPremise or CF Connectivity routes', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-launcher-credentials-'));
+  const credentialsPath = join(directory, 'credentials.json');
+  t.after(async () => { await rm(directory, { recursive: true, force: true }); });
+
+  const internet = {
+    name: 'internet-system', url: 'http://internet-system.dest', backendUrl: 'https://internet.example:44300',
+    authentication: 'BasicAuthentication', proxyType: 'Internet'
+  };
+  const basOnPremise = {
+    name: 'shared-system', url: 'http://shared-system.dest', backendUrl: 'https://internal.example:44300',
+    authentication: 'BasicAuthentication', proxyType: 'OnPremise'
+  };
+  const cfOnPremise = {
+    source: 'cloud-foundry', name: 'shared-system', serverName: 'cf:space-one:instance-one:shared-system',
+    url: 'https://sap.internal:44300', authentication: 'BasicAuthentication', proxyType: 'OnPremise',
+    childEnv: { HTTP_PROXY: 'http://127.0.0.1:3333', SAP_USER: 'configured-user', SAP_PASSWORD: 'configured-password' }
+  };
+  const principalPropagation = { ...cfOnPremise, name: 'principal-system', serverName: 'cf:space-one:instance-one:principal-system', authentication: 'PrincipalPropagation' };
+
+  await storeDestinationCredentials(credentialsPath, 'internet-system', {
+    host: internet.backendUrl, user: 'INTERNET_USER', password: 'internet-secret'
+  });
+  await storeDestinationCredentials(credentialsPath, 'shared-system', {
+    user: 'BAS_USER', password: 'bas-secret', mode: 'bas-tunnel'
+  });
+  await storeDestinationCredentials(credentialsPath, credentialKeyForDestination(cfOnPremise), {
+    user: 'CF_USER', password: 'cf-secret', mode: 'cf-connectivity'
+  });
+  await storeDestinationCredentials(credentialsPath, credentialKeyForDestination(principalPropagation), {
+    user: 'SHOULD_NOT_APPLY', password: 'pp-secret', mode: 'cf-connectivity'
+  });
+
+  const result = await enrichWithStoredCredentials(
+    [internet, basOnPremise, cfOnPremise, principalPropagation],
+    { SAP_AI_DEV_TOOLKIT_CREDENTIALS_FILE: credentialsPath },
+    () => {}
+  );
+  assert.deepEqual(result[0].credentials, {
+    host: internet.backendUrl, user: 'INTERNET_USER', password: 'internet-secret', mode: 'direct'
+  });
+  assert.deepEqual(result[1].credentials, { user: 'BAS_USER', password: 'bas-secret', mode: 'bas-tunnel' });
+  assert.equal(result[1].credentials.host, undefined, 'OnPremise must not bypass the BAS destination route');
+  assert.deepEqual(result[2].childEnv, {
+    HTTP_PROXY: 'http://127.0.0.1:3333', SAP_USER: 'CF_USER', SAP_PASSWORD: 'cf-secret', SAP_VERBOSE: 'false'
+  });
+  assert.equal(result[3].childEnv.SAP_USER, 'configured-user', 'PrincipalPropagation must not receive a Basic override');
+  assert.equal(result[3].childEnv.SAP_PASSWORD, 'configured-password');
+});
 
 test('help exits before BAS destination discovery', async t => {
   let requests = 0;

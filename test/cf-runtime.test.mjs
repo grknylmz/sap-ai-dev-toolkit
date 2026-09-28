@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { storeDestinationCredentials } from '../src/credentials-store.mjs';
 
 const launcher = fileURLToPath(new URL('../src/launcher.mjs', import.meta.url));
 const fakeVsp = fileURLToPath(new URL('./fixtures/fake-vsp.mjs', import.meta.url));
@@ -257,6 +258,12 @@ test('routes a PrincipalPropagation MCP call through CF Connectivity to the SAP 
     connectivityProxyPort,
     connectivityTokenUrl: `${serviceOrigin}/connectivity/oauth/token`
   });
+  const credentialsPath = join(directory, 'sap-ai-dev-toolkit-credentials.json');
+  await storeDestinationCredentials(credentialsPath, `cloud-foundry:cf:${SPACE_GUID}:${INSTANCE_GUID}:pp-target`, {
+    user: 'must-not-override',
+    password: 'must-not-override-secret',
+    mode: 'cf-connectivity'
+  });
   const childLog = join(directory, 'vsp-children.jsonl');
   t.after(async () => {
     await new Promise(resolve => service.close(resolve));
@@ -271,6 +278,7 @@ test('routes a PrincipalPropagation MCP call through CF Connectivity to the SAP 
     SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
     SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'cloud-foundry',
     SAP_AI_DEV_TOOLKIT_DESTINATION: 'pp-target',
+    SAP_AI_DEV_TOOLKIT_CREDENTIALS_FILE: credentialsPath,
     BAS_CF_SPACE_GUID: SPACE_GUID,
     BAS_CF_DESTINATION_INSTANCE_GUID: INSTANCE_GUID,
     BAS_CF_DESTINATION_INSTANCE: INSTANCE_NAME,
@@ -313,17 +321,17 @@ test('routes a PrincipalPropagation MCP call through CF Connectivity to the SAP 
   assert.equal(initialized.argv.includes('--proxy-auth'), true);
   assert.equal(initialized.env.user, undefined);
   assert.equal(initialized.env.password, undefined);
-  for (const secret of ['destination-key-secret', 'destination-api-token', 'connectivity-key-secret', 'user-exchange-token', 'current-cf-user-jwt', 'parent-user-secret', 'parent-password-secret']) {
+  for (const secret of ['must-not-override', 'must-not-override-secret', 'destination-key-secret', 'destination-api-token', 'connectivity-key-secret', 'user-exchange-token', 'current-cf-user-jwt', 'parent-user-secret', 'parent-password-secret']) {
     assert.equal(`${result.stdout}\\n${result.stderr}\\n${JSON.stringify(initialized.argv)}`.includes(secret), false);
   }
 });
 
-test('routes a CF Basic OnPremise MCP call through the HTTP Connectivity proxy', async t => {
+test('overrides CF Basic OnPremise backend auth while retaining the HTTP Connectivity proxy', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-cf-basic-onprem-'));
   const observed = { destinationToken: [], destinationList: [], connectivityToken: [], proxy: [], connect: [], target: [] };
   const target = createServer((request, response) => {
     observed.target.push({ path: request.url, authorization: request.headers.authorization });
-    response.writeHead(request.headers.authorization === `Basic ${Buffer.from('sap-user:sap-password').toString('base64')}` ? 200 : 401, {
+    response.writeHead(request.headers.authorization === `Basic ${Buffer.from('override-user:override-password').toString('base64')}` ? 200 : 401, {
       'content-type': 'text/plain'
     });
     response.end('SAP system information: client=100');
@@ -409,6 +417,12 @@ test('routes a CF Basic OnPremise MCP call through the HTTP Connectivity proxy',
     connectivityProxyPort,
     connectivityTokenUrl: `${serviceOrigin}/connectivity/oauth/token`
   });
+  const credentialsPath = join(directory, 'sap-ai-dev-toolkit-credentials.json');
+  await storeDestinationCredentials(credentialsPath, `cloud-foundry:cf:${SPACE_GUID}:${INSTANCE_GUID}:basic-onprem`, {
+    user: 'override-user',
+    password: 'override-password',
+    mode: 'cf-connectivity'
+  });
   const childLog = join(directory, 'vsp-children.jsonl');
   const servers = [service, target, connectivityProxy];
   t.after(async () => {
@@ -423,6 +437,7 @@ test('routes a CF Basic OnPremise MCP call through the HTTP Connectivity proxy',
     SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
     SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'cloud-foundry',
     SAP_AI_DEV_TOOLKIT_DESTINATION: 'basic-onprem',
+    SAP_AI_DEV_TOOLKIT_CREDENTIALS_FILE: credentialsPath,
     BAS_CF_SPACE_GUID: SPACE_GUID,
     BAS_CF_DESTINATION_INSTANCE_GUID: INSTANCE_GUID,
     BAS_CF_DESTINATION_INSTANCE: INSTANCE_NAME,
@@ -461,13 +476,20 @@ test('routes a CF Basic OnPremise MCP call through the HTTP Connectivity proxy',
     'GET',
     `${targetOrigin}/sap/bc/adt/discovery`,
     'Bearer application-proxy-token',
-    `Basic ${Buffer.from('sap-user:sap-password').toString('base64')}`
+    `Basic ${Buffer.from('override-user:override-password').toString('base64')}`
   ]]);
   assert.deepEqual(observed.connect, []);
   assert.deepEqual(observed.target, [{
     path: '/sap/bc/adt/discovery',
-    authorization: `Basic ${Buffer.from('sap-user:sap-password').toString('base64')}`
+    authorization: `Basic ${Buffer.from('override-user:override-password').toString('base64')}`
   }]);
+  const events = (await readFile(childLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  const initialized = events.find(event => event.event === 'initialize');
+  assert.deepEqual([initialized.env.user, initialized.env.password], ['override-user', 'override-password']);
+  assert.equal(initialized.argv.includes('--proxy-auth'), false);
+  for (const secret of ['override-user', 'override-password', 'sap-password', 'connectivity-key-secret', 'application-proxy-token']) {
+    assert.equal(`${result.stdout}\n${result.stderr}\n${JSON.stringify(initialized.argv)}`.includes(secret), false, `${secret} must not appear in output or argv`);
+  }
 });
 
 test('CF list-destinations clears the CF name filter and remains BAS-only', async t => {

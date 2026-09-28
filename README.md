@@ -66,6 +66,8 @@ Then connect a destination in SAP Business Application Studio:
 5. In the Chat tools picker, enable the server for that BAS destination.
 6. Ask Copilot to inspect, build, test, or verify something in your SAP landscape.
 
+Use the attached destination-prefixed tools directly in chat. Do not launch `sap-ai-dev` or handcraft MCP JSON-RPC in a terminal to discover or call them.
+
 **Prerequisite:** Node.js 20 or newer. If Go is not already available, the installer can provision the pinned supported Go release automatically.
 
 ## 🤖 Available agents and skills
@@ -374,7 +376,7 @@ The sample values sketch an on-premise ABAP backend routed through SAP Cloud Con
 | `WebIDEUsage` | `dev_abap,odata_abap` | Include `dev_abap` for ABAP development; add other usages required by your BAS scenario. |
 | `CloudConnectorLocationId` | `DEMO-LOCATION` | Optional; set only when the Cloud Connector uses a location ID. |
 
-For on-premise systems, configure Cloud Connector access to the backend host and port first. Keep credentials and authentication material in the BAS destination configuration; never put them in `mcp.json`.
+For on-premise systems, configure Cloud Connector access to the backend host and port first. BAS Destination and Connectivity service credentials remain in their respective services; optional SAP backend overrides are stored in the owner-only credentials file beside `mcp.json`, never in `mcp.json`. The BAS OnPremise override is saved only when its tunnel route returns a CSRF token and session cookie.
 
 Think of `H2O_URL` as BAS's front door: it must point to the endpoint serving `/api/listDestinations`, not to the SAP backend.
 
@@ -660,11 +662,13 @@ The MCP client discovers the schemas; callers do not need to memorize every argu
 | Destination availability only | `sap-ai-dev --check` |
 | Generated server names and destination mapping | **MCP: Open User Configuration**; look for entries named after the BAS destination and `BAS_VSP_DESTINATION`. |
 | Running server | **MCP: List Servers**; select the server and choose **Start Server**. |
-| Tools and exact schemas | Expand that server in the Chat tools picker. At the protocol level, MCP clients request `tools/list`, whose entries include `name`, `description`, and `inputSchema`. |
+| Tools and exact schemas | Expand that server in the Chat tools picker. The MCP host requests `tools/list`, whose entries include `name`, `description`, and `inputSchema`; the agent should call those tools through chat, not reproduce the protocol in a terminal. |
 | Runtime and tool-call logs | Select the MCP server in the Output view. Startup, call lifecycle, and child stderr logs are written to stderr; child MCP log notifications are forwarded to the client. Tool arguments and result contents are not logged. |
 | Installed package version | `npm list --global sap-ai-dev-toolkit` |
 
-After MCP initialization, a raw inspection request has this shape (normally sent by the client, not typed into the terminal):
+If the server is running but an agent reports that SAP tools are unavailable, verify that the same chat is in Agent mode, the generated server is enabled in that chat's tools picker, and concrete names such as `s4h__GetSystemInfo` are listed. Reselect the agent or start a new chat if the tool binding is stale, then inspect the MCP server's Output log for startup or `tools/list` errors. Do not try to work around a missing chat binding by starting the server or handcrafting JSON-RPC from the terminal.
+
+After MCP initialization, the host internally sends a request like this; agents should not reproduce it in the terminal:
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}
@@ -699,7 +703,7 @@ The response contains a `tools` array. A `RunQuery` entry resembles this excerpt
 | `SAP_AI_DEV_TOOLKIT_MODE` | VSP child mode (`expert` by default; `focused` omits `ActivateMultiple`, `GetUserTransports`, and `GetTransportInfo`). The proxy exposes its curated tools plus tools listed in `tools.md` when registered by that mode, including local `LintABAP`. |
 | `SAP_ALLOW_TRANSPORTABLE_EDITS` | Generated MCP entries set this to `true` to permit source edits in transportable packages; VSP safety checks and SAP authorizations still apply. |
 | `SAP_AI_DEV_TOOLKIT_DISABLE_BAS_RELAY=true` | Disable the built-in BAS destination relay. By default the add-on self-heals `.dest` destinations through a local relay that keeps all access destination-based while handling ADT CSRF fetch/retry behavior before VSP calls SAP. |
-| `SAP_AI_DEV_TOOLKIT_HTTP_PROXY` | Egress proxy for relay and discovery traffic (falls back to `HTTP_PROXY`/`http_proxy`; unset means the default BAS proxy for `.dest` hosts, empty means direct). |
+| `SAP_AI_DEV_TOOLKIT_HTTP_PROXY` | Egress proxy for relay and discovery traffic (falls back to `HTTP_PROXY`/`http_proxy`; unset means the default BAS proxy for `.dest` hosts, empty means direct except for OnPremise credential overrides, which require a BAS proxy tunnel). |
 | `SAP_AI_DEV_TOOLKIT_MAX_CSRF_RETRIES` | Bounded CSRF/session self-healing retries per unsafe request (default 3). |
 
 #### Self-healing modes
@@ -710,7 +714,8 @@ The relay between the VSP child and each BAS destination recovers from the failu
 2. **Session refresh** — when SAP rejects or rotates a session (401/403 after a token was already accepted), the cached session is dropped, a fresh token+cookie pair is fetched, and the request retried, bounded by the retry limit.
 3. **Proxy tunnel fallback** — when the BAS proxy refuses absolute-form requests (502/504 or transport errors), the relay switches to a CONNECT tunnel through the same proxy and keeps going.
 4. **Child crash recovery** — a crashed VSP child is restarted transparently, re-initialized, tools re-registered, and the interrupted `tools/call` retried once before any error reaches the client.
-5. **Direct connect for Internet destinations** — the BAS `.dest` proxy strips SAP `Set-Cookie` headers, which makes CSRF token/session binding impossible for ADT writes (`403 CSRF token validation failed`). When you select an Internet destination with basic authentication, setup prompts for a SAP user and password and stores them in `sap-ai-dev-toolkit-credentials.json` **next to** `mcp.json` (never inside it, permissions `0600`). The relay then connects straight to the backend host with Basic auth — cookies survive, CSRF pairing works, and writes behave like they do from Eclipse/ADT. Rerun `sap-ai-dev --setup` to change or clear stored credentials; re-selecting nothing removes stale entries.
+5. **Direct connect for Internet destinations** — the BAS `.dest` proxy strips SAP `Set-Cookie` headers, which makes CSRF token/session binding impossible for ADT writes (`403 CSRF token validation failed`). When you select an Internet destination with BasicAuthentication, setup asks whether to override its credentials. A Yes prompts for SAP user/password and stores them in `sap-ai-dev-toolkit-credentials.json` **next to** `mcp.json` (never inside it, permissions `0600`). The relay connects straight to the backend host so cookies survive and ADT writes can use the paired CSRF session.
+6. **Cloud Connector credential overrides** — setup also offers per-destination overrides for BasicAuthentication OnPremise destinations. BAS OnPremise credentials travel through an HTTP CONNECT tunnel to the BAS `.dest` endpoint, retaining its Cloud Connector mapping; setup saves the override only after a read-only probe returns both a CSRF token and a session cookie. If that route check fails, the override is not saved. Cloud Foundry OnPremise overrides replace only the SAP backend user/password; Connectivity service-key authentication and its proxy route remain unchanged. PrincipalPropagation is never overridden. Rerun `sap-ai-dev --setup` to change credentials or answer No to disable a stored override. Deselecting a destination (or selecting none) removes stale overrides.
 | `SAP_AI_DEV_MCP_CONFIG` | Explicit MCP user configuration path. |
 | `BAS_VSP_MCP_CONFIG` | Backward-compatible alias for the MCP user configuration path. |
 | `BAS_VSP_BINARY` | Trusted prebuilt VSP executable; skips Go and binary provisioning. |

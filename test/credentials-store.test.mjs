@@ -7,6 +7,7 @@ import http from 'node:http';
 import { request as httpRequest } from 'node:http';
 import { createBasDestinationRelay } from '../src/bas-destination-relay.mjs';
 import { readCredentials, removeDestinationCredentials, resolveCredentialsPath, storeDestinationCredentials } from '../src/credentials-store.mjs';
+import { canPromptForCredentials, credentialKeyForDestination, credentialModeForDestination } from '../src/credential-overrides.mjs';
 
 const UNSAFE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE'];
 
@@ -103,6 +104,36 @@ test('credentials file with malformed entries keeps only complete records', asyn
   }));
   const stored = await readCredentials(path);
   assert.deepEqual(Object.keys(stored.destinations), ['GOOD']);
+});
+
+test('credential overrides use route-aware modes and distinct CF destination keys', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-creds-modes-'));
+  const path = join(directory, 'sap-ai-dev-toolkit-credentials.json');
+  t.after(async () => { await rm(directory, { recursive: true, force: true }); });
+
+  const basDestination = { name: 'shared-name', source: 'bas', proxyType: 'Internet', authentication: 'BasicAuthentication', backendUrl: 'https://internet.example' };
+  const basOnPremise = { name: 'shared-name', source: 'bas', proxyType: 'OnPremise', authentication: 'BasicAuthentication' };
+  const cfOnPremise = { name: 'shared-name', serverName: 'cf:space-one:instance-one:shared-name', source: 'cloud-foundry', proxyType: 'OnPremise', authentication: 'BasicAuthentication' };
+  const principalPropagation = { ...cfOnPremise, authentication: 'PrincipalPropagation' };
+
+  assert.equal(canPromptForCredentials(basDestination), true);
+  assert.equal(credentialModeForDestination(basDestination), 'direct');
+  assert.equal(credentialModeForDestination(basOnPremise), 'bas-tunnel');
+  assert.equal(credentialModeForDestination(cfOnPremise), 'cf-connectivity');
+  assert.equal(canPromptForCredentials(principalPropagation), false);
+  assert.equal(credentialModeForDestination({ ...cfOnPremise, proxyType: 'Internet' }), null);
+  assert.equal(canPromptForCredentials({ ...basDestination, backendUrl: null }), false);
+  assert.notEqual(credentialKeyForDestination(basOnPremise), credentialKeyForDestination(cfOnPremise));
+
+  const cfKey = credentialKeyForDestination(cfOnPremise);
+  await storeDestinationCredentials(path, cfKey, { user: 'OVERRIDE', password: 'secret', mode: 'cf-connectivity' });
+  const stored = await readCredentials(path);
+  assert.equal(stored.destinations[cfKey].mode, 'cf-connectivity');
+  assert.equal(stored.destinations[cfKey].host, undefined);
+  await assert.rejects(
+    () => storeDestinationCredentials(path, 'INVALID', { user: 'U', password: 'P', mode: 'bypass-cloud-connector' }),
+    /route mode is unsupported/
+  );
 });
 
 test('relay direct connect sends Basic auth and CSRF pairing succeeds', async t => {

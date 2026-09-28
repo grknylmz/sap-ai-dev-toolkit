@@ -49,6 +49,12 @@ function assertMentionsLiveToolDiscovery(markdown, path) {
   assert.match(markdown, /schema/i, `${path} must tell agents to follow live tool schemas`);
 }
 
+function assertDirectMcpUsage(markdown, path) {
+  assert.match(markdown, /Direct MCP invocation is mandatory/i, `${path} must require direct MCP calls`);
+  assert.match(markdown, /Do not launch `sap-ai-dev`.*MCP operations/i, `${path} must forbid terminal-driven MCP discovery/calls`);
+  assert.match(markdown, /host\/session binding issue/i, `${path} must report host tool-binding failures instead of using a CLI fallback`);
+}
+
 function assertValidationPolicy(markdown, path) {
   assert.match(markdown, /ABAP Unit|RunUnitTests/i, `${path} must include ABAP Unit or test execution guidance`);
   assert.match(markdown, /runtime validation|Self-validate|executable validation|reproduce/i, `${path} must require executable/runtime validation evidence`);
@@ -82,6 +88,15 @@ test('packaged Copilot agent and skill inventory is complete and canonical', asy
   assert.deepEqual(actualSkills, expectedSkills);
   for (const skill of expectedSkills) {
     assert.equal((await stat(join(skillsRoot, skill, 'SKILL.md'))).isFile(), true, `${skill} must have SKILL.md`);
+  }
+});
+
+test('all bundled agents invoke chat-attached MCP tools without terminal JSON-RPC fallbacks', async () => {
+  for (const name of expectedAgents) {
+    const path = join(agentsRoot, name);
+    const markdown = await readMarkdown(path);
+    assertDirectMcpUsage(markdown, path);
+    assertMentionsLiveToolDiscovery(markdown, path);
   }
 });
 

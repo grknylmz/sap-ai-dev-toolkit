@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installMcpConfig } from '../src/mcp-config.mjs';
 import { destinationTable } from '../scripts/postinstall.mjs';
+import { readCredentials, resolveCredentialsPath, storeDestinationCredentials } from '../src/credentials-store.mjs';
+import { credentialKeyForDestination } from '../src/credential-overrides.mjs';
 import { spawnWithPty } from './pty.mjs';
 
 const setupModule = fileURLToPath(new URL('../src/setup.mjs', import.meta.url));
@@ -26,6 +28,22 @@ function cloudFoundryDestination({ name, serverName, instanceGuid, instanceName,
       destinationKeyName: keyName
     }
   };
+}
+
+function cloudFoundryOnPremiseDestination() {
+  const destination = cloudFoundryDestination({
+    name: 'shared-name',
+    serverName: 'cf:space-one:cf-destination:shared-name',
+    instanceGuid: 'cf-destination',
+    instanceName: 'destination-service',
+    keyName: 'destination-key'
+  });
+  destination.authentication = 'BasicAuthentication';
+  destination.proxyType = 'OnPremise';
+  destination.cf.connectivityInstanceGuid = 'cf-connectivity';
+  destination.cf.connectivityInstanceName = 'connectivity-service';
+  destination.cf.connectivityKeyName = 'connectivity-key';
+  return destination;
 }
 
 async function makeFixture(t, { version = 'cf version 8.18.0', space = 'space-one', deleteMode = 'success' } = {}) {
@@ -63,6 +81,7 @@ await runSetup({
     await writeFile(process.env.CF_DISCOVERY_LOG, JSON.stringify({ spaceGuid, managedKeys }));
     return JSON.parse(process.env.TEST_CF_RESULT);
   },
+  verifyOnPremCredentialRoute: async () => JSON.parse(process.env.TEST_ONPREM_CSRF_RESULT),
   ...(process.env.TEST_INSTALL_FAIL === 'true' ? {
     install: async () => { throw new Error('simulated config write failure'); }
   } : {})
@@ -81,13 +100,14 @@ await runSetup({
     TEST_CF_DELETE_MODE: deleteMode,
     TEST_INSTALL_FAIL: 'false',
     TEST_BAS_DESTINATIONS: JSON.stringify([]),
-    TEST_CF_RESULT: JSON.stringify({ destinations: [], createdKeys: [], warnings: [] })
+    TEST_CF_RESULT: JSON.stringify({ destinations: [], createdKeys: [], warnings: [] }),
+    TEST_ONPREM_CSRF_RESULT: JSON.stringify({ httpStatus: 200, tokenReceived: true, cookieCount: 1 })
   };
   t.after(() => rm(directory, { recursive: true, force: true }));
   return { directory, configPath, callLog, discoveryLog, harness, env };
 }
 
-function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r' } = {}) {
+function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r', promptAnswers = [] } = {}) {
   return new Promise((resolve, reject) => {
     const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(fixture.harness)}`;
     const child = spawnWithPty(command, { env: fixture.env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -95,6 +115,7 @@ function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r' } = {}
     let stderr = '';
     let importSent = false;
     let selectionSent = false;
+    let promptAnswerIndex = 0;
     const timeout = setTimeout(() => child.kill('SIGKILL'), 15000);
     child.stdout.on('data', chunk => {
       stdout += chunk.toString();
@@ -104,7 +125,16 @@ function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r' } = {}
       }
       if (!selectionSent && stdout.includes('Select destinations')) {
         selectionSent = true;
-        child.stdin.end(selection);
+        if (promptAnswers.length) child.stdin.write(selection);
+        else child.stdin.end(selection);
+      }
+      if (selectionSent && promptAnswerIndex < promptAnswers.length) {
+        const answer = promptAnswers[promptAnswerIndex];
+        if (stdout.includes(answer.when)) {
+          promptAnswerIndex++;
+          child.stdin.write(answer.value);
+          if (promptAnswerIndex === promptAnswers.length) child.stdin.end();
+        }
       }
     });
     child.stderr.on('data', chunk => { stderr += chunk.toString(); });
@@ -114,7 +144,7 @@ function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r' } = {}
     });
     child.on('exit', (code, signal) => {
       clearTimeout(timeout);
-      resolve({ code, signal, stdout, stderr, importSent, selectionSent });
+      resolve({ code, signal, stdout, stderr, importSent, selectionSent, promptAnswersSent: promptAnswerIndex });
     });
   });
 }
@@ -145,6 +175,7 @@ test('imports selected CF destinations, passes managed key references, and remov
   assert.equal(result.selectionSent, true, result.stdout);
   assert.match(result.stdout, /CF new-destination-service/);
   assert.match(result.stdout, /Configured 1 MCP server/);
+  assert.match(result.stdout, /GitHub Copilot Chat.*Chat tools picker.*enable each selected destination server/s);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /SECRET|clientSecret|Password/);
 
   const snapshot = JSON.parse(await readFile(fixture.discoveryLog, 'utf8'));
@@ -161,6 +192,102 @@ test('imports selected CF destinations, passes managed key references, and remov
     'delete-service-key', '-f', '--wait', 'old-destination-service', 'old-key'
   ]]);
   assert.equal(calls.some(args => args.at(-1) === 'new-key'), false);
+});
+
+test('prompts for BAS and CF OnPremise overrides separately and keeps their routes distinct', async t => {
+  const fixture = await makeFixture(t);
+  const cfDestination = cloudFoundryOnPremiseDestination();
+  fixture.env.TEST_BAS_DESTINATIONS = JSON.stringify([
+    {
+      name: 'internet-system', url: 'http://internet-system.dest', backendUrl: 'https://internet.example:44300',
+      client: '100', authentication: 'BasicAuthentication', proxyType: 'Internet',
+      probe: { status: 'available', available: true }
+    },
+    {
+      name: 'shared-name', url: 'http://shared-name.dest', backendUrl: 'https://internal.example:44300',
+      client: '101', authentication: 'BasicAuthentication', proxyType: 'OnPremise',
+      probe: { status: 'available', available: true }
+    },
+    {
+      name: 'principal-system', url: 'http://principal-system.dest',
+      client: '102', authentication: 'PrincipalPropagation', proxyType: 'OnPremise',
+      probe: { status: 'available', available: true }
+    }
+  ]);
+  fixture.env.TEST_CF_RESULT = JSON.stringify({ destinations: [cfDestination], createdKeys: [], warnings: [] });
+
+  const result = await runSetupInPty(fixture, {
+    selection: 'a\r',
+    promptAnswers: [
+      { when: 'BAS Internet — internet-system — override SAP credentials?', value: 'y\r' },
+      { when: 'BAS Internet — internet-system — SAP user', value: 'INTERNET_USER\r' },
+      { when: 'BAS Internet — internet-system — SAP password', value: 'internet-password-secret\r' },
+      { when: 'BAS OnPremise — shared-name — override SAP credentials?', value: 'y\r' },
+      { when: 'BAS OnPremise — shared-name — SAP user', value: 'BAS_CC_USER\r' },
+      { when: 'BAS OnPremise — shared-name — SAP password', value: 'bas-cc-password-secret\r' },
+      { when: 'Cloud Foundry OnPremise — shared-name — override SAP credentials?', value: 'y\r' },
+      { when: 'Cloud Foundry OnPremise — shared-name — SAP user', value: 'CF_CC_USER\r' },
+      { when: 'Cloud Foundry OnPremise — shared-name — SAP password', value: 'cf-cc-password-secret\r' }
+    ]
+  });
+  assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+  assert.equal(result.promptAnswersSent, 9, result.stdout);
+  assert.doesNotMatch(result.stdout, /PrincipalPropagation — principal-system — override SAP credentials/);
+  assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /internet-password-secret|bas-cc-password-secret|cf-cc-password-secret/);
+
+  const credentialsPath = await resolveCredentialsPath(fixture.env, fixture.configPath);
+  const stored = (await readCredentials(credentialsPath)).destinations;
+  assert.equal(stored['internet-system'].mode, 'direct');
+  assert.equal(stored['internet-system'].host, 'https://internet.example:44300');
+  assert.equal(stored['shared-name'].mode, 'bas-tunnel');
+  assert.equal(stored['shared-name'].host, undefined, 'BAS OnPremise must not store or use the backend URL');
+  const cfKey = credentialKeyForDestination(cfDestination);
+  assert.equal(stored[cfKey].mode, 'cf-connectivity');
+  assert.equal(stored[cfKey].host, undefined);
+  assert.deepEqual(
+    [stored['shared-name'].user, stored[cfKey].user],
+    ['BAS_CC_USER', 'CF_CC_USER'],
+    'same destination names from BAS and CF must remain distinct'
+  );
+
+  const mcpConfig = JSON.parse(await readFile(fixture.configPath, 'utf8'));
+  assert.equal(JSON.stringify(mcpConfig).includes('bas-cc-password-secret'), false);
+  assert.equal(JSON.stringify(mcpConfig).includes('cf-cc-password-secret'), false);
+});
+
+test('No removes a stored BAS OnPremise override and failed CSRF preflight refuses a new one', async t => {
+  const fixture = await makeFixture(t);
+  fixture.env.TEST_BAS_DESTINATIONS = JSON.stringify([{
+    name: 'shared-name', url: 'http://shared-name.dest', backendUrl: 'https://internal.example:44300',
+    client: '100', authentication: 'BasicAuthentication', proxyType: 'OnPremise',
+    probe: { status: 'available', available: true }
+  }]);
+  fixture.env.TEST_CF_RESULT = JSON.stringify({ destinations: [], createdKeys: [], warnings: [] });
+  const credentialsPath = await resolveCredentialsPath(fixture.env, fixture.configPath);
+  await storeDestinationCredentials(credentialsPath, 'shared-name', {
+    user: 'OLD_USER', password: 'old-password-secret', mode: 'bas-tunnel'
+  });
+
+  const declined = await runSetupInPty(fixture, {
+    selection: ' \r',
+    promptAnswers: [{ when: 'BAS OnPremise — shared-name — override SAP credentials?', value: 'n\r' }]
+  });
+  assert.equal(declined.code, 0, `${declined.stdout}\n${declined.stderr}`);
+  assert.equal((await readCredentials(credentialsPath)).destinations['shared-name'], undefined);
+
+  fixture.env.TEST_ONPREM_CSRF_RESULT = JSON.stringify({ httpStatus: 200, tokenReceived: true, cookieCount: 0 });
+  const rejected = await runSetupInPty(fixture, {
+    selection: ' \r',
+    promptAnswers: [
+      { when: 'BAS OnPremise — shared-name — override SAP credentials?', value: 'y\r' },
+      { when: 'BAS OnPremise — shared-name — SAP user', value: 'NEW_USER\r' },
+      { when: 'BAS OnPremise — shared-name — SAP password', value: 'new-password-secret\r' }
+    ]
+  });
+  assert.equal(rejected.code, 0, `${rejected.stdout}\n${rejected.stderr}`);
+  assert.match(rejected.stdout, /did not return both a CSRF token and session cookie/);
+  assert.equal((await readCredentials(credentialsPath)).destinations['shared-name'], undefined);
+  assert.doesNotMatch(`${rejected.stdout}\n${rejected.stderr}`, /new-password-secret/);
 });
 
 test('declining CF import keeps BAS setup and does not create CF keys', async t => {

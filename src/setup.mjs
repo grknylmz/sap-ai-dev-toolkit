@@ -5,6 +5,8 @@ import { discoverDestinations, remediation } from './bas-discovery.mjs';
 import { discoverCloudFoundryDestinations, getCloudFoundryTarget, deleteManagedCloudFoundryServiceKeys } from './cf-destination.mjs';
 import { SAP_DEVELOPMENT_MCP_SERVERS, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, installMcpConfig, readMcpConfig, resolveMcpConfigPath } from './mcp-config.mjs';
 import { readCredentials, removeDestinationCredentials, resolveCredentialsPath, storeDestinationCredentials } from './credentials-store.mjs';
+import { canPromptForCredentials, credentialKeyForDestination, credentialModeForDestination } from './credential-overrides.mjs';
+import { createBasDestinationRelay } from './bas-destination-relay.mjs';
 
 const SETUP_COMMAND = 'sap-ai-dev --setup';
 
@@ -24,54 +26,88 @@ async function confirmCloudFoundryImport({ input = stdin, output = stdout } = {}
   }
 }
 
-// Internet destinations reach SAP through the BAS .dest proxy, which strips
-// Set-Cookie and makes ADT CSRF-protected writes impossible. Ask once for
-// direct-connection credentials and store them next to the MCP config; the
-// relay then connects straight to the backend host with Basic auth.
-async function promptForInternetDestinationCredentials({ destinations, credentialsPath, existing = {}, input = stdin, output = stdout } = {}) {
-  const stored = {};
-  const internetDestinations = destinations.filter(destination =>
-    destination.source !== 'cloud-foundry'
-    && String(destination.proxyType || '').toLowerCase() === 'internet'
-    && /^basicauthentication$/i.test(String(destination.authentication || '')));
-  if (!internetDestinations.length) return stored;
+async function probeBasOnPremCredentialRoute({ destination, user, password, env }) {
+  const relay = createBasDestinationRelay({
+    ...destination,
+    credentials: { user, password, mode: 'bas-tunnel' }
+  }, { env, log: () => {} });
+  try {
+    await relay.ready;
+    return await relay.probeCsrfSession();
+  } finally {
+    await relay.close();
+  }
+}
+
+async function promptForDestinationCredentials({ destinations, credentialsPath, existing = {}, input = stdin, output = stdout, env = process.env, verifyOnPremCredentialRoute = probeBasOnPremCredentialRoute } = {}) {
+  const eligible = destinations.filter(canPromptForCredentials);
+  const retained = new Set();
+  if (!eligible.length) return retained;
 
   print(output, '');
-  print(output, formatStatus('Some selected destinations are Internet type with basic authentication.', 'step', output, 'Direct connect'));
-  print(output, '  The BAS proxy strips SAP session cookies, which blocks ADT writes (CSRF validation).');
-  print(output, '  Providing a user and password enables a direct connection for those destinations.');
-  print(output, `  Credentials are stored beside your MCP config in ${credentialsPath} (never inside mcp.json).`);
+  print(output, formatStatus('Credential overrides are optional and apply only to selected BasicAuthentication destinations.', 'step', output, 'Credentials'));
+  print(output, `  Overrides are stored beside your MCP config in ${credentialsPath} with owner-only permissions (never inside mcp.json).`);
+  print(output, '  For OnPremise destinations, BAS/Cloud Foundry proxy credentials remain separate from the SAP backend credentials.');
   print(output, '');
 
-  for (const destination of internetDestinations) {
-    const known = existing[destination.name];
+  for (const destination of eligible) {
+    const key = credentialKeyForDestination(destination);
+    if (!key) continue;
+    const mode = credentialModeForDestination(destination);
+    const known = existing[key];
+    const routeLabel = `${destination.source === 'cloud-foundry' ? 'Cloud Foundry' : 'BAS'} ${destination.proxyType} — ${destination.name}`;
+    const answer = await textPrompt({
+      message: colorText(`🔐 ${routeLabel} — override SAP credentials? (y/n)`, 'cyan', output),
+      required: true,
+      validate: value => /^(?:y|yes|n|no)$/i.test(value.trim()) || 'Enter y or n.'
+    }, { input, output });
+    if (/^n/i.test(answer.trim())) {
+      await removeDestinationCredentials(credentialsPath, [key]);
+      print(output, formatStatus(`Credential override disabled for ${destination.name}.`, 'info', output, 'Credentials'));
+      continue;
+    }
+
     if (known?.user && known?.password) {
-      print(output, formatStatus(`Credentials for ${destination.name} are already stored (user ${known.user}). Press Enter at both prompts to keep them.`, 'info', output, 'Direct connect'));
+      print(output, formatStatus(`Credentials for ${destination.name} are already stored. Press Enter at both prompts to keep them.`, 'info', output, 'Credentials'));
     }
     const userAnswer = await textPrompt({
-      message: colorText(`👤 ${destination.name} — SAP user`, 'cyan', output),
+      message: colorText(`👤 ${routeLabel} — SAP user`, 'cyan', output),
       required: false,
-      placeholder: known ? `${known.user} (Enter keeps stored user)` : 'SAP user name'
+      placeholder: known ? 'Enter keeps the stored user' : 'SAP user name'
     }, { input, output });
     const user = userAnswer.trim() || known?.user || '';
     const passwordAnswer = await textPrompt({
-      message: colorText(`🔒 ${destination.name} — SAP password${known ? ' (Enter keeps stored password)' : ''}`, 'cyan', output),
+      message: colorText(`🔒 ${routeLabel} — SAP password${known ? ' (Enter keeps stored password)' : ''}`, 'cyan', output),
       secret: true,
       required: false
     }, { input, output });
     const password = passwordAnswer || known?.password || '';
     if (!user || !password) {
-      print(output, formatStatus(`No complete credentials for ${destination.name}; direct connect stays inactive for it.`, 'warning', output, 'Direct connect'));
+      await removeDestinationCredentials(credentialsPath, [key]);
+      print(output, formatStatus(`No complete credentials for ${destination.name}; no override was stored.`, 'warning', output, 'Credentials'));
       continue;
     }
-    stored[destination.name] = {
-      host: destination.backendUrl || known?.host || '',
-      user,
-      password
-    };
-    print(output, formatStatus(`Stored credentials for ${destination.name}.`, 'success', output, 'Direct connect'));
+
+    if (mode === 'bas-tunnel') {
+      let route;
+      try {
+        route = await verifyOnPremCredentialRoute({ destination, user, password, env });
+      } catch {
+        route = null;
+      }
+      if (!(route?.httpStatus >= 200 && route.httpStatus < 300) || !route.tokenReceived || !(route.cookieCount > 0)) {
+        await removeDestinationCredentials(credentialsPath, [key]);
+        print(output, formatStatus(`No override stored for ${destination.name}: the BAS/Cloud Connector route did not return both a CSRF token and session cookie.`, 'warning', output, 'Credentials'));
+        continue;
+      }
+    }
+
+    const host = mode === 'direct' ? (destination.backendUrl || known?.host || '') : '';
+    await storeDestinationCredentials(credentialsPath, key, { host, user, password, mode });
+    retained.add(key);
+    print(output, formatStatus(`Stored credential override for ${destination.name}.`, 'success', output, 'Credentials'));
   }
-  return stored;
+  return retained;
 }
 
 function safeProbe(probe) {
@@ -137,6 +173,7 @@ function printConnectionInstructions(output, result) {
     print(output, `  • ${name} — ${detail}`);
   }
   print(output, formatStatus('Open the Command Palette → “MCP: List Servers”, select a generated server, and choose “Start Server”.', 'step', output, 'Next'));
+  print(output, formatStatus('In GitHub Copilot Chat, select an agent, open the Chat tools picker, and enable each selected destination server for this chat.', 'step', output, 'Copilot Chat'));
   print(output, formatStatus('Inspect or edit entries with “MCP: Open User Configuration”.', 'info', output, 'Config'));
 }
 
@@ -149,6 +186,7 @@ export async function runSetup({
   discoverCf = discoverCloudFoundryDestinations,
   confirmCfImport = confirmCloudFoundryImport,
   install = installMcpConfig,
+  verifyOnPremCredentialRoute = probeBasOnPremCredentialRoute,
   includeSapDevelopmentToolsPrompt = false
 } = {}) {
   if (!env.H2O_URL) {
@@ -283,37 +321,24 @@ export async function runSetup({
     }, { input, output });
   }
 
-  // Ask for direct-connect credentials for selected Internet destinations
-  // so ADT writes work despite the BAS proxy stripping session cookies.
+  // Ask for an explicit credential override choice for each selected supported destination.
   const credentialsPath = await resolveCredentialsPath(env, configPath);
-  const internetSelected = selected.filter(destination =>
-    destination.source !== 'cloud-foundry'
-    && String(destination.proxyType || '').toLowerCase() === 'internet'
-    && /^basicauthentication$/i.test(String(destination.authentication || '')));
-  if (internetSelected.length) {
-    try {
-      const existingMap = (await readCredentials(credentialsPath).catch(() => ({ destinations: {} }))).destinations || {};
-      const storedNow = await promptForInternetDestinationCredentials({
-        destinations: selected,
-        credentialsPath,
-        existing: existingMap,
-        input,
-        output
-      });
-      for (const [name, entry] of Object.entries(storedNow)) {
-        await storeDestinationCredentials(credentialsPath, name, entry);
-      }
-      // Remove stored credentials for Internet destinations that are no
-      // longer selected, so the file only tracks active servers.
-      const stillSelected = new Set(selected.map(destination => destination.name));
-      const stale = Object.keys(existingMap)
-        .filter(name => !stillSelected.has(name))
-        .filter(name => internetSelected.every(destination => destination.name !== name));
-      if (stale.length) await removeDestinationCredentials(credentialsPath, stale);
-    } catch (error) {
-      if (/Prompt interrupted/.test(error.message)) throw error;
-      credentialWarnings.push(`Direct-connect credentials could not be stored: ${error.message}`);
-    }
+  try {
+    const existingMap = (await readCredentials(credentialsPath).catch(() => ({ destinations: {} }))).destinations || {};
+    const retained = await promptForDestinationCredentials({
+      destinations: selected,
+      credentialsPath,
+      existing: existingMap,
+      input,
+      output,
+      env,
+      verifyOnPremCredentialRoute
+    });
+    const stale = Object.keys(existingMap).filter(name => !retained.has(name));
+    if (stale.length) await removeDestinationCredentials(credentialsPath, stale);
+  } catch (error) {
+    if (/Prompt interrupted/.test(error.message)) throw error;
+    credentialWarnings.push(`Credential overrides could not be stored: ${error.message}`);
   }
   try {
     const result = await install(selected, { env, sapDevelopmentServers });

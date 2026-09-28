@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 import { request as httpRequest } from 'node:http';
 import { createBasDestinationRelay } from '../src/bas-destination-relay.mjs';
 
@@ -185,4 +186,53 @@ test('falls back to a proxy tunnel when the absolute-form request is refused', a
     await relay.close();
     await new Promise(resolve => server.close(resolve));
   }
+});
+
+test('keeps OnPremise Basic auth on a BAS proxy tunnel and verifies the CSRF session', async t => {
+  const { state, server } = sapLikeBackend();
+  const backendPort = await startServer(server);
+  const connectTargets = [];
+  const proxy = http.createServer();
+  proxy.on('connect', (request, clientSocket, head) => {
+    connectTargets.push(request.url);
+    const upstream = net.connect(backendPort, '127.0.0.1', () => {
+      clientSocket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head.length) upstream.write(head);
+      clientSocket.pipe(upstream);
+      upstream.pipe(clientSocket);
+    });
+    clientSocket.on('error', () => upstream.destroy());
+    upstream.on('error', () => clientSocket.destroy());
+  });
+  const proxyPort = await startServer(proxy);
+  const logs = [];
+  const relay = createBasDestinationRelay({
+    name: 'CC-SYSTEM',
+    url: 'http://cc-system.dest',
+    authentication: 'BasicAuthentication',
+    credentials: { user: 'DEVELOPER', password: 'secret123', mode: 'bas-tunnel' }
+  }, {
+    env: { HTTP_PROXY: `http://127.0.0.1:${proxyPort}` },
+    log: message => logs.push(message)
+  });
+  const relayUrl = await relay.ready;
+  t.after(async () => {
+    await relay.close();
+    proxy.closeAllConnections?.();
+    await new Promise(resolve => proxy.close(resolve));
+    await new Promise(resolve => server.close(resolve));
+  });
+
+  const probe = await relay.probeCsrfSession();
+  assert.deepEqual(probe, { httpStatus: 200, tokenReceived: true, cookieCount: 2 });
+  const response = await relayFetch(relayUrl, '/sap/bc/adt/oo/classes', { method: 'POST', body: '<x/>' });
+  assert.equal(response.status, 201, `expected a paired CSRF session, got ${response.status}: ${response.body}`);
+  const post = state.requests.find(request => request.method === 'POST');
+  assert.match(post.headers.authorization, /^Basic /);
+  assert.match(String(post.headers.cookie), /sap-session-\d+=/);
+  assert.ok(connectTargets.length >= 2);
+  assert.ok(connectTargets.every(target => target === 'cc-system.dest:80'));
+  assert.equal(relay.stats.direct, false);
+  assert.equal(relay.stats.proxyTunnel, true);
+  assert.ok(logs.some(message => message.includes('BAS proxy tunnel')));
 });

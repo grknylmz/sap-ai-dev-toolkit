@@ -97,16 +97,15 @@ async function readRequestBody(req) {
 export function createBasDestinationRelay(destination, { env = process.env, fetchImpl = undiciFetch, log = () => {} } = {}) {
   if (!destination?.url) throw new Error('Destination relay requires a BAS destination URL');
   const base = new URL(destination.url);
-  // Self-healing mode 5 (direct connect): the BAS .dest proxy strips
-  // Set-Cookie, which makes SAP CSRF session binding impossible. When the
-  // operator stored credentials for this destination (setup prompts for
-  // Internet destinations), the relay connects straight to the backend host
-  // with Basic auth — cookies survive, CSRF pairing works, and writes go
-  // through exactly like they do from Eclipse/ADT.
   const credentials = destination.credentials;
-  const directBase = credentials?.host ? new URL(String(credentials.host)) : null;
-  const effectiveBase = directBase || base;
+  const tunnelMode = credentials?.mode === 'bas-tunnel';
+  const directHost = tunnelMode ? '' : credentials?.host;
+  // Internet overrides retain the direct-backend path. OnPremise overrides
+  // must keep the BAS .dest route (and its Cloud Connector mapping), so they
+  // use HTTP CONNECT through the BAS proxy instead of credentials.host.
+  const directBase = directHost ? new URL(String(directHost)) : null;
   if (directBase) log(`[${destination.name}] BAS relay direct connect active (${directBase.origin}); BAS proxy cookie stripping bypassed`);
+  if (tunnelMode) log(`[${destination.name}] BAS relay using a BAS proxy tunnel for the OnPremise destination`);
   // Proxy resolution: an explicitly configured proxy wins (an explicit empty
   // value means "go direct"). Without configuration, BAS virtual .dest hosts
   // imply the default BAS proxy; any other host (tests, direct URLs) is
@@ -114,22 +113,23 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
   // foreign proxy.
   const explicitProxy = env.HTTP_PROXY ?? env.http_proxy;
   const proxyUrl = directBase ? '' : (explicitProxy !== undefined ? String(explicitProxy) : (/\.dest$/i.test(base.hostname) ? DEFAULT_PROXY : ''));
+  if (tunnelMode && !proxyUrl) throw new Error('OnPremise credential overrides require the BAS destination proxy to preserve the Cloud Connector route');
   const dispatcher = proxyUrl ? new ProxyAgent({ uri: proxyUrl, proxyTunnel: false }) : undefined;
   // Self-healing mode 2: if the BAS proxy refuses absolute-form proxied
   // requests (its own 502/504), retry through a CONNECT tunnel so the relay
   // keeps working through the same egress.
   const tunnelDispatcher = proxyUrl ? new ProxyAgent({ uri: proxyUrl, proxyTunnel: true }) : undefined;
-  let tunneled = false;
+  let tunneled = tunnelMode;
   // Observable self-healing counters, surfaced by --doctor and tests.
-  const stats = { requests: 0, csrfFetches: 0, csrfRetries: 0, tunnelFallbacks: 0, direct: Boolean(directBase) };
+  const stats = { requests: 0, csrfFetches: 0, csrfRetries: 0, tunnelFallbacks: 0, direct: Boolean(directBase), proxyTunnel: tunnelMode };
   // Per-path CSRF sessions: { token, jar, fetchedAt } where jar holds the
   // Set-Cookie state SAP returned together with the token.
   const tokenCache = new Map();
 
-  function rememberSession(key, token, headers) {
+  function rememberSession(key, token, headers, httpStatus) {
     const jar = new Map();
     recordCookies(jar, headers);
-    tokenCache.set(key, { token, jar, fetchedAt: Date.now() });
+    tokenCache.set(key, { token, jar, fetchedAt: Date.now(), httpStatus });
   }
 
   async function send(target, method, headers, body) {
@@ -171,10 +171,20 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
     await response.arrayBuffer().catch(() => undefined);
     const token = response.headers.get('x-csrf-token');
     if (token && token.toLowerCase() !== 'required') {
-      rememberSession(key, token, response.headers);
+      rememberSession(key, token, response.headers, response.status);
       return tokenCache.get(key);
     }
     return null;
+  }
+
+  async function probeCsrfSession(path = '/sap/bc/adt/discovery') {
+    const requestUrl = new URL(path, base);
+    const session = await fetchToken(requestUrl, { accept: 'application/xml,text/xml,*/*' });
+    return {
+      httpStatus: session?.httpStatus || 0,
+      tokenReceived: Boolean(session?.token),
+      cookieCount: session?.jar?.size || 0
+    };
   }
 
   // Rewrite an incoming .dest target onto the direct backend host when
@@ -261,6 +271,7 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
   return {
     ready,
     stats,
+    probeCsrfSession,
     close: async () => {
       await dispatcher?.close?.();
       await tunnelDispatcher?.close?.();
