@@ -52,9 +52,9 @@ test('self-heals BAS destinations through a local destination relay without cred
   await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
   const event = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).find(row => row.event === 'initialize');
   assert.equal(event.argv.includes('--proxy-auth'), true);
+  assert.equal(event.env.user, '');
+  assert.equal(event.env.password, '');
   assert.match(event.argv[event.argv.indexOf('--url') + 1], /^http:\/\/127\.0\.0\.1:\d+$/);
-  assert.equal(event.env.user, undefined);
-  assert.equal(event.env.password, undefined);
   assert.ok(logs.some(message => message.includes('BAS destination relay enabled')));
 });
 
@@ -68,6 +68,8 @@ test('self-heals BAS relay children with loopback NO_PROXY and keeps --proxy-aut
   await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
   const event = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).find(row => row.event === 'initialize');
   assert.equal(event.argv.includes('--proxy-auth'), true);
+  assert.equal(event.env.user, '');
+  assert.equal(event.env.password, '');
   const noProxy = String(event.env.noProxy || '').split(',').map(value => value.trim().toLowerCase());
   assert.ok(noProxy.includes('127.0.0.1'), `NO_PROXY must exempt the relay loopback: ${event.env.noProxy}`);
   assert.ok(noProxy.includes('localhost'), `NO_PROXY must exempt relay localhost: ${event.env.noProxy}`);
@@ -177,7 +179,7 @@ test('merges paged tools and routes calls to the selected child', async t => {
     }
   }
   assert.equal(listed.result.tools.filter(tool => tool.name.startsWith('alpha_')).length, PUBLIC_VSP_TOOLS.size + localWorkflowTools.length);
-  assert.equal(PUBLIC_VSP_TOOLS.size + localWorkflowTools.length, 59);
+  assert.equal(PUBLIC_VSP_TOOLS.size + localWorkflowTools.length, 61);
   for (const tool of listed.result.tools) {
     assert.match(tool.name, /^[a-z0-9_-]+$/, `public tool names must be lowercase: ${tool.name}`);
     assert.ok(tool.name.length <= 128, `public tool names must stay within the MCP limit: ${tool.name}`);
@@ -276,11 +278,12 @@ test('merges paged tools and routes calls to the selected child', async t => {
     assert.equal(init.env.guard, 'true');
     assert.equal(init.env.authorization, undefined);
     assert.equal(init.env.cookie, undefined);
-    assert.equal(init.env.user, undefined);
-    assert.equal(init.env.password, undefined);
+    assert.equal(init.env.user, '');
+    assert.equal(init.env.password, '');
     assert.equal(init.env.allowTransportableEdits, 'true');
   }
 });
+
 
 test('routes tools/call using the exact name advertised for a BAS destination', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-namespaced-tool-roundtrip-'));

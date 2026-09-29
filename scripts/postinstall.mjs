@@ -68,19 +68,29 @@ async function runInstallSetup() {
 }
 
 async function runCopilotAssetInstall() {
+  const copilotRoot = join(process.env.HOME || homedir(), '.copilot');
+  const installAssets = async () => {
+    const assets = await installUserCopilotAssets({ root });
+    const installed = assets.installed + assets.updated;
+    await announce(`Installed ${installed} Copilot files in ${assets.root}; ${assets.unchanged} already current.`, 'success');
+    if (assets.conflicts.length > 0) {
+      const paths = assets.conflicts.map(path => join(assets.root, path)).join(', ');
+      await announce(`Existing Copilot customizations were preserved; review these paths: ${paths}`, 'warning');
+    }
+  };
   await withInstallTerminal(async terminal => {
     if (!terminal) {
-      await announce('Optional Copilot installation skipped because no interactive terminal is available.', 'warning');
+      await announce('Installing bundled agents and skills by default because no interactive terminal is available.', 'progress');
+      await installAssets();
       return;
     }
-    const copilotRoot = join(process.env.HOME || homedir(), '.copilot');
     await announce([
-      'Optional Copilot setup is waiting for your choice.',
+      'Bundled Copilot agents and skills are installed by default.',
       '',
-      'Type y then press Enter to install the bundled agents and all skills in the path shown below; press Enter alone to skip.',
+      'Type n then press Enter to skip installing or updating the bundled files.',
       '',
-      `${colorText('✅ Type y then Enter', 'green', true)} to install the bundled agents and all skills.`,
-      `${colorText('⏭️  Press Enter', 'yellow', true)} to skip this optional step (default).`,
+      `${colorText('✅ Press Enter', 'green', true)} to install or update the bundled agents and all skills.`,
+      `${colorText('⏭️  Type n then Enter', 'yellow', true)} to skip this step.`,
       '',
       `${colorText('📁 Target folder:', 'cyan', true)}`,
       `   ${copilotRoot}`,
@@ -89,23 +99,15 @@ async function runCopilotAssetInstall() {
     const prompt = createInterface({ input: terminal.input, output: terminal.output });
     let answer;
     try {
-      answer = await prompt.question(`${colorText('🤖 Install the bundled agents and all skills?', 'magenta', terminal.output)} ${colorText('[y/N]', 'yellow', terminal.output)} `);
+      answer = await prompt.question(`${colorText('🤖 Install the bundled agents and all skills?', 'magenta', terminal.output)} ${colorText('[Y/n]', 'yellow', terminal.output)} `);
     } finally {
       prompt.close();
     }
-    // Default is skip: writing instruction files into ~/.copilot affects
-    // every Copilot session on the machine, so it needs an explicit yes.
-    if (!/^y(?:es)?$/i.test(answer.trim())) {
+    if (/^n(?:o)?$/i.test(answer.trim())) {
       await announce('Copilot agent and skills were skipped. Your files were not changed.', 'info');
       return;
     }
-    const assets = await installUserCopilotAssets({ root });
-    const installed = assets.installed + assets.updated;
-    await announce(`Installed ${installed} Copilot files in ${assets.root}; ${assets.unchanged} already current.`, 'success');
-    if (assets.conflicts.length > 0) {
-      const paths = assets.conflicts.map(path => join(assets.root, path)).join(', ');
-      await announce(`Existing Copilot customizations were preserved; review these paths: ${paths}`, 'warning');
-    }
+    await installAssets();
   });
 }
 

@@ -311,8 +311,8 @@ test('routes a PrincipalPropagation MCP call through CF Connectivity to the SAP 
   const events = (await readFile(childLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   const initialized = events.find(event => event.event === 'initialize');
   assert.equal(initialized.argv.includes('--proxy-auth'), true);
-  assert.equal(initialized.env.user, undefined);
-  assert.equal(initialized.env.password, undefined);
+  assert.equal(initialized.env.user, '');
+  assert.equal(initialized.env.password, '');
   for (const secret of ['destination-key-secret', 'destination-api-token', 'connectivity-key-secret', 'user-exchange-token', 'current-cf-user-jwt', 'parent-user-secret', 'parent-password-secret']) {
     assert.equal(`${result.stdout}\\n${result.stderr}\\n${JSON.stringify(initialized.argv)}`.includes(secret), false, `${secret} must not appear in output or argv`);
   }

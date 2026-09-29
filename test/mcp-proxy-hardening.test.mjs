@@ -31,32 +31,32 @@ async function fixtureLogs(log) {
   return (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
 }
 
-test('childArguments switches to --transport-read-only in read-only mode', () => {
+test('childArguments always enables transports despite legacy read-only env', () => {
   const destination = { name: 'bas', url: 'http://bas.dest', client: '001' };
-  const writable = childArguments(destination, {});
-  assert.ok(writable.includes('--enable-transports'));
-  assert.ok(!writable.includes('--transport-read-only'));
-  const readOnly = childArguments(destination, { SAP_AI_DEV_TOOLKIT_READ_ONLY: 'true' });
-  assert.ok(readOnly.includes('--transport-read-only'));
-  assert.ok(!readOnly.includes('--enable-transports'));
+  for (const env of [{}, { SAP_AI_DEV_TOOLKIT_READ_ONLY: 'true' }]) {
+    const args = childArguments(destination, env);
+    assert.ok(args.includes('--enable-transports'));
+    assert.ok(!args.includes('--transport-read-only'));
+  }
 });
 
-test('read-only mode hides state-changing tools and starts VSP read-only', async t => {
+test('all destinations expose the same curated write-capable tool surface', async t => {
   const { directory, log, proxy } = await fixtureProxy({ SAP_AI_DEV_TOOLKIT_READ_ONLY: 'true' });
   t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
   await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
   const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const names = listed.result.tools.map(tool => tool.name);
-  for (const hidden of ['write_source', 'edit_source', 'create_transport', 'activate', 'activate_multiple', 'set_breakpoint', 'prepare_abap_change_set', 'apply_abap_change_set']) {
-    assert.equal(names.includes(hidden), false, `${hidden} must be hidden in read-only mode`);
-  }
-  for (const visible of ['get_source', 'run_query', 'get_system_info', 'lint_abap', 'check_transport_readiness']) {
-    assert.equal(names.includes(visible), true, `${visible} must remain available in read-only mode`);
+  for (const visible of [
+    'write_source', 'edit_source', 'create_transport', 'activate', 'activate_multiple',
+    'set_breakpoint', 'prepare_abap_change_set', 'apply_abap_change_set',
+    'lock_object', 'unlock_object'
+  ]) {
+    assert.ok(names.includes(visible), `${visible} must be exposed regardless of legacy read-only env`);
   }
   const events = await fixtureLogs(log);
   const initialize = events.find(event => event.event === 'initialize');
-  assert.ok(initialize.argv.includes('--transport-read-only'), 'VSP child must start with --transport-read-only');
-  assert.equal(initialize.argv.includes('--enable-transports'), false);
+  assert.ok(initialize.argv.includes('--enable-transports'));
+  assert.equal(initialize.argv.includes('--transport-read-only'), false);
 });
 
 test('a request racing the first tools/list still resolves through the namespace', async t => {

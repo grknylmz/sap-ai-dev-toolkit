@@ -234,7 +234,7 @@ test('non-TTY setup skips without writing config', async () => {
   assert.equal(installCalls, 0);
 });
 
-test('global postinstall completes BAS selection before optional Copilot assets', async t => {
+test('global postinstall completes BAS selection before default Copilot asset installation', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-postinstall-wizard-'));
   const config = join(directory, 'mcp.json');
   const bin = join(directory, 'bin');
@@ -276,27 +276,27 @@ test('global postinstall completes BAS selection before optional Copilot assets'
     await rm(directory, { recursive: true, force: true });
   });
 
-  const declined = await runPostinstallInPty(env, '\r', '\r');
+  const declined = await runPostinstallInPty(env, '\r', 'n\r');
   assert.equal(declined.code, 0, `${declined.stdout}\n${declined.stderr}`);
   assert.equal(declined.selectionSent, true, declined.stdout);
   assert.equal(declined.assetsAnswerSent, true, declined.stdout);
   const declineLogs = `${declined.stdout}\n${declined.stderr}`;
   assert.match(declineLogs, /Configured 0 MCP servers/);
-  assert.match(declineLogs, /\[y\/N\]/);
-  assert.match(declineLogs, /Type y then press Enter to install the bundled agents and all skills in the path shown below; press Enter alone to skip/);
+  assert.match(declineLogs, /\[Y\/n\]/);
+  assert.match(declineLogs, /Type n then press Enter to skip installing or updating the bundled files/);
   assert.match(declineLogs, /🤖 sap-ai-dev-toolkit/);
   assert.match(declineLogs, /\u001b\[1;35m/);
-  assert.match(declineLogs, /Optional Copilot setup is waiting for your choice/);
+  assert.match(declineLogs, /Bundled Copilot agents and skills are installed by default/);
   assert.match(declineLogs, /Copilot agent and skills were skipped\. Your files were not changed/);
-  assert.ok(declineLogs.indexOf('Optional Copilot setup is waiting for your choice') > declineLogs.indexOf('Configured 0 MCP servers'), declineLogs);
-  assert.ok(declineLogs.indexOf('Install the bundled agents and all skills') > declineLogs.indexOf('Optional Copilot setup is waiting for your choice'), declineLogs);
+  assert.ok(declineLogs.indexOf('Bundled Copilot agents and skills are installed by default') > declineLogs.indexOf('Configured 0 MCP servers'), declineLogs);
+  assert.ok(declineLogs.indexOf('Install the bundled agents and all skills') > declineLogs.indexOf('Bundled Copilot agents and skills are installed by default'), declineLogs);
   assert.ok(declineLogs.indexOf('No MCP server entries are configured for this add-on.') > declineLogs.indexOf('Copilot agent and skills were skipped'), declineLogs);
   assert.ok(declineLogs.includes(`MCP config file: ${config}`), declineLogs);
   const configAfterDecline = JSON.parse(await readFile(config, 'utf8'));
   assert.equal(Object.values(configAfterDecline.servers).filter(entry => entry.BAS_EXT === 'true').length, 0);
   await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
 
-  const accepted = await runPostinstallInPty(env, ' \r', 'y\r');
+  const accepted = await runPostinstallInPty(env, ' \r', '\r');
   assert.equal(accepted.code, 0, `${accepted.stdout}\n${accepted.stderr}`);
   assert.equal(accepted.selectionSent, true, accepted.stdout);
   assert.equal(accepted.assetsAnswerSent, true, accepted.stdout);
@@ -313,11 +313,12 @@ test('global postinstall completes BAS selection before optional Copilot assets'
     .filter(entry => entry.BAS_EXT === 'true')
     .map(entry => entry.env.SAP_AI_DEV_TOOLKIT_DESTINATION), ['alpha-system']);
   await assertUserCopilotAssets(directory);
+
 });
 
 
 
-test('non-TTY postinstall skips setup and leaves MCP config untouched', async () => {
+test('non-TTY postinstall skips setup and installs Copilot assets by default', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-postinstall-non-tty-'));
   const env = {
     ...process.env,
@@ -348,13 +349,13 @@ test('non-TTY postinstall skips setup and leaves MCP config untouched', async ()
         assert.equal(await readFile(config, 'utf8'), original);
       }
     }
-    await assert.rejects(stat(join(env.HOME, '.copilot')), { code: 'ENOENT' });
+    await assertUserCopilotAssets(directory);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test('postinstall skips optional Copilot assets without an interactive terminal', async () => {
+test('postinstall installs Copilot assets without an interactive terminal', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-postinstall-'));
   const config = join(directory, 'mcp.json');
   const env = {
@@ -377,8 +378,8 @@ test('postinstall skips optional Copilot assets without an interactive terminal'
     });
     const logs = `${result.stdout}\n${result.stderr}`;
     assert.equal(result.code, 0, logs);
-    assert.match(logs, /Optional Copilot installation skipped because no interactive terminal/);
-    await assert.rejects(stat(join(env.HOME, '.copilot')), { code: 'ENOENT' });
+    assert.match(logs, /Installing bundled agents and skills by default because no interactive terminal is available/);
+    await assertUserCopilotAssets(join(directory, 'home'));
     await assert.rejects(stat(join(directory, '.github')), { code: 'ENOENT' });
     await assert.rejects(readFile(config), { code: 'ENOENT' });
   } finally {

@@ -38,18 +38,6 @@ const APPLICATION_LOG_SCHEMA = {
 };
 const APPLICATION_LOG_DESCRIPTION = 'Read SAP application log (SLG1) entries. Results are newest first and limited to 100 by default; set messages=true to include log message details.';
 
-// Read-only mode (SAP_AI_DEV_TOOLKIT_READ_ONLY=true) removes every tool that
-// changes SAP state from the public surface and starts VSP with
-// --transport-read-only, so an exploration destination cannot be written to
-// through this proxy even if a chat prompt asks for it.
-const READ_ONLY_HIDDEN_VSP_TOOLS = new Set([
-  'Activate',
-  'ActivateMultiple',
-  'CreateTransport',
-  'EditSource',
-  'SetBreakpoint',
-  'WriteSource'
-]);
 
 // Self-healing restarts retry the interrupted tools/call once. Retrying a
 // state-changing tool after a crash can apply the same write twice (the child
@@ -60,6 +48,8 @@ const NON_RETRIABLE_VSP_TOOLS = new Set([
   'ActivateMultiple',
   'CreateTransport',
   'EditSource',
+  'LockObject',
+  'UnlockObject',
   'WriteSource'
 ]);
 
@@ -78,10 +68,6 @@ function requestTimeoutMs(env) {
   return parsed > 0 ? Math.floor(parsed) : 0;
 }
 
-export function readOnlyMode(env = process.env) {
-  const raw = brandedEnvValue(env, 'READ_ONLY');
-  return raw !== undefined && ['1', 'true', 'yes'].includes(String(raw).trim().toLowerCase());
-}
 
 // Keep the default public VSP surface small enough for developer-lifecycle use.
 // Hidden upstream tools can still be used by local workflow tools when needed.
@@ -129,6 +115,7 @@ export const PUBLIC_VSP_TOOLS = new Set([
   'GrepPackages',
   'ListDependencies',
   'ListTransports',
+  'LockObject',
   'PrettyPrint',
   'RunATCCheck',
   'RunQuery',
@@ -136,15 +123,10 @@ export const PUBLIC_VSP_TOOLS = new Set([
   'SearchObject',
   'SetBreakpoint',
   'SyntaxCheck',
+  'UnlockObject',
   'WriteSource'
 ]);
 
-function exposeVspTool(tool, readOnly = false) {
-  if (!PUBLIC_VSP_TOOLS.has(tool?.name)) return false;
-  // Read-only destinations never expose the write/activate/transport-create
-  // surface, even when VSP registers it.
-  return !(readOnly && READ_ONLY_HIDDEN_VSP_TOOLS.has(tool.name));
-}
 
 // Public tool names are lowercase snake_case. BAS/VS Code chat tool references
 // are lowercase-only, so mixed-case names never bind in the tools picker even
@@ -192,8 +174,22 @@ function useBasDestinationRelay(destination, env = process.env) {
   return Boolean(destination.url && String(destination.url).includes('.dest'));
 }
 
+function useProxyAuthentication(destination) {
+  return destination.source !== 'cloud-foundry' || destination.authentication === 'PrincipalPropagation';
+}
+
 function childEnvironment(destination, env) {
   const childEnv = { ...sanitizeChildEnv(env), ...(destination.childEnv || {}) };
+  if (useProxyAuthentication(destination)) {
+    // VSP loads SAP_* values from local .env files. Set every supported local
+    // auth variable explicitly empty so dotenv cannot supply a fallback
+    // identity or session instead of the selected BAS destination identity.
+    for (const key of [
+      'SAP_USER', 'SAP_USERNAME', 'SAP_PASSWORD', 'SAP_PASS',
+      'SAP_COOKIE_FILE', 'SAP_COOKIE_STRING', 'SAP_BROWSER_AUTH', 'SAP_SSO',
+      'SAP_SAML_AUTH', 'SAP_SAML_USER', 'SAP_SAML_PASSWORD', 'SAP_CREDENTIAL_CMD'
+    ]) childEnv[key] = '';
+  }
   // The VSP child must reach the local BAS relay directly, never through the
   // BAS .dest proxy. Without a loopback exception every child request would
   // be double-proxied and the relay's session pairing could never apply.
@@ -210,13 +206,12 @@ function childEnvironment(destination, env) {
 
 
 export function childArguments(destination, env = process.env) {
-  // The proxy allowlist keeps transport mutations to CreateTransport.
-  // Transportable source edits are controlled by SAP_ALLOW_TRANSPORTABLE_EDITS.
+  // The proxy allowlist controls transport operations; source edits are
+  // controlled by SAP_ALLOW_TRANSPORTABLE_EDITS and SAP authorizations.
   const mode = brandedEnvValue(env, 'MODE') || 'expert';
   const args = ['--url', destination.url, '--client', destination.client || '001', '--mode', mode];
-  if (destination.source !== 'cloud-foundry' || destination.authentication === 'PrincipalPropagation') args.push('--proxy-auth');
-  if (readOnlyMode(env)) args.push('--transport-read-only');
-  else args.push('--enable-transports');
+  if (useProxyAuthentication(destination)) args.push('--proxy-auth');
+  args.push('--enable-transports');
   return args;
 }
 
@@ -394,7 +389,6 @@ export class MCPProxy {
     this.log = log;
     this.output = output;
     this.version = version;
-    this.readOnly = readOnlyMode(env);
     this.requestTimeoutMs = requestTimeoutMs(env);
     this.children = [];
     this.started = false;
@@ -663,17 +657,11 @@ export class MCPProxy {
           });
         }
 
-        if (!exposeVspTool(tool, this.readOnly)) continue;
+        if (!PUBLIC_VSP_TOOLS.has(tool?.name)) continue;
         const name = publicName(tool.name);
         publish(name, { entry, upstream: tool.name }, { ...tool, name, description: `${tool.description || tool.name} [destination: ${entry.destination.name}]` });
       }
-      // Local workflow tools gate on the upstream surface they can use; in
-      // read-only mode the hidden write tools must not enable change-set
-      // staging either.
-      const effectiveUpstream = this.readOnly
-        ? upstreamTools.filter(tool => !READ_ONLY_HIDDEN_VSP_TOOLS.has(tool.name))
-        : upstreamTools;
-      for (const localTool of createEngineeringTools(entry, effectiveUpstream, { env: this.env, log: this.log })) {
+      for (const localTool of createEngineeringTools(entry, upstreamTools, { env: this.env, log: this.log })) {
         const name = publicName(localTool.definition.name);
         publish(name, { handler: localTool.handler }, {
           ...localTool.definition,

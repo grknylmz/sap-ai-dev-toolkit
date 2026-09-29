@@ -77,9 +77,6 @@ The proxy adds local multi-step tools to each destination when their required VS
 
 `sap-ai-dev --doctor` checks destination probing, VSP startup, the `get_system_info` probe, and MCP tool listing. `sap-ai-dev --demo` runs the sample tools and OData fixtures without contacting SAP; demo writes and transport creation remain in memory until that process exits.
 
-### Read-only mode
-
-Set `SAP_AI_DEV_TOOLKIT_READ_ONLY=true` (or legacy `BAS_VSP_READ_ONLY`) on a destination server to run it strictly read-only: `WriteSource`, `EditSource`, `Activate`, `ActivateMultiple`, `CreateTransport`, `SetBreakpoint`, and the change-set workflow tools are removed from the surface, and the VSP child starts with `--transport-read-only` so transport writes are rejected upstream as well. Inspection, queries, linting, and checks remain available.
 
 ### Request timeouts
 

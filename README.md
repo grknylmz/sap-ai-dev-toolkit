@@ -84,7 +84,7 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 
 **Included skills:** `abap-development` · `abap-testing-quality` · `cds-development` · `rap-development` · `abap-debugging` · `abap-runtime-analysis` · `rap-service-delivery` · `sap-standard-api-analysis` · `clean-core-extensibility` · `sap-sdlc-orchestration` · `sap-transport-release` · `hana-cloud-inspection` · `hana-cloud-native-development` · `hana-cloud-validation`
 
-If the agents are not listed, install the optional agents and skills under `$HOME/.copilot` when prompted during an interactive global install, then reload BAS if needed. Repository-scoped installation instructions appear below.
+Agents and skills install into `$HOME/.copilot` by default during global installation; press Enter to accept or type `n` to skip. In non-interactive installs they are installed automatically. Repository-scoped installation instructions appear below.
 
 ## ✨ Your SAP development cockpit, inside Copilot Chat
 
@@ -237,10 +237,9 @@ Once the destination server is enabled in Copilot Chat, ask for outcomes instead
 | --- | --- |
 | 🎯 **Explicit target** | SAP changes only proceed when the destination and required target details are known. |
 | 🚦 **Explicit state change** | Activation, service publication, and transport creation happen only when requested and authorized. |
-| 👁️ **Optional read-only mode** | `SAP_AI_DEV_TOOLKIT_READ_ONLY=true` removes every write/activate/transport-create tool from the surface and starts VSP with `--transport-read-only`. Recommended for exploration destinations. |
 | 🧪 **Verification first** | The agent uses available lint, syntax, unit-test, ATC, and diagnostics workflows and reports what actually ran. |
 | 🔒 **SAP authorization remains authoritative** | The add-on does not bypass backend SAP permissions. |
-| 🚚 **Curated VSP tool surface** | The proxy exposes a cherry-picked developer-lifecycle set from VSP plus local workflow tools, keeping one destination below 60 tools; SAP authorizations and VSP safety checks still apply. |
+| 🚚 **Curated VSP tool surface** | The proxy exposes the same curated developer-lifecycle set for every destination, plus local workflow tools; SAP authorizations and VSP safety checks still apply. |
 | 🧱 **Per-destination isolation** | Generated MCP entries are scoped to a single `SAP_AI_DEV_TOOLKIT_DESTINATION`. |
 | 🔑 **No credentials in `mcp.json`** | Authentication material stays in BAS destination configuration rather than MCP config. |
 
@@ -277,6 +276,9 @@ The installer handles VSP provisioning automatically:
 - No Go toolchain is downloaded or required at install time; Go is only used by the repository's own `build:vsp` development script.
 
 With `H2O_URL` set, an interactive install opens a checkbox picker with no destinations selected by default. Use **Space** to choose destinations and **Enter** to confirm. Press **a** to toggle all destinations (select all if any are unchecked; otherwise clear the selection). Confirming with none selected removes this add-on's managed MCP entries. When the `cf` CLI 8.18 or newer is authenticated to a targeted space, setup first offers an optional import from that space's Destination service; type **y** then **Enter** to include it, or press **Enter** to skip. Accepted CF and BAS destinations appear together in the picker. npm may run its install hook without an interactive terminal, even when the shell is interactive; in that case, selection is skipped without changing MCP config.
+
+
+The same postinstall installs bundled Copilot agents and skills under `$HOME/.copilot` by default. Press Enter at `[Y/n]` to install or update them; type `n` to leave them unchanged. With no interactive terminal, installation proceeds automatically.
 
 Some current npm versions also require install hooks to be approved. If npm reports that `sap-ai-dev-toolkit`'s `postinstall` was blocked, allow it during a fresh install with `npm install --global --allow-scripts=sap-ai-dev-toolkit sap-ai-dev-toolkit`, or run `sap-ai-dev --setup` from an interactive BAS terminal after installation.
 
@@ -617,8 +619,11 @@ The write and activation tools change SAP state. Confirm the target, package, an
 | `GetUserTransports` | Read and group a user's transport requests and tasks; supports organizer filters and source selection. |
 | `GetTransport` | Read a transport request's details, objects, and tasks. |
 | `GetTransportInfo` | Find eligible transports and lock status for an ABAP object or package. |
+| `LockObject` | Lock an ABAP repository object in SAP. |
+| `UnlockObject` | Unlock an ABAP repository object in SAP. |
 | `CreateTransport` | Create a transport request. |
 | `CheckTransportReadiness` | Collect a whitelisted bundle of transport, dependency, inactive-object, ABAP Unit, and ATC evidence. |
+`LockObject` and `UnlockObject` are state-changing VSP tools; the proxy does not retry them after a child crash to avoid duplicate side effects.
 
 Transport release and deletion are not exposed by the curated proxy surface; release or delete transports outside this add-on after review.
 
@@ -736,7 +741,6 @@ The response contains a `tools` array. A `RunQuery` entry resembles this excerpt
 | `SAP_AI_DEV_TOOLKIT_DISABLE_BAS_RELAY=true` | Disable the built-in BAS destination relay. By default the add-on self-heals `.dest` destinations through a local relay that keeps all access destination-based while handling ADT CSRF fetch/retry behavior before VSP calls SAP. |
 | `SAP_AI_DEV_TOOLKIT_HTTP_PROXY` | Egress proxy for relay and discovery traffic. Takes precedence over `HTTP_PROXY`/`http_proxy`; unset means the default BAS proxy for `.dest` hosts, empty means direct. |
 | `SAP_AI_DEV_TOOLKIT_MAX_CSRF_RETRIES` | Bounded retries after explicit CSRF-session rejection per unsafe request (default 3, maximum 10). Invalid values use the default. |
-| `SAP_AI_DEV_TOOLKIT_READ_ONLY=true` | Read-only mode: hides `WriteSource`, `EditSource`, `Activate`, `ActivateMultiple`, `CreateTransport`, `SetBreakpoint`, and the change-set workflow tools, and starts VSP with `--transport-read-only`. |
 | `SAP_AI_DEV_TOOLKIT_REQUEST_TIMEOUT_MS` | Per-request timeout for calls forwarded to a VSP child (default 600000 = 10 minutes; `0` disables). A stalled request fails with a timeout error; the child is left running. |
 | `SAP_AI_DEV_MCP_CONFIG` | Explicit MCP configuration path; highest precedence. |
 | `SAP_AI_DEV_TOOLKIT_MCP_CONFIG` | Branded compatibility alias for the MCP configuration path. |
@@ -759,7 +763,7 @@ The relay between the VSP child and each BAS destination recovers from the failu
 2. **Session refresh** — when SAP explicitly rejects a CSRF token, the cached session is dropped, a fresh token+cookie pair is fetched, and the request is retried within the configured bound. Generic authorization 401/403 responses are returned without being mislabeled or retried as CSRF failures.
 3. **Proxy tunnel fallback** — when the BAS proxy refuses absolute-form requests (502/504 or transport errors), the relay switches to a CONNECT tunnel through the same proxy and keeps going.
 4. **Child crash recovery** — a crashed VSP child is restarted transparently, re-initialized, tools re-registered, and the interrupted `tools/call` retried once before any error reaches the client.
-5. **Configured destination authentication** — the add-on always uses the URL, authentication mode, and credentials already configured for the selected destination. Setup does not prompt for or store SAP usernames/passwords, and the relay does not connect directly to a backend host as a credential fallback. Correct the credentials in BAS or the Cloud Foundry Destination service if SAP rejects them.
+5. **Configured destination authentication** — BAS destination children use the selected BAS destination as their only SAP identity. The toolkit clears VSP local authentication environment values so a project `.env` cannot override or conflict with destination authentication. Setup does not prompt for or store SAP usernames/passwords, and the relay does not connect directly to a backend host as a credential fallback. Cloud Foundry destinations use only credentials returned by their configured Destination service record.
 Existing installs that still set the previous `BAS_VSP_*` environment variables remain supported. The setup wizard writes new MCP entries with the `SAP_AI_DEV_TOOLKIT_*` names.
 
 #### Server logging

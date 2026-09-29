@@ -163,7 +163,7 @@ These logical names are exposed through MCP in lowercase snake_case (`lint_abap`
 
 - Runtime tool names are unprefixed lowercase snake_case (`run_query`) on the normal single-destination server; a `<destination-slug>_` prefix appears only on multi-destination servers. `tools/call` accepts the exact name returned by `tools/list`.
 - The proxy starts VSP with `--enable-transports`; generated MCP entries set `SAP_ALLOW_TRANSPORTABLE_EDITS=true`.
-- `SAP_AI_DEV_TOOLKIT_READ_ONLY=true` switches a server to read-only: the write/activate/transport-create/breakpoint tools above are removed from the surface, change-set workflows are not registered, and VSP starts with `--transport-read-only` instead.
+- The curated VSP tool surface and enabled transport mode are the same for every destination; SAP authorization remains authoritative.
 - `SAP_AI_DEV_TOOLKIT_REQUEST_TIMEOUT_MS` (default 600000) bounds each forwarded call; stalled requests fail without killing the child.
 - Transport release/deletion and the general-purpose `SAP` router are intentionally hidden from direct proxy calls. `GetApplicationLog` is the bounded convenience mapping for the SAP application-log route.
 

@@ -14,7 +14,7 @@ function usage() {
     '',
     '  (default)  Packs the workspace and installs the tarball globally, then',
     '             runs the normal postinstall wizard (binary provisioning,',
-    '             BAS destination setup, optional Copilot assets).',
+    '             BAS destination setup, and default Copilot asset installation).',
     '  --link     Installs with npm link instead of a tarball; edits to src/',
     '             and scripts/ take effect immediately without reinstalling.',
     '  --verify   Verifies the global sap-ai-dev command resolves to this',

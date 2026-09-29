@@ -137,7 +137,7 @@ async function withLiveClient(t) {
   return client;
 }
 
-test('live S4H MCP exposes a curated ABAP lifecycle surface under 60 tools', { skip: LIVE ? false : 'set SAP_AI_DEV_LIVE_S4H=1 to run against a live BAS/S4H destination' }, async t => {
+test('live S4H MCP exposes a curated ABAP lifecycle surface under 62 tools', { skip: LIVE ? false : 'set SAP_AI_DEV_LIVE_S4H=1 to run against a live BAS/S4H destination' }, async t => {
   const client = await withLiveClient(t);
   const listed = await client.request('tools/list', {});
   const tools = listed.tools || [];
@@ -145,7 +145,7 @@ test('live S4H MCP exposes a curated ABAP lifecycle surface under 60 tools', { s
   const prefix = `${SLUG}_`;
 
   assert.ok(tools.length > 25, `expected a useful ABAP lifecycle surface, got ${tools.length}`);
-  assert.ok(tools.length < 60, `curated destination tool count must stay below 60, got ${tools.length}`);
+  assert.ok(tools.length < 62, `curated destination tool count must stay below 62, got ${tools.length}`);
   assert.ok(tools.every(tool => tool.name.startsWith(prefix)), 'every tool is destination-prefixed for the selected S4H server');
 
   for (const required of [
@@ -153,7 +153,7 @@ test('live S4H MCP exposes a curated ABAP lifecycle surface under 60 tools', { s
     'SearchObject', 'GrepObjects', 'GrepPackages', 'GetSource', 'WriteSource', 'EditSource', 'CompareSource',
     'SyntaxCheck', 'PrettyPrint', 'Activate', 'RunUnitTests', 'RunATCCheck', 'GetInactiveObjects',
     'GetClass', 'GetProgram', 'GetPackage', 'GetTable', 'GetTableContents', 'RunQuery',
-    'GetTransport', 'GetTransportInfo', 'ListTransports', 'CreateTransport',
+    'GetTransport', 'GetTransportInfo', 'ListTransports', 'CreateTransport', 'LockObject', 'UnlockObject',
     'GetApplicationLog', 'PrepareABAPChangeSet', 'ApplyABAPChangeSet', 'CheckTransportReadiness', 'PlanABAPCloudMigration'
   ]) {
     assert.ok(names.has(`${prefix}${snakeCaseName(required)}`), `expected curated lifecycle tool ${required}`);
