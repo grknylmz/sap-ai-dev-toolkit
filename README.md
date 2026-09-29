@@ -544,7 +544,7 @@ For a transport report, include exactly one `GetTransport` check whose `transpor
 
 For an ABAP Cloud assessment, get object URIs from `SearchObject` and pass them to `PlanABAPCloudMigration`. It reports release evidence; it does not guess replacement APIs. Save the JSON from `GenerateRAPRegressionSuite` and pass it to `RunRAPRegressionSuite` after relevant service changes.
 
-`sap-ai-dev --doctor` probes each discovered destination, checks that each managed MCP entry still matches its selected BAS destination, starts VSP, lists MCP tools, and preflights the runtime relay's CSRF session (token fetched from the GET-capable ADT discovery endpoint, the same token POST-only services such as data preview rely on) before calling `GetSystemInfo`. It repairs only tagged toolkit-owned BAS entries that can be verified against complete destination discovery; it does not add destinations, remove stale or third-party entries, or overwrite malformed configuration. `--doctor --json` reports redacted session diagnostics (HTTP status, cookie count, retry/fallback counters; never token or cookie values) and exits unsuccessfully when a required check fails.
+`sap-ai-dev --doctor` probes each discovered destination, checks that each managed MCP entry still matches its selected BAS destination, starts VSP, lists MCP tools, and calls `GetSystemInfo` directly when that tool is exposed. It repairs only tagged toolkit-owned BAS entries that can be verified against complete destination discovery; it does not add destinations, remove stale or third-party entries, or overwrite malformed configuration. `--doctor --json` reports redacted diagnostics and exits unsuccessfully when a required check fails.
 
 `tools/list` confirms what this MCP server exposes; it does not prove that VS Code attached the server to the active chat. Start the selected destination in **MCP: List Servers**, enable it in the Chat tools picker, and reload/reselect the agent if the host binding is stale. This add-on cannot inspect or repair another MCP server's registration or a host-wide tool budget.
 
@@ -738,9 +738,7 @@ The response contains a `tools` array. A `RunQuery` entry resembles this excerpt
 | `SAP_AI_DEV_TOOLKIT_DESTINATION` | Comma-separated destination allowlist for normal runtime discovery. Setup clears this temporarily so it can display all eligible systems. |
 | `SAP_AI_DEV_TOOLKIT_MODE` | VSP child mode (`expert` by default; `focused` omits `ActivateMultiple`, `GetUserTransports`, and `GetTransportInfo`). The proxy exposes its curated tool subset and local workflow tools, including `LintABAP`. |
 | `SAP_ALLOW_TRANSPORTABLE_EDITS` | Generated MCP entries set this to `true` to permit source edits in transportable packages; VSP safety checks and SAP authorizations still apply. |
-| `SAP_AI_DEV_TOOLKIT_DISABLE_BAS_RELAY=true` | Disable the built-in BAS destination relay. By default the add-on self-heals `.dest` destinations through a local relay that keeps all access destination-based while handling ADT CSRF fetch/retry behavior before VSP calls SAP. |
-| `SAP_AI_DEV_TOOLKIT_HTTP_PROXY` | Egress proxy for relay and discovery traffic. Takes precedence over `HTTP_PROXY`/`http_proxy`; unset means the default BAS proxy for `.dest` hosts, empty means direct. |
-| `SAP_AI_DEV_TOOLKIT_MAX_CSRF_RETRIES` | Bounded retries after explicit CSRF-session rejection per unsafe request (default 3, maximum 10). Invalid values use the default. |
+| `SAP_AI_DEV_TOOLKIT_HTTP_PROXY` | Egress proxy for BAS discovery and probe traffic. Takes precedence over `HTTP_PROXY`/`http_proxy`; unset means the default BAS proxy for `.dest` hosts, empty means direct. |
 | `SAP_AI_DEV_TOOLKIT_REQUEST_TIMEOUT_MS` | Per-request timeout for calls forwarded to a VSP child (default 600000 = 10 minutes; `0` disables). A stalled request fails with a timeout error; the child is left running. |
 | `SAP_AI_DEV_MCP_CONFIG` | Explicit MCP configuration path; highest precedence. |
 | `SAP_AI_DEV_TOOLKIT_MCP_CONFIG` | Branded compatibility alias for the MCP configuration path. |
@@ -757,18 +755,13 @@ The response contains a `tools` array. A `RunQuery` entry resembles this excerpt
 
 #### Self-healing modes
 
-The relay between the VSP child and each BAS destination recovers from the failure modes that break ADT writes over `.dest` proxies:
-
-1. **CSRF session pairing** — a scoped cookie jar retains session cookies received during safe reads and token fetches, applies updates and expirations, and replays the matching token/cookie pair on POST/PUT/PATCH/DELETE. Tokens are session-scoped and always fetched from the GET-capable `/sap/bc/adt/discovery` endpoint, so unsafe requests to POST-only services (ADT data preview) are covered too. If no token can be obtained at all, the relay fails closed and does not send the unsafe request. A token that arrives without session cookies is still used — BAS proxy routes strip `Set-Cookie`, yet the backend accepts the token on the proxy-established Basic-auth session — and a CSRF rejection on such a cookie-less route is surfaced without pointless retries.
-2. **Session refresh** — when SAP explicitly rejects a CSRF token, the cached session is dropped, a fresh token+cookie pair is fetched, and the request is retried within the configured bound. Generic authorization 401/403 responses are returned without being mislabeled or retried as CSRF failures.
-3. **Proxy tunnel fallback** — when the BAS proxy refuses absolute-form requests (502/504 or transport errors), the relay switches to a CONNECT tunnel through the same proxy and keeps going.
-4. **Child crash recovery** — a crashed VSP child is restarted transparently, re-initialized, tools re-registered, and the interrupted `tools/call` retried once before any error reaches the client.
-5. **Configured destination authentication** — BAS destination children use the selected BAS destination as their only SAP identity. The toolkit clears VSP local authentication environment values so a project `.env` cannot override or conflict with destination authentication. Setup does not prompt for or store SAP usernames/passwords, and the relay does not connect directly to a backend host as a credential fallback. Cloud Foundry destinations use only credentials returned by their configured Destination service record.
+VSP children connect to each configured destination URL directly. BAS destination authentication remains selected through VSP's `--proxy-auth` path; Cloud Foundry on-premise destinations continue through the separate Connectivity proxy.
+Child crash recovery restarts a failed VSP child, re-initializes it, re-registers tools, and retries the interrupted `tools/call` once before surfacing an error. State-changing tools are not retried.
 Existing installs that still set the previous `BAS_VSP_*` environment variables remain supported. The setup wizard writes new MCP entries with the `SAP_AI_DEV_TOOLKIT_*` names.
 
 #### Server logging
 
-Every observable event — startup banner (version, PID, VSP binary), destination discovery, relay activation, VSP session initialization, each JSON-RPC request with its id, every tool call with duration and outcome, self-healing restarts, and errors — is logged twice: to **stderr** with ISO timestamps (visible when the server runs in a terminal or in hosts that surface stderr), and to the host's **MCP server output channel** as standard `notifications/message` log notifications (VS Code/BAS and Claude Code render these under the server's output). Log notifications start at `info`; send `logging/setLevel` with `debug` (or higher) from the client to adjust what reaches the channel — stderr always receives everything. Credentials, cookies, and tokens are redacted in both streams.
+Every observable event — startup banner (version, PID, VSP binary), destination discovery, VSP session initialization, each JSON-RPC request with its id, every tool call with duration and outcome, self-healing restarts, and errors — is logged twice: to **stderr** with ISO timestamps (visible when the server runs in a terminal or in hosts that surface stderr), and to the host's **MCP server output channel** as standard `notifications/message` log notifications (VS Code/BAS and Claude Code render these under the server's output). Log notifications start at `info`; send `logging/setLevel` with `debug` (or higher) from the client to adjust what reaches the channel — stderr always receives everything. Credentials, cookies, and tokens are redacted.
 
 <a id="troubleshooting"></a>
 
@@ -784,6 +777,8 @@ sap-ai-dev --list-destinations --json
 Next, check that the backend answers at `/sap/bc/adt`.
 
 Runtime diagnostics take the stderr lane. In the MCP server's Output view, check per-destination ADT probe status, VSP child stderr, and failed tool-call details; stdout is reserved for MCP protocol messages.
+
+If `GetSystemInfo` or `RunQuery` reports a CSRF-token fetch failure, VSP tries `/sap/bc/adt/core/discovery` first and falls back to `/sap/bc/adt/discovery` when the core endpoint returns HTTP 404 or 5xx without a token. If both endpoints fail, the error includes their HTTP statuses; check BAS destination routing and the SAP ADT service. `GetInstalledComponents` is a separate GET request and a failure there is not evidence of a CSRF problem.
 
 If automatic Go or VSP provisioning fails, check network access and the package's supported platform. You can install Go manually or set `GO_BINARY` as an explicit fallback. A trusted prebuilt VSP can be supplied with `SAP_AI_DEV_TOOLKIT_BINARY`.
 

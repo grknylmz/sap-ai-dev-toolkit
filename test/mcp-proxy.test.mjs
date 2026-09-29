@@ -41,38 +41,21 @@ test('uses authentication-specific arguments for Cloud Foundry children', () => 
   assert.equal(childArguments(basicBasDestination, {}).includes('--proxy-auth'), true);
 });
 
-test('self-heals BAS destinations through a local destination relay without credentials', async t => {
+test('launches BAS VSP children with the exact destination URL and destination authentication', async t => {
   const destination = { name: 'S4H', url: 'http://S4H.dest', client: '100', authentication: 'BasicAuthentication', proxyType: 'Internet' };
-  const directory = await mkdtemp(join(tmpdir(), 'bas-relay-'));
+  const directory = await mkdtemp(join(tmpdir(), 'bas-direct-destination-'));
   const log = join(directory, 'children.log');
-  const logs = [];
-  const proxy = new MCPProxy({ binary: fixture, destinations: [destination], env: { ...process.env, FAKE_LOG: log }, log: message => logs.push(message) });
+  const proxy = new MCPProxy({ binary: fixture, destinations: [destination], env: { ...process.env, NO_PROXY: 'proxy.internal', no_proxy: 'proxy.internal', FAKE_LOG: log }, log: () => {} });
   t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
   proxy.start();
   await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
   const event = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).find(row => row.event === 'initialize');
+  const urlIndex = event.argv.indexOf('--url');
+  assert.equal(event.argv[urlIndex + 1], destination.url);
   assert.equal(event.argv.includes('--proxy-auth'), true);
   assert.equal(event.env.user, '');
   assert.equal(event.env.password, '');
-  assert.match(event.argv[event.argv.indexOf('--url') + 1], /^http:\/\/127\.0\.0\.1:\d+$/);
-  assert.ok(logs.some(message => message.includes('BAS destination relay enabled')));
-});
-
-test('self-heals BAS relay children with loopback NO_PROXY and keeps --proxy-auth', async t => {
-  const destination = { name: 'S4H', url: 'http://S4H.dest', client: '100', authentication: 'BasicAuthentication', proxyType: 'Internet' };
-  const directory = await mkdtemp(join(tmpdir(), 'bas-relay-env-'));
-  const log = join(directory, 'children.log');
-  const proxy = new MCPProxy({ binary: fixture, destinations: [destination], env: { ...process.env, FAKE_LOG: log }, log: () => {} });
-  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
-  proxy.start();
-  await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
-  const event = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).find(row => row.event === 'initialize');
-  assert.equal(event.argv.includes('--proxy-auth'), true);
-  assert.equal(event.env.user, '');
-  assert.equal(event.env.password, '');
-  const noProxy = String(event.env.noProxy || '').split(',').map(value => value.trim().toLowerCase());
-  assert.ok(noProxy.includes('127.0.0.1'), `NO_PROXY must exempt the relay loopback: ${event.env.noProxy}`);
-  assert.ok(noProxy.includes('localhost'), `NO_PROXY must exempt relay localhost: ${event.env.noProxy}`);
+  assert.equal(event.env.noProxy, 'proxy.internal');
 });
 
 test('restarts a crashed VSP child and retries the tool call once', async t => {

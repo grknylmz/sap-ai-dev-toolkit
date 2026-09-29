@@ -4,7 +4,6 @@ import { sanitizeChildEnv, slugifyDestination } from './bas-discovery.mjs';
 import { ABAP_LINT_TOOL, runABAPLint } from './abaplint.mjs';
 import { createEngineeringTools } from './engineering-tools.mjs';
 import { brandedEnvValue } from './branding.mjs';
-import { createBasDestinationRelay } from './bas-destination-relay.mjs';
 import { diagnosticText, redactText } from './redact.mjs';
 
 const JSONRPC = '2.0';
@@ -167,12 +166,6 @@ function closeDestinationRoute(destination) {
   return closedRoutes.get(destination);
 }
 
-function useBasDestinationRelay(destination, env = process.env) {
-  if (String(brandedEnvValue(env, 'DISABLE_BAS_RELAY') || '').toLowerCase() === 'true') return false;
-  if (destination.source === 'cloud-foundry') return false;
-  if (!destination.authentication) return false;
-  return Boolean(destination.url && String(destination.url).includes('.dest'));
-}
 
 function useProxyAuthentication(destination) {
   return destination.source !== 'cloud-foundry' || destination.authentication === 'PrincipalPropagation';
@@ -189,17 +182,6 @@ function childEnvironment(destination, env) {
       'SAP_COOKIE_FILE', 'SAP_COOKIE_STRING', 'SAP_BROWSER_AUTH', 'SAP_SSO',
       'SAP_SAML_AUTH', 'SAP_SAML_USER', 'SAP_SAML_PASSWORD', 'SAP_CREDENTIAL_CMD'
     ]) childEnv[key] = '';
-  }
-  // The VSP child must reach the local BAS relay directly, never through the
-  // BAS .dest proxy. Without a loopback exception every child request would
-  // be double-proxied and the relay's session pairing could never apply.
-  if (destination.relay) {
-    const loopback = '127.0.0.1,localhost';
-    for (const key of ['NO_PROXY', 'no_proxy']) {
-      const entries = String(childEnv[key] || '').split(',').map(value => value.trim()).filter(Boolean);
-      for (const host of loopback.split(',')) if (!entries.some(entry => entry.toLowerCase() === host)) entries.push(host);
-      childEnv[key] = entries.join(',');
-    }
   }
   return childEnv;
 }
@@ -245,14 +227,12 @@ class Child {
     this.process.on('error', error => {
       if (!this.closing && !this.pending.size && this.options.log) this.options.log(`[${destination.name}] VSP child process error: ${diagnosticText(error.message)}`);
       this.fail(error);
-      // Relay routes survive child crashes so self-healing restarts can reuse
-      // them; they are closed by the proxy shutdown path instead.
-      if (!destination.relay) void closeDestinationRoute(destination);
+      void closeDestinationRoute(destination);
     });
     this.process.on('exit', (code, signal) => {
       if (!this.closing && !this.pending.size && this.options.log) this.options.log(`[${destination.name}] VSP child exited (${code ?? signal})`);
       this.fail(new Error(`child exited (${code ?? signal})`));
-      if (!destination.relay) void closeDestinationRoute(destination);
+      void closeDestinationRoute(destination);
     });
   }
 
@@ -442,34 +422,10 @@ export class MCPProxy {
     if (this.started) return this;
     this.started = true;
     this.starting = (async () => {
-      // Destinations start concurrently (relay bind + child spawn); children
-      // are assembled in destination order, which keeps serverInfo's
-      // children[0] fallback and merged slug numbering deterministic.
-      const started = await Promise.all(this.destinations.map(originalDestination => (async () => {
-        let destination = originalDestination;
-        let relay;
+      // Destinations start concurrently and are assembled in destination order,
+      // keeping serverInfo's children[0] fallback and merged slug numbering deterministic.
+      const started = await Promise.all(this.destinations.map(destination => (async () => {
         try {
-          if (useBasDestinationRelay(originalDestination, this.env)) {
-            relay = createBasDestinationRelay(originalDestination, { env: this.env, log: message => this.eventSink(message) });
-            const originalClose = originalDestination.close;
-            const relayUrl = await relay.ready;
-            destination = {
-              ...originalDestination,
-              url: relayUrl,
-              relay: {
-                probeCsrfSession: relay.probeCsrfSession,
-                stats: relay.stats
-              },
-              async close() {
-                try {
-                  await originalClose?.();
-                } finally {
-                  await relay.close();
-                }
-              }
-            };
-            this.eventSink(`[${originalDestination.name}] BAS destination relay enabled (${relayUrl})`);
-          }
           this.eventSink(`[${destination.name}] starting VSP child (client=${destination.client || '001'})`);
           return {
             destination,
@@ -477,8 +433,6 @@ export class MCPProxy {
           };
         } catch (error) {
           this.eventSink(`[${destination.name}] failed to start child: ${diagnosticText(error.message)}`, 'error');
-          // A relay whose ready promise rejected still owns dispatchers.
-          if (relay && destination === originalDestination) await relay.close().catch(() => {});
           void closeDestinationRoute(destination);
           return null;
         }

@@ -308,3 +308,128 @@ diff --git a/internal/mcp/tools_register.go b/internal/mcp/tools_register.go
 +				}),
  			),
  		), s.handleActivateMultiple)
+ 	}
+diff --git a/pkg/adt/http.go b/pkg/adt/http.go
+--- a/pkg/adt/http.go
++++ b/pkg/adt/http.go
+@@ -499,6 +499,7 @@ func (t *Transport) fetchCSRFTokenFor(ctx context.Context, stateful bool) error
+ // allowReauth exists to break a cycle: re-authenticating ends with a token
+ // fetch of its own, and that fetch must not start another re-authentication.
+ func (t *Transport) fetchCSRFTokenWithReauth(ctx context.Context, allowReauth bool, stateful bool) error {
++	var alternateFailure string
+ 	token, status, redirected, err := t.probeCSRFToken(ctx, http.MethodHead, stateful)
+ 	if err != nil {
+ 		return err
+@@ -513,6 +514,29 @@ func (t *Transport) fetchCSRFTokenWithReauth(ctx context.Context, allowReauth bo
+ 		if err != nil {
+ 			return err
+ 		}
++		// Some ADT installations return 500 from /core/discovery even though
++		// the standard /discovery endpoint can issue a token. Keep the
++		// existing fast path, but do not make every POST depend on the
++		// failing endpoint.
++		if !isCSRFToken(token) && (getStatus >= 500 || getStatus == http.StatusNotFound) {
++			coreStatus := getStatus
++			token, status, redirected, err = t.probeCSRFTokenAt(ctx, http.MethodHead, stateful, "/sap/bc/adt/discovery")
++			if err != nil {
++				return err
++			}
++			if !isCSRFToken(token) {
++				if status == http.StatusUnauthorized && !t.canReauth() {
++					return fmt.Errorf("authentication failed (401): check username/password")
++				}
++				token, getStatus, getRedirected, err = t.probeCSRFTokenAt(ctx, http.MethodGet, stateful, "/sap/bc/adt/discovery")
++				if err != nil {
++					return err
++				}
++				if !isCSRFToken(token) {
++					alternateFailure = fmt.Sprintf("no CSRF token from /sap/bc/adt/core/discovery (GET %d) or /sap/bc/adt/discovery (HEAD %d, GET %d)", coreStatus, status, getStatus)
++				}
++			}
++		}
+ 		if !isCSRFToken(token) {
+ 			// An expired SSO session rarely announces itself as a 401. ICF sends
+ 			// the request on to the identity provider, the redirect chain is
+@@ -537,6 +561,9 @@ func (t *Transport) fetchCSRFTokenWithReauth(ctx context.Context, allowReauth bo
+ 				}
+ 				return t.fetchCSRFTokenWithReauth(ctx, false, stateful)
+ 			}
++			if alternateFailure != "" {
++				return errors.New(alternateFailure)
++			}
+ 			switch getStatus {
+ 			case http.StatusUnauthorized:
+ 				return fmt.Errorf("authentication failed (401): check username/password")
+@@ -556,7 +583,11 @@ func (t *Transport) fetchCSRFTokenWithReauth(ctx context.Context, allowReauth bo
+ // returns the token (empty when the server did not supply one), the status, and
+ // whether the answer came from somewhere other than the SAP host.
+ func (t *Transport) probeCSRFToken(ctx context.Context, method string, stateful bool) (token string, status int, redirected bool, err error) {
+-	reqURL, err := t.buildURL("/sap/bc/adt/core/discovery", nil)
++	return t.probeCSRFTokenAt(ctx, method, stateful, "/sap/bc/adt/core/discovery")
++}
++
++func (t *Transport) probeCSRFTokenAt(ctx context.Context, method string, stateful bool, path string) (token string, status int, redirected bool, err error) {
++	reqURL, err := t.buildURL(path, nil)
+ 	if err != nil {
+ 		return "", 0, false, fmt.Errorf("building URL: %w", err)
+ 	}
+diff --git a/pkg/adt/http_csrf_discovery_test.go b/pkg/adt/http_csrf_discovery_test.go
+new file mode 100644
+--- /dev/null
++++ b/pkg/adt/http_csrf_discovery_test.go
+@@ -0,0 +1,55 @@
++package adt
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++)
++
++func TestCSRFAlternateDiscoveryOnCoreFailure(t *testing.T) {
++	var requests []string
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		requests = append(requests, r.Method+" "+r.URL.Path)
++		switch r.URL.Path {
++		case "/sap/bc/adt/core/discovery":
++			w.WriteHeader(http.StatusInternalServerError)
++		case "/sap/bc/adt/discovery":
++			w.Header().Set("X-CSRF-Token", "valid-token")
++		case "/sap/bc/adt/datapreview/freestyle":
++			if r.Header.Get("X-CSRF-Token") != "valid-token" {
++				t.Errorf("POST missing fetched token")
++				w.WriteHeader(http.StatusForbidden)
++			}
++		default:
++			t.Errorf("unexpected request %s", r.URL.Path)
++		}
++	}))
++	defer srv.Close()
++	tr := newCSRFTestTransport(t, srv)
++	_, err := tr.Request(context.Background(), "/sap/bc/adt/datapreview/freestyle", &RequestOptions{Method: http.MethodPost, Body: []byte("SELECT * FROM T000")})
++	if err != nil {
++		t.Fatalf("read-only POST failed: %v", err)
++	}
++	want := []string{"HEAD /sap/bc/adt/core/discovery", "GET /sap/bc/adt/core/discovery", "HEAD /sap/bc/adt/discovery", "POST /sap/bc/adt/datapreview/freestyle"}
++	if strings.Join(requests, "|") != strings.Join(want, "|") {
++		t.Errorf("requests = %v, want %v", requests, want)
++	}
++}
++
++func TestCSRFAlternateDiscoveryFailureIncludesStatuses(t *testing.T) {
++	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path == "/sap/bc/adt/core/discovery" {
++			w.WriteHeader(http.StatusInternalServerError)
++		} else {
++			w.WriteHeader(http.StatusForbidden)
++		}
++	}))
++	defer srv.Close()
++	tr := newCSRFTestTransport(t, srv)
++	err := tr.fetchCSRFToken(context.Background())
++	if err == nil || !strings.Contains(err.Error(), "500") || !strings.Contains(err.Error(), "403") {
++		t.Fatalf("expected both endpoint failures, got %v", err)
++	}
++}

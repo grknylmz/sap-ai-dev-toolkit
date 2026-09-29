@@ -247,14 +247,14 @@ process.stdin.on('data', async chunk => {
         } catch {
           reply(message.id, { content: [{ type: 'text', text: 'fixture ADT request failed' }], isError: true });
         }
-      } else if (process.env.FAKE_RELAY_CSRF_TEST === 'true' && name === 'GetSystemInfo') {
+      } else if (process.env.FAKE_DIRECT_DESTINATION_TEST === 'true' && name === 'GetSystemInfo') {
         try {
-          const target = new URL('/sap/bc/adt/datapreview/freestyle', url);
+          const target = new URL('/sap/bc/adt/discovery', url);
           const proxy = process.env.HTTP_PROXY || process.env.http_proxy;
-          const adt = await requestADTThroughProxy(target.href, proxy, { method: 'POST', body: '<probe/>', bypassProxyForLoopback: true });
+          const adt = await requestADTThroughProxy(target.href, proxy);
           reply(message.id, { content: [{ type: 'text', text: `fixture ADT HTTP ${adt.status}: ${adt.body}` }], isError: adt.status < 200 || adt.status >= 300 });
         } catch {
-          reply(message.id, { content: [{ type: 'text', text: 'fixture ADT write failed' }], isError: true });
+          reply(message.id, { content: [{ type: 'text', text: 'fixture ADT request failed' }], isError: true });
         }
       } else {
         reply(message.id, { content: [{ type: 'text', text: `${destination}:${name}` }], isError: false });

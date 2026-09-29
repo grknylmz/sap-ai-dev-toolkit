@@ -142,11 +142,11 @@ test('live S4H MCP exposes a curated ABAP lifecycle surface under 62 tools', { s
   const listed = await client.request('tools/list', {});
   const tools = listed.tools || [];
   const names = new Set(tools.map(tool => tool.name));
-  const prefix = `${SLUG}_`;
+  const toolName = name => snakeCaseName(name);
 
   assert.ok(tools.length > 25, `expected a useful ABAP lifecycle surface, got ${tools.length}`);
   assert.ok(tools.length < 62, `curated destination tool count must stay below 62, got ${tools.length}`);
-  assert.ok(tools.every(tool => tool.name.startsWith(prefix)), 'every tool is destination-prefixed for the selected S4H server');
+  assert.ok(tools.every(tool => !tool.name.startsWith(`${SLUG}_`)), 'single-destination tools are unprefixed; the server identity selects the destination');
 
   for (const required of [
     'LintABAP', 'GetSystemInfo', 'GetConnectionInfo', 'GetFeatures',
@@ -156,24 +156,25 @@ test('live S4H MCP exposes a curated ABAP lifecycle surface under 62 tools', { s
     'GetTransport', 'GetTransportInfo', 'ListTransports', 'CreateTransport', 'LockObject', 'UnlockObject',
     'GetApplicationLog', 'PrepareABAPChangeSet', 'ApplyABAPChangeSet', 'CheckTransportReadiness', 'PlanABAPCloudMigration'
   ]) {
-    assert.ok(names.has(`${prefix}${snakeCaseName(required)}`), `expected curated lifecycle tool ${required}`);
+    assert.ok(names.has(toolName(required)), `expected curated lifecycle tool ${required}`);
   }
 
   for (const hidden of [
     'SAP', 'ReleaseTransport', 'DeleteTransport', 'DeleteObject', 'ExecuteABAP', 'CallRFC',
     'ListSQLTraces', 'AnalyzeABAPCode', 'CreateObject', 'CreateClassWithTests', 'WriteClass', 'UpdateSource'
   ]) {
-    assert.equal(names.has(`${prefix}${snakeCaseName(hidden)}`), false, `broad/destructive tool ${hidden} must remain hidden`);
+    assert.equal(names.has(toolName(hidden)), false, `broad/destructive tool ${hidden} must remain hidden`);
   }
 });
 
 test('live S4H MCP handles safe local and read-only SAP calls', { skip: LIVE ? false : 'set SAP_AI_DEV_LIVE_S4H=1 to run against a live BAS/S4H destination' }, async t => {
   const client = await withLiveClient(t);
-  const prefix = `${SLUG}_`;
-  await client.request('tools/list', {});
+  const toolName = name => snakeCaseName(name);
+  const listed = await client.request('tools/list', {});
+  assert.ok(listed.tools.some(tool => tool.name === toolName('GetSystemInfo')), 'expected unprefixed single-destination tools');
 
   const lint = await client.request('tools/call', {
-    name: `${prefix}lint_abap`,
+    name: toolName('LintABAP'),
     arguments: { files: [{ filename: 'zlive_probe.prog.abap', source: "REPORT zlive_probe.\nWRITE / 'ok'.\n" }] }
   });
   const lintJson = JSON.parse(textPayload(lint));
@@ -185,19 +186,19 @@ test('live S4H MCP handles safe local and read-only SAP calls', { skip: LIVE ? f
     ['GetFeatures', {}],
     ['GetInstalledComponents', {}]
   ]) {
-    const result = await client.request('tools/call', { name: `${prefix}${snakeCaseName(tool)}`, arguments: args });
+    const result = await client.request('tools/call', { name: toolName(tool), arguments: args });
     assert.notEqual(result.isError, true, `${tool} returned an MCP tool error: ${textPayload(result)}`);
   }
 
   const query = await client.request('tools/call', {
-    name: `${prefix}run_query`,
+    name: toolName('RunQuery'),
     arguments: { sql_query: 'SELECT * FROM T000', max_rows: 1 }
   });
   assert.notEqual(query.isError, true, `RunQuery returned an MCP tool error: ${textPayload(query)}`);
   assert.match(textPayload(query), /T000|MANDT|client|rows|\[/iu);
 
   const appLog = await client.request('tools/call', {
-    name: `${prefix}get_application_log`,
+    name: toolName('GetApplicationLog'),
     arguments: { max_results: 1 }
   });
   assert.notEqual(appLog.isError, true, `GetApplicationLog returned an MCP tool error: ${textPayload(appLog)}`);

@@ -89,16 +89,6 @@ async function runDoctor(destinations) {
       const initialized = await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } });
       if (initialized?.error) throw new Error(initialized.error.message || 'MCP initialization failed');
       checks.push(doctorRow(destination.name, 'VSP MCP startup', 'passed', 'initialized'));
-      const relayedDestination = proxy.children[0]?.destination;
-      if (relayedDestination?.relay) {
-        checks.push(doctorRow(destination.name, 'BAS destination relay', 'passed', `enabled (${relayedDestination.url}); runtime session preflight pending`));
-      } else if (destination.source === 'cloud-foundry') {
-        checks.push(doctorRow(destination.name, 'BAS destination relay', 'skipped', 'Cloud Foundry destinations connect through the connectivity proxy directly.'));
-      } else if (String(runtimeEnv.SAP_AI_DEV_TOOLKIT_DISABLE_BAS_RELAY || '').toLowerCase() === 'true') {
-        checks.push(doctorRow(destination.name, 'BAS destination relay', 'skipped', 'Disabled through SAP_AI_DEV_TOOLKIT_DISABLE_BAS_RELAY.'));
-      } else {
-        checks.push(doctorRow(destination.name, 'BAS destination relay', 'skipped', 'Not applicable for this destination.'));
-      }
       const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
       if (listed?.error) throw new Error(listed.error.message || 'MCP tools/list failed');
       const tools = listed.result?.tools || [];
@@ -114,32 +104,9 @@ async function runDoctor(destinations) {
       if (!systemInfo) {
         checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', 'GetSystemInfo is not exposed by this VSP mode.'));
       } else {
-        let sessionReady = true;
-        if (relayedDestination?.relay?.probeCsrfSession) {
-          let session;
-          let preflightError;
-          try {
-            session = await relayedDestination.relay.probeCsrfSession();
-          } catch (error) {
-            preflightError = redactText(error.message || error).slice(0, 250);
-          }
-          sessionReady = session?.sessionUsable === true;
-          const status = sessionReady ? 'passed' : 'failed';
-          const stats = relayedDestination.relay.stats || {};
-          const detail = preflightError
-            ? `preflight request failed: ${preflightError}`
-            : `HTTP ${session?.httpStatus || 0}; token=${session?.tokenReceived ? 'received' : 'missing'}; cookies=${session?.cookieCount || 0}; usableSession=${sessionReady}; csrfFetches=${stats.csrfFetches || 0}; csrfRetries=${stats.csrfRetries || 0}; sessionFailures=${stats.csrfSessionFailures || 0}; tunnelFallbacks=${stats.tunnelFallbacks || 0}`;
-          checks.push(doctorRow(destination.name, 'BAS relay CSRF preflight', status, detail));
-          if (!sessionReady) {
-            const remediation = 'GetSystemInfo was not called because the relay could not establish a paired CSRF token/session. Confirm the configured destination authentication and BAS proxy route.';
-            checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', preflightError ? `${remediation} Relay error: ${preflightError}` : remediation));
-          }
-        }
-        if (sessionReady) {
-          const inspected = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: systemInfo.name, arguments: {} } });
-          const failed = inspected?.error || inspected?.result?.isError;
-          checks.push(doctorRow(destination.name, 'SAP system check', failed ? 'failed' : 'passed', failed ? redactText(inspected?.error?.message || inspected?.result?.content?.[0]?.text || 'GetSystemInfo failed') : 'GetSystemInfo returned successfully'));
-        }
+        const inspected = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: systemInfo.name, arguments: {} } });
+        const failed = inspected?.error || inspected?.result?.isError;
+        checks.push(doctorRow(destination.name, 'SAP system check', failed ? 'failed' : 'passed', failed ? redactText(inspected?.error?.message || inspected?.result?.content?.[0]?.text || 'GetSystemInfo failed') : 'GetSystemInfo returned successfully'));
       }
     } catch (error) {
       const detail = redactText(error.message || error).slice(0, 300);
