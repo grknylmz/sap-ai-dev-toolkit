@@ -613,6 +613,13 @@ export class MCPProxy {
     const namespace = new Map();
     const usedSlugs = new Map();
     const merged = [];
+    // Generated MCP entries pin exactly one destination per server, so tool
+    // names are unprefixed (run_query, get_source): the server name already
+    // identifies the target and a slug prefix would be redundant in chat
+    // references. Only when one server fronts several destinations (manual
+    // multi-destination startup) does each name carry its destination slug
+    // so every tool stays unambiguous.
+    const prefixed = this.children.length > 1;
     const publish = (name, mapping, definition) => {
       // A duplicate public name must not shadow the first registration: the
       // namespace map would keep the first handler while advertising both.
@@ -625,47 +632,54 @@ export class MCPProxy {
     };
     for (const entry of this.children) {
       const slug = slugifyDestination(entry.destination.name, usedSlugs);
-      const publicName = name => `${slug}_${publicToolSegment(name)}`;
+      const publicName = prefixed ? (name => `${slug}_${publicToolSegment(name)}`) : (name => publicToolSegment(name));
       const lintName = publicName(ABAP_LINT_TOOL.name);
       publish(lintName, { handler: runABAPLint }, { ...ABAP_LINT_TOOL, name: lintName });
+      let upstreamTools;
       try {
-        const upstreamTools = await entry.child.listToolsCached();
-        for (const tool of upstreamTools) {
-          if (tool.name === 'SAP') {
-            const applicationLogName = publicName('GetApplicationLog');
-            publish(applicationLogName, {
-              entry,
-              upstream: 'SAP',
-              publicName: 'GetApplicationLog',
-              transformArguments: applicationLogArguments
-            }, {
-              name: applicationLogName,
-              description: `${APPLICATION_LOG_DESCRIPTION} [destination: ${entry.destination.name}]`,
-              inputSchema: APPLICATION_LOG_SCHEMA
-            });
-          }
-
-          if (!exposeVspTool(tool, this.readOnly)) continue;
-          const name = publicName(tool.name);
-          publish(name, { entry, upstream: tool.name }, { ...tool, name, description: `${tool.description || tool.name} [destination: ${entry.destination.name}]` });
-        }
-        // Local workflow tools gate on the upstream surface they can use; in
-        // read-only mode the hidden write tools must not enable change-set
-        // staging either.
-        const effectiveUpstream = this.readOnly
-          ? upstreamTools.filter(tool => !READ_ONLY_HIDDEN_VSP_TOOLS.has(tool.name))
-          : upstreamTools;
-        for (const localTool of createEngineeringTools(entry, effectiveUpstream, { env: this.env, log: this.log })) {
-          const name = publicName(localTool.definition.name);
-          publish(name, { handler: localTool.handler }, {
-            ...localTool.definition,
-            name,
-            description: `${localTool.definition.description} [destination: ${entry.destination.name}]`
-          });
-        }
+        upstreamTools = await entry.child.listToolsCached();
+        entry.lastUpstreamTools = upstreamTools;
       } catch (error) {
         buildState.complete = false;
         this.eventSink(`[${entry.destination.name}] tools/list failed: ${redactText(error.message)}`, 'error');
+        // A crashed child must not silently remove its tools from the
+        // surface: fall back to the last successful listing so the names stay
+        // callable and the tools/call self-heal path can restart the child.
+        upstreamTools = entry.lastUpstreamTools;
+      }
+      if (!upstreamTools) continue;
+      for (const tool of upstreamTools) {
+        if (tool.name === 'SAP') {
+          const applicationLogName = publicName('GetApplicationLog');
+          publish(applicationLogName, {
+            entry,
+            upstream: 'SAP',
+            publicName: 'GetApplicationLog',
+            transformArguments: applicationLogArguments
+          }, {
+            name: applicationLogName,
+            description: `${APPLICATION_LOG_DESCRIPTION} [destination: ${entry.destination.name}]`,
+            inputSchema: APPLICATION_LOG_SCHEMA
+          });
+        }
+
+        if (!exposeVspTool(tool, this.readOnly)) continue;
+        const name = publicName(tool.name);
+        publish(name, { entry, upstream: tool.name }, { ...tool, name, description: `${tool.description || tool.name} [destination: ${entry.destination.name}]` });
+      }
+      // Local workflow tools gate on the upstream surface they can use; in
+      // read-only mode the hidden write tools must not enable change-set
+      // staging either.
+      const effectiveUpstream = this.readOnly
+        ? upstreamTools.filter(tool => !READ_ONLY_HIDDEN_VSP_TOOLS.has(tool.name))
+        : upstreamTools;
+      for (const localTool of createEngineeringTools(entry, effectiveUpstream, { env: this.env, log: this.log })) {
+        const name = publicName(localTool.definition.name);
+        publish(name, { handler: localTool.handler }, {
+          ...localTool.definition,
+          name,
+          description: `${localTool.definition.description} [destination: ${entry.destination.name}]`
+        });
       }
     }
     if (!merged.length && this.children.length) throw new Error('No destination child provided tools');

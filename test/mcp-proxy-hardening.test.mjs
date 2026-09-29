@@ -47,10 +47,10 @@ test('read-only mode hides state-changing tools and starts VSP read-only', async
   await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
   const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   const names = listed.result.tools.map(tool => tool.name);
-  for (const hidden of ['alpha_write_source', 'alpha_edit_source', 'alpha_create_transport', 'alpha_activate', 'alpha_activate_multiple', 'alpha_set_breakpoint', 'alpha_prepare_abap_change_set', 'alpha_apply_abap_change_set']) {
+  for (const hidden of ['write_source', 'edit_source', 'create_transport', 'activate', 'activate_multiple', 'set_breakpoint', 'prepare_abap_change_set', 'apply_abap_change_set']) {
     assert.equal(names.includes(hidden), false, `${hidden} must be hidden in read-only mode`);
   }
-  for (const visible of ['alpha_get_source', 'alpha_run_query', 'alpha_get_system_info', 'alpha_lint_abap', 'alpha_check_transport_readiness']) {
+  for (const visible of ['get_source', 'run_query', 'get_system_info', 'lint_abap', 'check_transport_readiness']) {
     assert.equal(names.includes(visible), true, `${visible} must remain available in read-only mode`);
   }
   const events = await fixtureLogs(log);
@@ -68,7 +68,7 @@ test('a request racing the first tools/list still resolves through the namespace
   input.end([
     { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
     { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
-    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'alpha_get_source', arguments: {} } }
+    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_source', arguments: {} } }
   ].map(message => JSON.stringify(message)).join('\n') + '\n');
   await serving;
   const call = output.find(message => message.id === 3);
@@ -90,7 +90,7 @@ test('a slow tools/call does not block other requests', async t => {
   child.request = (method, params) => (method === 'tools/call' && params?.name === 'GetSource')
     ? new Promise(resolve => setTimeout(resolve, 250)).then(() => original(method, params))
     : original(method, params);
-  input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'alpha_get_source', arguments: {} } })}\n`);
+  input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_source', arguments: {} } })}\n`);
   input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/list', params: {} })}\n`);
   const deadline = Date.now() + 10000;
   while ((!output.some(m => m.id === 2) || !output.some(m => m.id === 3)) && Date.now() < deadline) {
@@ -131,11 +131,11 @@ test('per-request timeouts fail only the stalled request and leave the child usa
   const child = proxy.children[0].child;
   const realWrite = child.process.stdin.write.bind(child.process.stdin);
   child.process.stdin.write = () => true; // swallow the frame: no answer will come
-  const stalled = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'alpha_get_source', arguments: {} } });
+  const stalled = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_source', arguments: {} } });
   child.process.stdin.write = realWrite;
   assert.ok(stalled.error, 'the stalled call must fail');
   assert.match(stalled.error.message, /did not answer tools\/call within 400ms/);
-  const recovered = await proxy.handle({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'alpha_get_source', arguments: {} } });
+  const recovered = await proxy.handle({ jsonrpc: '2.0', id: 4, method: 'tools/call', params: { name: 'get_source', arguments: {} } });
   assert.equal(recovered.error, undefined, 'the child must still answer after a timeout');
   assert.equal(recovered.result.content[0].text, 'alpha:GetSource');
 });
@@ -150,7 +150,7 @@ test('state-changing tools are not retried after a child crash', async t => {
   const exit = once(deadChild.process, 'exit');
   deadChild.process.kill('SIGKILL');
   await exit;
-  const response = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'alpha_write_source', arguments: {} } });
+  const response = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'write_source', arguments: {} } });
   assert.ok(response.error, 'a crashed-child write must surface an error');
   assert.equal(entry.child, deadChild, 'a state-changing tool must not trigger a restart+retry');
   const events = await fixtureLogs(log);
@@ -168,7 +168,7 @@ test('self-healing restarts share one restart and respect the restart budget', a
     const exit = once(entry.child.process, 'exit');
     entry.child.process.kill('SIGKILL');
     await exit;
-    const response = await proxy.handle({ jsonrpc: '2.0', id: 10 + crash, method: 'tools/call', params: { name: 'alpha_get_source', arguments: {} } });
+    const response = await proxy.handle({ jsonrpc: '2.0', id: 10 + crash, method: 'tools/call', params: { name: 'get_source', arguments: {} } });
     if (crash <= 5) {
       assert.equal(response.error, undefined, `heal cycle ${crash} must succeed: ${JSON.stringify(response.error)}`);
     } else {

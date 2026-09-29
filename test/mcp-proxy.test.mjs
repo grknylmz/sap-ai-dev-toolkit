@@ -296,8 +296,8 @@ test('routes tools/call using the exact name advertised for a BAS destination', 
   assert.equal(initialized.error, undefined, `${JSON.stringify(initialized.error)} ${logs.join(' | ')}`);
   const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
   assert.equal(listed.error, undefined, JSON.stringify(listed.error));
-  const tool = listed.result.tools.find(candidate => candidate.name === 'actions4d-100_write_source');
-  assert.ok(tool, 'tools/list must publish the normalized destination namespace');
+  const tool = listed.result.tools.find(candidate => candidate.name === 'write_source');
+  assert.ok(tool, 'tools/list must publish unprefixed names for a single-destination server');
   const called = await proxy.handle({
     jsonrpc: '2.0',
     id: 3,
@@ -466,7 +466,11 @@ test('keeps healthy children when one destination fails initialization', async t
   t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
   await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
   const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
-  assert.ok(listed.result.tools.every(tool => tool.name.startsWith('healthy_')));
+  // The broken destination is dropped during initialization, so exactly one
+  // child remains and tool names are unprefixed.
+  assert.ok(listed.result.tools.length > 0);
+  assert.ok(listed.result.tools.every(tool => !tool.name.startsWith('healthy_')), 'a single surviving child must publish unprefixed names');
+  assert.ok(listed.result.tools.some(tool => tool.name === 'get_source'));
 });
 
 test('converts upstream tool names to lowercase snake_case for chat binding', () => {
@@ -568,7 +572,14 @@ test('emits tools/list_changed to the client after a self-healing restart', asyn
   const serving = proxy.serve(input, line => output.push(JSON.parse(line)));
   input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`);
   input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} })}\n`);
-  await new Promise(resolve => setTimeout(resolve, 150));
+  // Wait for the listing response, not a fixed sleep: under a loaded run the
+  // two fixture children can take longer than any fixed delay to initialize,
+  // and killing one mid-initialize would evict it and change the surface.
+  const readyDeadline = Date.now() + 30000;
+  while (!output.some(message => message.id === 2) && Date.now() < readyDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.ok(output.some(message => message.id === 2), 'tools/list must be answered before the crash is simulated');
 
   const alpha = proxy.children.find(entry => entry.destination.name === 'alpha');
   const exit = once(alpha.child.process, 'exit');

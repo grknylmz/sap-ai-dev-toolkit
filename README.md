@@ -490,7 +490,7 @@ Without `H2O_URL`, the command passes arguments directly to the installed VSP bi
 
 `sap-ai-dev` is an MCP stdio server and destination router, not a terminal command for individual SAP operations. No shell incantations needed: your MCP client discovers the tools, picks one for the chat request, and sends the call over stdio.
 
-Each generated MCP server entry is named with the lowercased destination slug: `DEMO_ABAP` becomes `demo-abap`. Tool names are `<destination-slug>_<tool>` with a lowercase snake_case tool segment (`demo-abap_get_source`, `demo-abap_run_query`, `demo-abap_lint_abap`), so every tool states which SAP system it targets. Lowercase names are deliberate: BAS and VS Code derive chat tool references from the server and tool names and only bind lowercase identifiers, so mixed-case names show up in the tools picker but never bind to the chat session. Use the exact names shown by your MCP client; punctuation can change during slugification.
+Each generated MCP server entry is named with the lowercased destination slug: `DEMO_ABAP` becomes `demo-abap`. Because every generated entry is scoped to exactly one destination, tool names carry no redundant prefix — they are plain lowercase snake_case (`get_source`, `run_query`, `lint_abap`); the server name already states which SAP system it targets. Only when one server fronts several destinations (manual multi-destination startup) does each name gain its destination slug (`demo-abap_run_query`) to stay unambiguous. Lowercase names are deliberate: BAS and VS Code derive chat tool references from the server and tool names and only bind lowercase identifiers, so mixed-case names show up in the tools picker but never bind to the chat session. Use the exact names shown by your MCP client; punctuation can change during slugification.
 
 Upgrading from an earlier release that wrote mixed-case entry names (for example `ActionS4D` or `cf:<guid>:<guid>:<name>`)? Re-run `sap-ai-dev --setup` to replace legacy entries — this is the only migration path for Cloud Foundry entries — or run `sap-ai-dev --doctor` to rename BAS entries in place. Then reload the BAS window and start a new chat; an existing chat keeps its stale tool binding. If setup reports that the lowercase name already exists and is not managed by this package, rename or remove that user-owned server entry first.
 
@@ -506,7 +506,7 @@ The menu includes the tools registered by the active VSP mode, the `GetApplicati
 
 ### 🧹 Lint submitted ABAP source locally
 
-The per-destination tool name is `<destination-slug>_lint_abap`, for example `demo-abap_lint_abap` (the local workflow name `LintABAP` is exposed in snake_case). It accepts caller-supplied abapGit-serialized source files; config is optional and, when present, is the full abaplint configuration rather than a merge with defaults.
+The tool is named `lint_abap` (the local workflow name `LintABAP` exposed in snake_case; on a multi-destination server it is `<destination-slug>_lint_abap`). It accepts caller-supplied abapGit-serialized source files; config is optional and, when present, is the full abaplint configuration rather than a merge with defaults.
 
 ```json
 {
@@ -606,6 +606,7 @@ The write and activation tools change SAP state. Confirm the target, package, an
 | `GetSystemInfo` | Read system ID, SAP release, kernel, and database details. |
 | `GetInstalledComponents` | List installed software components and versions. |
 | `GetFeatures` | Probe optional system capabilities, including abapGit, RAP/OData, AMDP debugging, UI5/BSP, and CTS transports. |
+| `GetConnectionInfo` | Show the connected user, client, URL, mode, and feature-probe summary for the current destination session. |
 | `PrettyPrint` | Format ABAP source text without saving it to SAP. |
 
 ### 🚚 Inspect and create transports
@@ -643,7 +644,7 @@ The proxy intentionally does not expose the full child VSP process. Object delet
 3. Ask for the operation in plain language. The MCP client sends `tools/call`; no need to type a tool such as `GetSource` into a terminal.
 4. Check the response in chat. For source edits, ask for a syntax check and tests before activation when that matches your workflow.
 
-For a quick table read—say, company codes from `T001`—select the destination's `RunQuery` tool (for `DEMO_ABAP`, `demo-abap_run_query`) and pass:
+For a quick table read—say, company codes from `T001`—select the destination's `RunQuery` tool (exposed as `run_query`; `demo-abap_run_query` only on a multi-destination server) and pass:
 
 ```json
 {
@@ -660,7 +661,7 @@ The same request can be expressed to an MCP client as:
   "id": 2,
   "method": "tools/call",
   "params": {
-    "name": "demo-abap_run_query",
+    "name": "run_query",
     "arguments": {
       "sql_query": "SELECT BUKRS, BUTXT, WAERS, LAND1 FROM T001",
       "max_rows": 100
@@ -708,7 +709,7 @@ The response contains a `tools` array. A `RunQuery` entry resembles this excerpt
 
 ```json
 {
-  "name": "demo-abap_run_query",
+  "name": "run_query",
   "description": "Execute an ABAP SQL query [destination: DEMO_ABAP]",
   "inputSchema": {
     "type": "object",

@@ -6,8 +6,8 @@ This inventory reflects the current SAP AI Dev Toolkit proxy behavior in `src/mc
 
 | Status | Count | Notes |
 | --- | ---: | --- |
-| VSP tools | Up to 51 | Curated from the child VSP tool list and exposed with a destination prefix in lowercase snake_case, for example `<destination>_get_source`. |
-| Local lint tool | 1 per destination | `LintABAP` analyzes caller-supplied ABAP source in memory; it is exposed publicly as `<destination>_lint_abap`. |
+| VSP tools | Up to 51 | Curated from the child VSP tool list and exposed in lowercase snake_case, unprefixed (`get_source`) on single-destination servers; a destination slug prefix (`demo-abap_get_source`) appears only when one server fronts multiple destinations. |
+| Local lint tool | 1 per destination | `LintABAP` analyzes caller-supplied ABAP source in memory; it is exposed publicly as `lint_abap`. |
 | Workflow tools | Up to 6 per destination | Review/apply change sets, transport evidence, Clean Core release assessment, and read-only RAP regression suites. Some are exposed only when their upstream VSP tools are registered. |
 | Convenience mapping | Dynamic | `GetApplicationLog` maps to VSP `SAP(action="analyze", type="application_log")` when the SAP router is registered. |
 | Intentionally filtered VSP tools | Dynamic | Destructive, broad-router, trace, and unsupported VSP operations are hidden from direct calls. |
@@ -161,7 +161,7 @@ These logical names are exposed through MCP in lowercase snake_case (`lint_abap`
 
 ## Notes
 
-- Runtime tool names are `<destination-slug>_<tool>`, for example `demo-abap_run_query`; `tools/call` accepts the exact name returned by `tools/list`.
+- Runtime tool names are unprefixed lowercase snake_case (`run_query`) on the normal single-destination server; a `<destination-slug>_` prefix appears only on multi-destination servers. `tools/call` accepts the exact name returned by `tools/list`.
 - The proxy starts VSP with `--enable-transports`; generated MCP entries set `SAP_ALLOW_TRANSPORTABLE_EDITS=true`.
 - `SAP_AI_DEV_TOOLKIT_READ_ONLY=true` switches a server to read-only: the write/activate/transport-create/breakpoint tools above are removed from the surface, change-set workflows are not registered, and VSP starts with `--transport-read-only` instead.
 - `SAP_AI_DEV_TOOLKIT_REQUEST_TIMEOUT_MS` (default 600000) bounds each forwarded call; stalled requests fail without killing the child.

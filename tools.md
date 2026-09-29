@@ -2,7 +2,7 @@
 
 The proxy no longer advertises every VSP tool. To keep the developer-lifecycle MCP surface manageable, each generated one-destination server exposes a cherry-picked set of VSP tools plus local workflow tools (currently 59 tools when all curated VSP capabilities are registered).
 
-The names below are the logical tool names. Publicly, every tool is exposed as `<destination-slug>_<tool>` in lowercase (for example `GetTableContents` on destination `DEMO_ABAP` is `demo-abap_get_table_contents`): BAS/VS Code chat tool references bind only lowercase identifiers, so mixed-case names never reach the model.
+The names below are the logical tool names. Publicly they are exposed in lowercase snake_case without a prefix (`get_table_contents`, `run_query`) because each generated MCP server is scoped to one destination; only when a single server fronts multiple destinations does each name gain its destination slug (`demo-abap_get_table_contents`) to stay unambiguous. BAS/VS Code chat tool references bind only lowercase identifiers, so mixed-case names never reach the model.
 
 Hidden upstream VSP tools are not directly callable through the proxy. Local workflow tools may still call hidden or non-advertised upstream operations internally when they are required for a bounded workflow.
 

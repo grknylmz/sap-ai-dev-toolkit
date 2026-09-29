@@ -108,11 +108,15 @@ async function runDoctor(destinations) {
       const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
       if (listed?.error) throw new Error(listed.error.message || 'MCP tools/list failed');
       const tools = listed.result?.tools || [];
+      // Doctor inspects one destination per proxy, so tool names are
+      // unprefixed (get_source, run_query); match the slug-prefixed form too
+      // in case this ever runs against a multi-destination server.
       const toolPrefix = `${slugifyDestination(destination.name)}_`;
       const localSegments = new Set(['lint_abap', 'get_application_log', 'prepare_abap_change_set', 'apply_abap_change_set', 'check_transport_readiness', 'plan_abap_cloud_migration', 'generate_rap_regression_suite', 'run_rap_regression_suite']);
-      const upstreamCount = tools.filter(tool => tool.name.startsWith(toolPrefix) && !localSegments.has(tool.name.slice(toolPrefix.length))).length;
+      const isUpstreamTool = tool => (tool.name.startsWith(toolPrefix) ? tool.name.slice(toolPrefix.length) : tool.name);
+      const upstreamCount = tools.filter(tool => !localSegments.has(isUpstreamTool(tool))).length;
       checks.push(doctorRow(destination.name, 'MCP tools/list', upstreamCount ? 'passed' : 'failed', `${upstreamCount} VSP tools and ${tools.length} total MCP tools returned; chat-picker binding is host-managed`));
-      const systemInfo = tools.find(tool => tool.name === `${toolPrefix}get_system_info`);
+      const systemInfo = tools.find(tool => tool.name === 'get_system_info' || tool.name === `${toolPrefix}get_system_info`);
       if (!systemInfo) {
         checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', 'GetSystemInfo is not exposed by this VSP mode.'));
       } else {
