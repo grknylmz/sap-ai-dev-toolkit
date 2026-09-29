@@ -133,14 +133,7 @@ async function readRequestBody(req) {
 export function createBasDestinationRelay(destination, { env = process.env, fetchImpl = undiciFetch, log = () => {} } = {}) {
   if (!destination?.url) throw new Error('Destination relay requires a BAS destination URL');
   const base = new URL(destination.url);
-  const credentials = destination.credentials;
-  const tunnelMode = credentials?.mode === 'bas-tunnel';
-  const directHost = tunnelMode ? '' : credentials?.host;
-  // Internet overrides retain the direct-backend path. OnPremise overrides
-  // must keep the BAS .dest route (and its Cloud Connector mapping), so they
-  // use HTTP CONNECT through the BAS proxy instead of credentials.host.
-  const directBase = directHost ? new URL(String(directHost)) : null;
-  const cookieBase = directBase || (destination.backendUrl
+  const cookieBase = destination.backendUrl
     ? new URL(String(destination.backendUrl))
     : (() => {
         const target = new URL(base);
@@ -149,9 +142,8 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
         // omits the backend URL so Secure session cookies are not discarded.
         if (target.protocol === 'http:' && /\.dest$/i.test(target.hostname)) target.protocol = 'https:';
         return target;
-      })());
-  if (directBase) log(`[${destination.name}] BAS relay direct connect active (${directBase.origin}); BAS proxy cookie stripping bypassed`);
-  if (tunnelMode) log(`[${destination.name}] BAS relay using a BAS proxy tunnel for the OnPremise destination`);
+      })();
+  // BAS destinations must keep their configured .dest route and authentication.
   // Proxy resolution: an explicitly configured proxy wins (an explicit empty
   // value means "go direct"). Without configuration, BAS virtual .dest hosts
   // imply the default BAS proxy; any other host (tests, direct URLs) is
@@ -159,16 +151,15 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
   // foreign proxy.
   const brandedProxy = brandedEnvValue(env, 'HTTP_PROXY');
   const explicitProxy = brandedProxy !== undefined ? brandedProxy : (env.HTTP_PROXY ?? env.http_proxy);
-  const proxyUrl = directBase ? '' : (explicitProxy !== undefined ? String(explicitProxy) : (/\.dest$/i.test(base.hostname) ? DEFAULT_PROXY : ''));
-  if (tunnelMode && !proxyUrl) throw new Error('OnPremise credential overrides require the BAS destination proxy to preserve the Cloud Connector route');
+  const proxyUrl = explicitProxy !== undefined ? String(explicitProxy) : (/\.dest$/i.test(base.hostname) ? DEFAULT_PROXY : '');
   const dispatcher = proxyUrl ? new ProxyAgent({ uri: proxyUrl, proxyTunnel: false }) : undefined;
   // Self-healing mode 2: if the BAS proxy refuses absolute-form proxied
   // requests (its own 502/504), retry through a CONNECT tunnel so the relay
   // keeps working through the same egress.
   const tunnelDispatcher = proxyUrl ? new ProxyAgent({ uri: proxyUrl, proxyTunnel: true }) : undefined;
-  let tunneled = tunnelMode;
+  let tunneled = false;
   // Observable self-healing counters, surfaced by --doctor and tests.
-  const stats = { requests: 0, csrfFetches: 0, csrfRetries: 0, csrfSessionFailures: 0, tunnelFallbacks: 0, direct: Boolean(directBase), proxyTunnel: tunnelMode };
+  const stats = { requests: 0, csrfFetches: 0, csrfRetries: 0, csrfSessionFailures: 0, tunnelFallbacks: 0, direct: false, proxyTunnel: false };
   const maxFailures = maxTokenFailures(env, log, destination.name);
   // The shared jar captures SAP cookies from safe reads as well as CSRF fetches.
   // Each cached token gets its own snapshot so later responses cannot silently
@@ -210,16 +201,16 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
   async function fetchTokenFresh(requestHeaders) {
     const key = CSRF_FETCH_PATH;
     stats.csrfFetches += 1;
-    const target = resolveTarget(new URL(CSRF_FETCH_PATH, base));
+    const target = new URL(CSRF_FETCH_PATH, base);
     const cookieTarget = resolveCookieTarget(target);
     const jar = copyCookieJar(sharedCookieJar);
     await seedRequestCookies(jar, requestHeaders.cookie, cookieTarget);
     const outgoingCookie = await cookieHeader(jar, cookieTarget);
-    const response = await sendWithFallback(target, 'GET', authHeaders(fetchHeaders(requestHeaders, {
+    const response = await sendWithFallback(target, 'GET', fetchHeaders(requestHeaders, {
       'x-csrf-token': 'Fetch',
       accept: requestHeaders.accept || 'application/xml,*/*',
       ...(outgoingCookie ? { cookie: outgoingCookie } : {})
-    })));
+    }));
     await response.arrayBuffer().catch(() => undefined);
     const token = response.headers.get('x-csrf-token');
     await recordCookies(jar, response.headers, cookieTarget, log, destination.name);
@@ -265,36 +256,17 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
     };
   }
 
-  // Rewrite an incoming .dest target onto the direct backend host when
-  // credentials are configured, keeping path and query intact.
-  function resolveTarget(target) {
-    if (!directBase) return target;
-    return new URL(`${target.pathname}${target.search}`, directBase);
-  }
-
-  function authHeaders(extra = {}) {
-    if (!credentials?.user || !credentials?.password) return extra;
-    const basic = Buffer.from(`${credentials.user}:${credentials.password}`).toString('base64');
-    // The stored credential override wins over any inbound authorization
-    // header: the override exists precisely to pair Basic auth with the
-    // relay's CSRF session, and silently forwarding a caller-supplied header
-    // would disable that pairing without any diagnostic.
-    const headers = { ...extra };
-    delete headers.authorization;
-    delete headers.Authorization;
-    return { ...headers, authorization: `Basic ${basic}` };
-  }
 
   async function forward(method, requestUrl, requestHeaders, body, session) {
-    const target = resolveTarget(requestUrl);
+    const target = requestUrl;
     const cookieTarget = resolveCookieTarget(target);
     const cookieJar = session?.jar || sharedCookieJar;
     if (!session) await seedRequestCookies(cookieJar, requestHeaders.cookie, cookieTarget);
     const sessionCookie = await cookieHeader(cookieJar, cookieTarget);
-    const headers = authHeaders(headersFrom(requestHeaders, {
+    const headers = headersFrom(requestHeaders, {
       ...(session?.token ? { 'x-csrf-token': session.token } : {}),
       ...(sessionCookie ? { cookie: sessionCookie } : {})
-    }));
+    });
     const response = await sendWithFallback(target, method, headers, body);
     const responseBody = Buffer.from(await response.arrayBuffer());
     if (session) await recordCookies(session.jar, response.headers, cookieTarget, log, destination.name);
@@ -332,7 +304,7 @@ export function createBasDestinationRelay(destination, { env = process.env, fetc
       return forwardWithRetry(method, requestUrl, requestHeaders, body, failures + 1);
     }
     if (unsafe && rejected && tokenOnly) {
-      log(`[${destination.name}] BAS relay CSRF token rejected without a session cookie for ${requestUrl.pathname}; not retried (route delivers no cookies; a credential override enables a paired session)`);
+      log(`[${destination.name}] BAS relay CSRF token rejected without a session cookie for ${requestUrl.pathname}; not retried (the configured destination route delivered no cookies)`);
     } else if (unsafe && rejected && failures >= maxFailures) {
       log(`[${destination.name}] BAS relay stopped after ${maxFailures} CSRF session retries for ${requestUrl.pathname}`);
     }

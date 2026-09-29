@@ -10,7 +10,6 @@ import { installMcpConfig, repairManagedMcpConfig } from './mcp-config.mjs';
 import { runSetup } from './setup.mjs';
 import { resolveConfiguredCloudFoundryDestination } from './cf-destination.mjs';
 import { withBrandedEnvironment } from './branding.mjs';
-import { enrichWithStoredCredentials } from './credential-overrides.mjs';
 import { redactText } from './redact.mjs';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
@@ -100,11 +99,6 @@ async function runDoctor(destinations) {
       } else {
         checks.push(doctorRow(destination.name, 'BAS destination relay', 'skipped', 'Not applicable for this destination.'));
       }
-      if (relayedDestination?.credentials?.mode === 'bas-tunnel') {
-        checks.push(doctorRow(destination.name, 'OnPremise credential override', 'passed', 'Basic auth is routed through a BAS proxy tunnel; Cloud Connector routing is retained'));
-      } else if (relayedDestination?.credentials?.host) {
-        checks.push(doctorRow(destination.name, 'Direct connect', 'passed', `active (${new URL(relayedDestination.credentials.host).origin}); ADT writes use stored credentials`));
-      }
       const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
       if (listed?.error) throw new Error(listed.error.message || 'MCP tools/list failed');
       const tools = listed.result?.tools || [];
@@ -137,7 +131,7 @@ async function runDoctor(destinations) {
             : `HTTP ${session?.httpStatus || 0}; token=${session?.tokenReceived ? 'received' : 'missing'}; cookies=${session?.cookieCount || 0}; usableSession=${sessionReady}; csrfFetches=${stats.csrfFetches || 0}; csrfRetries=${stats.csrfRetries || 0}; sessionFailures=${stats.csrfSessionFailures || 0}; tunnelFallbacks=${stats.tunnelFallbacks || 0}`;
           checks.push(doctorRow(destination.name, 'BAS relay CSRF preflight', status, detail));
           if (!sessionReady) {
-            const remediation = 'GetSystemInfo was not called because the relay could not establish a paired CSRF token/session. For OnPremise BasicAuth, run sap-ai-dev --setup and use a validated BAS proxy tunnel credential override.';
+            const remediation = 'GetSystemInfo was not called because the relay could not establish a paired CSRF token/session. Confirm the configured destination authentication and BAS proxy route.';
             checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', preflightError ? `${remediation} Relay error: ${preflightError}` : remediation));
           }
         }
@@ -222,8 +216,8 @@ async function main() {
     let report;
     try {
       const destinations = runtimeEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'cloud-foundry'
-        ? await enrichWithStoredCredentials([await resolveConfiguredCloudFoundryDestination({ env: runtimeEnv })], runtimeEnv)
-        : await enrichWithStoredCredentials(await discoverForCommand(), runtimeEnv);
+        ? [await resolveConfiguredCloudFoundryDestination({ env: runtimeEnv })]
+        : await discoverForCommand();
       report = await runDoctor(destinations);
     } catch (error) {
       report = { ok: false, destinations: 0, checks: [doctorRow('-', 'destination discovery', 'failed', redactText(error.message || error).slice(0, 300))] };
@@ -259,7 +253,7 @@ async function main() {
   }
 
   if (runtimeEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'cloud-foundry') {
-    const destination = (await enrichWithStoredCredentials([await resolveConfiguredCloudFoundryDestination({ env: runtimeEnv })], runtimeEnv))[0];
+    const destination = await resolveConfiguredCloudFoundryDestination({ env: runtimeEnv });
     let proxy;
     try {
       const binary = await binaryOrError();
@@ -289,7 +283,7 @@ async function main() {
 
   const discovered = await discoverDestinations({ env: runtimeEnv });
   for (const destination of discovered) logLine(probeDiagnostic(destination));
-  const destinations = await enrichWithStoredCredentials(discovered, runtimeEnv);
+  const destinations = discovered;
   if (!destinations.length) {
     logLine('[sap-ai-dev] destination discovery returned no named BAS destinations');
     throw new Error(remediation);
@@ -297,10 +291,6 @@ async function main() {
   const binary = await binaryOrError();
   logLine(`[sap-ai-dev] sap-ai-dev-toolkit v${pkg.version} (node ${process.version}, pid ${process.pid})`);
   logLine(`[sap-ai-dev] VSP binary: ${binary}`);
-  for (const destination of destinations) {
-    if (destination.credentials?.mode === 'bas-tunnel') logLine(`[sap-ai-dev] ${destination.name}: Basic credentials enabled through the BAS proxy tunnel`);
-    else if (destination.credentials?.host) logLine(`[sap-ai-dev] ${destination.name}: direct connect enabled through stored credentials`);
-  }
   logLine(`[sap-ai-dev] starting MCP proxy for ${destinations.map(destination => `${destination.name} (client=${destination.client})`).join(', ')}`);
   const proxy = new MCPProxy({ binary, destinations, env: process.env, log: logLine, version: pkg.version });
   const shutdown = signal => { void proxy.close().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143)); };

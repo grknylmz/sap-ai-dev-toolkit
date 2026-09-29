@@ -1,12 +1,9 @@
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
-import { checkboxPrompt, colorText, formatStatus, textPrompt } from './terminal-ui.mjs';
+import { checkboxPrompt, colorText, formatStatus } from './terminal-ui.mjs';
 import { discoverDestinations, remediation } from './bas-discovery.mjs';
 import { discoverCloudFoundryDestinations, getCloudFoundryTarget, deleteManagedCloudFoundryServiceKeys, findOrphanedCloudFoundryServiceKeys } from './cf-destination.mjs';
 import { SAP_DEVELOPMENT_MCP_SERVERS, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, installMcpConfig, readMcpConfig, resolveMcpConfigPath } from './mcp-config.mjs';
-import { readCredentials, removeDestinationCredentials, resolveCredentialsPath, storeDestinationCredentials } from './credentials-store.mjs';
-import { canPromptForCredentials, credentialKeyForDestination, credentialModeForDestination } from './credential-overrides.mjs';
-import { createBasDestinationRelay } from './bas-destination-relay.mjs';
 
 const SETUP_COMMAND = 'sap-ai-dev --setup';
 
@@ -26,89 +23,6 @@ async function confirmCloudFoundryImport({ input = stdin, output = stdout } = {}
   }
 }
 
-async function probeBasOnPremCredentialRoute({ destination, user, password, env }) {
-  const relay = createBasDestinationRelay({
-    ...destination,
-    credentials: { user, password, mode: 'bas-tunnel' }
-  }, { env, log: () => {} });
-  try {
-    await relay.ready;
-    return await relay.probeCsrfSession();
-  } finally {
-    await relay.close();
-  }
-}
-
-async function promptForDestinationCredentials({ destinations, credentialsPath, existing = {}, input = stdin, output = stdout, env = process.env, verifyOnPremCredentialRoute = probeBasOnPremCredentialRoute } = {}) {
-  const eligible = destinations.filter(canPromptForCredentials);
-  const retained = new Set();
-  if (!eligible.length) return retained;
-
-  print(output, '');
-  print(output, formatStatus('Credential overrides are optional and apply only to selected BasicAuthentication destinations.', 'step', output, 'Credentials'));
-  print(output, `  Overrides are stored beside your MCP config in ${credentialsPath} with owner-only permissions (never inside mcp.json).`);
-  print(output, '  For OnPremise destinations, BAS/Cloud Foundry proxy credentials remain separate from the SAP backend credentials.');
-  print(output, '');
-
-  for (const destination of eligible) {
-    const key = credentialKeyForDestination(destination);
-    if (!key) continue;
-    const mode = credentialModeForDestination(destination);
-    const known = existing[key];
-    const routeLabel = `${destination.source === 'cloud-foundry' ? 'Cloud Foundry' : 'BAS'} ${destination.proxyType} — ${destination.name}`;
-    const answer = await textPrompt({
-      message: colorText(`🔐 ${routeLabel} — override SAP credentials? (y/n)`, 'cyan', output),
-      required: true,
-      validate: value => /^(?:y|yes|n|no)$/i.test(value.trim()) || 'Enter y or n.'
-    }, { input, output });
-    if (/^n/i.test(answer.trim())) {
-      await removeDestinationCredentials(credentialsPath, [key]);
-      print(output, formatStatus(`Credential override disabled for ${destination.name}.`, 'info', output, 'Credentials'));
-      continue;
-    }
-
-    if (known?.user && known?.password) {
-      print(output, formatStatus(`Credentials for ${destination.name} are already stored. Press Enter at both prompts to keep them.`, 'info', output, 'Credentials'));
-    }
-    const userAnswer = await textPrompt({
-      message: colorText(`👤 ${routeLabel} — SAP user`, 'cyan', output),
-      required: false,
-      placeholder: known ? 'Enter keeps the stored user' : 'SAP user name'
-    }, { input, output });
-    const user = userAnswer.trim() || known?.user || '';
-    const passwordAnswer = await textPrompt({
-      message: colorText(`🔒 ${routeLabel} — SAP password${known ? ' (Enter keeps stored password)' : ''}`, 'cyan', output),
-      secret: true,
-      required: false
-    }, { input, output });
-    const password = passwordAnswer || known?.password || '';
-    if (!user || !password) {
-      await removeDestinationCredentials(credentialsPath, [key]);
-      print(output, formatStatus(`No complete credentials for ${destination.name}; no override was stored.`, 'warning', output, 'Credentials'));
-      continue;
-    }
-
-    if (mode === 'bas-tunnel') {
-      let route;
-      try {
-        route = await verifyOnPremCredentialRoute({ destination, user, password, env });
-      } catch {
-        route = null;
-      }
-      if (!(route?.httpStatus >= 200 && route.httpStatus < 300) || !route.tokenReceived || !(route.cookieCount > 0)) {
-        await removeDestinationCredentials(credentialsPath, [key]);
-        print(output, formatStatus(`No override stored for ${destination.name}: the BAS/Cloud Connector route did not return both a CSRF token and session cookie.`, 'warning', output, 'Credentials'));
-        continue;
-      }
-    }
-
-    const host = mode === 'direct' ? (destination.backendUrl || known?.host || '') : '';
-    await storeDestinationCredentials(credentialsPath, key, { host, user, password, mode });
-    retained.add(key);
-    print(output, formatStatus(`Stored credential override for ${destination.name}.`, 'success', output, 'Credentials'));
-  }
-  return retained;
-}
 
 function safeProbe(probe) {
   const result = {};
@@ -187,7 +101,6 @@ export async function runSetup({
   discoverCf = discoverCloudFoundryDestinations,
   confirmCfImport = confirmCloudFoundryImport,
   install = installMcpConfig,
-  verifyOnPremCredentialRoute = probeBasOnPremCredentialRoute,
   includeSapDevelopmentToolsPrompt = false
 } = {}) {
   if (!env.H2O_URL) {
@@ -209,7 +122,6 @@ export async function runSetup({
   }
   const destinations = basDestinations.map(safeBasDestination);
   const warnings = [];
-  const credentialWarnings = [];
   let createdKeys = [];
   let configPath;
   let managedKeys = [];
@@ -352,25 +264,6 @@ export async function runSetup({
     }, { input, output });
   }
 
-  // Ask for an explicit credential override choice for each selected supported destination.
-  const credentialsPath = await resolveCredentialsPath(env, configPath);
-  try {
-    const existingMap = (await readCredentials(credentialsPath).catch(() => ({ destinations: {} }))).destinations || {};
-    const retained = await promptForDestinationCredentials({
-      destinations: selected,
-      credentialsPath,
-      existing: existingMap,
-      input,
-      output,
-      env,
-      verifyOnPremCredentialRoute
-    });
-    const stale = Object.keys(existingMap).filter(name => !retained.has(name));
-    if (stale.length) await removeDestinationCredentials(credentialsPath, stale);
-  } catch (error) {
-    if (/Prompt interrupted/.test(error.message)) throw error;
-    credentialWarnings.push(`Credential overrides could not be stored: ${error.message}`);
-  }
   try {
     const result = await install(selected, { env, sapDevelopmentServers });
     const location = result?.path ? ` in ${result.path}` : '';
@@ -391,9 +284,8 @@ export async function runSetup({
       }
     }
     await reportWarnings(warnings);
-    await reportWarnings(credentialWarnings);
     await reportWarnings(cleanupWarnings);
-    return { selected, ...(result || {}), warnings: [...warnings, ...credentialWarnings, ...cleanupWarnings] };
+    return { selected, ...(result || {}), warnings: [...warnings, ...cleanupWarnings] };
   } catch (error) {
     const cleanupWarnings = [];
     if (createdKeys.length) {

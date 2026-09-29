@@ -208,7 +208,7 @@ await runSetup({
     const visible = stripVTControlCharacters(logs);
     assert.equal(result.code, 0, logs);
     assert.equal(result.selectionSent, true, logs);
-    assert.match(visible, /[❯>]\s*◯ S4H \(BAS, client 100, ok:available\)/u, visible);
+    assert.match(visible, /[❯>]\s*✗ S4H \(BAS, client 100, ok:available\)/u, visible);
     assert.match(visible, /Configured 0 MCP servers/u, visible);
     assert.doesNotMatch(logs, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/u, logs);
     assert.doesNotMatch(logs, /⏳/u, logs);

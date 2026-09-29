@@ -6,7 +6,6 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { storeDestinationCredentials } from '../src/credentials-store.mjs';
 
 const launcher = fileURLToPath(new URL('../src/launcher.mjs', import.meta.url));
 const fakeVsp = fileURLToPath(new URL('./fixtures/fake-vsp.mjs', import.meta.url));
@@ -258,12 +257,6 @@ test('routes a PrincipalPropagation MCP call through CF Connectivity to the SAP 
     connectivityProxyPort,
     connectivityTokenUrl: `${serviceOrigin}/connectivity/oauth/token`
   });
-  const credentialsPath = join(directory, 'sap-ai-dev-toolkit-credentials.json');
-  await storeDestinationCredentials(credentialsPath, `cloud-foundry:cf:${SPACE_GUID}:${INSTANCE_GUID}:pp-target`, {
-    user: 'must-not-override',
-    password: 'must-not-override-secret',
-    mode: 'cf-connectivity'
-  });
   const childLog = join(directory, 'vsp-children.jsonl');
   t.after(async () => {
     await new Promise(resolve => service.close(resolve));
@@ -278,7 +271,6 @@ test('routes a PrincipalPropagation MCP call through CF Connectivity to the SAP 
     SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
     SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'cloud-foundry',
     SAP_AI_DEV_TOOLKIT_DESTINATION: 'pp-target',
-    SAP_AI_DEV_TOOLKIT_CREDENTIALS_FILE: credentialsPath,
     BAS_CF_SPACE_GUID: SPACE_GUID,
     BAS_CF_DESTINATION_INSTANCE_GUID: INSTANCE_GUID,
     BAS_CF_DESTINATION_INSTANCE: INSTANCE_NAME,
@@ -321,176 +313,11 @@ test('routes a PrincipalPropagation MCP call through CF Connectivity to the SAP 
   assert.equal(initialized.argv.includes('--proxy-auth'), true);
   assert.equal(initialized.env.user, undefined);
   assert.equal(initialized.env.password, undefined);
-  for (const secret of ['must-not-override', 'must-not-override-secret', 'destination-key-secret', 'destination-api-token', 'connectivity-key-secret', 'user-exchange-token', 'current-cf-user-jwt', 'parent-user-secret', 'parent-password-secret']) {
-    assert.equal(`${result.stdout}\\n${result.stderr}\\n${JSON.stringify(initialized.argv)}`.includes(secret), false);
+  for (const secret of ['destination-key-secret', 'destination-api-token', 'connectivity-key-secret', 'user-exchange-token', 'current-cf-user-jwt', 'parent-user-secret', 'parent-password-secret']) {
+    assert.equal(`${result.stdout}\\n${result.stderr}\\n${JSON.stringify(initialized.argv)}`.includes(secret), false, `${secret} must not appear in output or argv`);
   }
 });
 
-test('overrides CF Basic OnPremise backend auth while retaining the HTTP Connectivity proxy', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'bas-cf-basic-onprem-'));
-  const observed = { destinationToken: [], destinationList: [], connectivityToken: [], proxy: [], connect: [], target: [] };
-  const target = createServer((request, response) => {
-    observed.target.push({ path: request.url, authorization: request.headers.authorization });
-    response.writeHead(request.headers.authorization === `Basic ${Buffer.from('override-user:override-password').toString('base64')}` ? 200 : 401, {
-      'content-type': 'text/plain'
-    });
-    response.end('SAP system information: client=100');
-  });
-  const targetOrigin = await listen(target);
-  const service = createServer(async (request, response) => {
-    if (request.url === '/uaa/oauth/token') {
-      observed.destinationToken.push(request.headers.authorization);
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ access_token: 'destination-api-token', expires_in: 300 }));
-    } else if (request.url === '/destination-configuration/v1/instanceDestinations') {
-      observed.destinationList.push(request.headers.authorization);
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify([{
-        Name: 'basic-onprem',
-        Type: 'HTTP',
-        URL: targetOrigin,
-        Authentication: 'BasicAuthentication',
-        ProxyType: 'OnPremise',
-        Properties: [
-          { Key: 'sap-client', Value: '100' },
-          { Key: 'User', Value: 'sap-user' },
-          { Key: 'Password', Value: 'sap-password' }
-        ]
-      }]));
-    } else if (request.url === '/connectivity/oauth/token') {
-      const chunks = [];
-      for await (const chunk of request) chunks.push(chunk);
-      observed.connectivityToken.push({
-        authorization: request.headers.authorization,
-        body: new URLSearchParams(Buffer.concat(chunks).toString())
-      });
-      response.writeHead(200, { 'content-type': 'application/json' });
-      response.end(JSON.stringify({ access_token: 'application-proxy-token', expires_in: 300 }));
-    } else {
-      response.writeHead(404);
-      response.end();
-    }
-  });
-  const serviceOrigin = await listen(service);
-  const connectivityProxy = createServer((request, response) => {
-    observed.proxy.push({
-      method: request.method,
-      path: request.url,
-      authorization: request.headers['proxy-authorization'],
-      targetAuthorization: request.headers.authorization
-    });
-    if (request.headers['proxy-authorization'] !== 'Bearer application-proxy-token') {
-      response.writeHead(403);
-      response.end();
-      request.resume();
-      return;
-    }
-    const targetUrl = new URL(request.url);
-    const headers = { ...request.headers, host: targetUrl.host };
-    delete headers['proxy-authorization'];
-    delete headers['sap-connectivity-scc-location_id'];
-    delete headers.connection;
-    const upstream = httpRequest({
-      hostname: targetUrl.hostname,
-      port: Number(targetUrl.port || 80),
-      method: request.method,
-      path: `${targetUrl.pathname}${targetUrl.search}`,
-      headers
-    }, upstreamResponse => {
-      response.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.headers);
-      upstreamResponse.pipe(response);
-    });
-    upstream.on('error', () => {
-      if (!response.headersSent) response.writeHead(502);
-      response.end();
-    });
-    request.pipe(upstream);
-  });
-  connectivityProxy.on('connect', (request, socket) => {
-    observed.connect.push(request.url);
-    socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
-  });
-  const connectivityProxyOrigin = await listen(connectivityProxy);
-  const connectivityProxyPort = Number(new URL(connectivityProxyOrigin).port);
-  const cfCalls = join(directory, 'cf-calls.jsonl');
-  const cfEnv = await fakeCfExecutable(directory, serviceOrigin, cfCalls, {
-    connectivityProxyPort,
-    connectivityTokenUrl: `${serviceOrigin}/connectivity/oauth/token`
-  });
-  const credentialsPath = join(directory, 'sap-ai-dev-toolkit-credentials.json');
-  await storeDestinationCredentials(credentialsPath, `cloud-foundry:cf:${SPACE_GUID}:${INSTANCE_GUID}:basic-onprem`, {
-    user: 'override-user',
-    password: 'override-password',
-    mode: 'cf-connectivity'
-  });
-  const childLog = join(directory, 'vsp-children.jsonl');
-  const servers = [service, target, connectivityProxy];
-  t.after(async () => {
-    for (const server of servers) server.closeAllConnections?.();
-    await Promise.all(servers.map(server => new Promise(resolve => server.close(resolve))));
-    await rm(directory, { recursive: true, force: true });
-  });
-
-  const result = await runLauncher({
-    ...process.env,
-    ...cfEnv,
-    SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
-    SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'cloud-foundry',
-    SAP_AI_DEV_TOOLKIT_DESTINATION: 'basic-onprem',
-    SAP_AI_DEV_TOOLKIT_CREDENTIALS_FILE: credentialsPath,
-    BAS_CF_SPACE_GUID: SPACE_GUID,
-    BAS_CF_DESTINATION_INSTANCE_GUID: INSTANCE_GUID,
-    BAS_CF_DESTINATION_INSTANCE: INSTANCE_NAME,
-    BAS_CF_DESTINATION_KEY: 'managed-destination-key',
-    BAS_CF_DESTINATION_NAME: 'basic-onprem',
-    BAS_CF_CONNECTIVITY_INSTANCE_GUID: 'runtime-connectivity-guid',
-    BAS_CF_CONNECTIVITY_INSTANCE: 'runtime-connectivity-service',
-    BAS_CF_CONNECTIVITY_KEY: 'managed-connectivity-key',
-    H2O_URL: 'http://retained-for-checks.example',
-    FAKE_LOG: childLog,
-    FAKE_CF_ADT_TEST: 'true',
-    HTTP_PROXY: '',
-    HTTPS_PROXY: '',
-    NO_PROXY: '127.0.0.1,localhost'
-  }, [], [
-    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } },
-    { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
-    { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_system_info', arguments: {} } }
-  ]);
-
-  assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
-  const responses = result.stdout.trim().split('\n').map(line => JSON.parse(line));
-  assert.match(responses.at(-1).result.content[0].text, /SAP system information: client=100/);
-  assert.deepEqual(observed.destinationToken, [`Basic ${Buffer.from('destination-client:destination-key-secret').toString('base64')}`]);
-  assert.deepEqual(observed.destinationList, ['Bearer destination-api-token']);
-  assert.deepEqual(observed.connectivityToken.map(item => [
-    item.authorization,
-    item.body.get('grant_type')
-  ]), [[`Basic ${Buffer.from('connectivity-client:connectivity-key-secret').toString('base64')}`, 'client_credentials']]);
-  assert.deepEqual(observed.proxy.map(item => [
-    item.method,
-    item.path,
-    item.authorization,
-    item.targetAuthorization
-  ]), [[
-    'GET',
-    `${targetOrigin}/sap/bc/adt/discovery`,
-    'Bearer application-proxy-token',
-    `Basic ${Buffer.from('override-user:override-password').toString('base64')}`
-  ]]);
-  assert.deepEqual(observed.connect, []);
-  assert.deepEqual(observed.target, [{
-    path: '/sap/bc/adt/discovery',
-    authorization: `Basic ${Buffer.from('override-user:override-password').toString('base64')}`
-  }]);
-  const events = (await readFile(childLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-  const initialized = events.find(event => event.event === 'initialize');
-  assert.deepEqual([initialized.env.user, initialized.env.password], ['override-user', 'override-password']);
-  assert.equal(initialized.argv.includes('--proxy-auth'), false);
-  for (const secret of ['override-user', 'override-password', 'sap-password', 'connectivity-key-secret', 'application-proxy-token']) {
-    assert.equal(`${result.stdout}\n${result.stderr}\n${JSON.stringify(initialized.argv)}`.includes(secret), false, `${secret} must not appear in output or argv`);
-  }
-});
 
 test('CF list-destinations clears the CF name filter and remains BAS-only', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-cf-list-'));

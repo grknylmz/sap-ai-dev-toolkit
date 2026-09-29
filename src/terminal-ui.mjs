@@ -139,7 +139,9 @@ export async function checkboxPrompt({ message, choices, required = false, short
     for (let index = top; index < end; index += 1) {
       const choice = choices[index];
       const pointer = index === cursor ? '❯' : ' ';
-      const marker = selected.has(index) ? '◉' : '◯';
+      const marker = selected.has(index)
+        ? colorText('✓', 'green', output)
+        : colorText('✗', 'red', output);
       const disabled = choice.disabled ? ` — ${choice.disabled}` : '';
       const label = `${pointer}${marker} ${choice.name}${disabled}`;
       lines.push(truncateToColumns(label, columns));

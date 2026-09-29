@@ -59,34 +59,6 @@ test('multi-value set-cookie headers survive the relay', async () => {
   });
 });
 
-test('a stored credential override wins over an inbound authorization header', async () => {
-  const seen = [];
-  const server = http.createServer((request, response) => {
-    seen.push(String(request.headers.authorization || ''));
-    response.writeHead(200, { 'content-type': 'application/xml' });
-    response.end('<ok/>');
-  });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const backendUrl = `http://127.0.0.1:${server.address().port}`;
-  const relay = createBasDestinationRelay({
-    name: 'TEST',
-    url: backendUrl,
-    authentication: 'BasicAuthentication',
-    credentials: { mode: 'direct', host: backendUrl, user: 'stored-user', password: 'stored-pass' }
-  }, { env: { HTTP_PROXY: '' }, log: () => {} });
-  const relayUrl = await relay.ready;
-  try {
-    await relayFetch(relayUrl, '/sap/bc/adt/discovery', {
-      headers: { authorization: 'Basic aW5ib3VuZDp1c2Vy' } // inbound:basic inbound:user
-    });
-    const expected = `Basic ${Buffer.from('stored-user:stored-pass').toString('base64')}`;
-    assert.equal(seen[0], expected, 'the stored override must reach the backend');
-    assert.equal(seen.includes('Basic aW5ib3VuZDp1c2Vy'), false, 'the inbound header must not be forwarded');
-  } finally {
-    await relay.close();
-    await new Promise(resolve => server.close(resolve));
-  }
-});
 
 test('relay error responses are redacted', async () => {
   // A destination whose backend vanishes mid-flight: the relay's 502 body

@@ -37,6 +37,8 @@ test('uses authentication-specific arguments for Cloud Foundry children', () => 
   assert.equal(childArguments(noAuth, {}).includes('--proxy-auth'), false);
   assert.equal(childArguments(basic, {}).includes('--proxy-auth'), false);
   assert.equal(childArguments(principal, {}).includes('--proxy-auth'), true);
+  const basicBasDestination = { ...bas, authentication: 'BasicAuthentication' };
+  assert.equal(childArguments(basicBasDestination, {}).includes('--proxy-auth'), true);
 });
 
 test('self-heals BAS destinations through a local destination relay without credentials', async t => {

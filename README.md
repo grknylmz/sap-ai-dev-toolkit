@@ -400,7 +400,7 @@ The sample values sketch an on-premise ABAP backend routed through SAP Cloud Con
 | `WebIDEUsage` | `dev_abap,odata_abap` | Include `dev_abap` for ABAP development; add other usages required by your BAS scenario. |
 | `CloudConnectorLocationId` | `DEMO-LOCATION` | Optional; set only when the Cloud Connector uses a location ID. |
 
-For on-premise systems, configure Cloud Connector access to the backend host and port first. BAS Destination and Connectivity service credentials remain in their respective services; optional SAP backend overrides are stored in the owner-only credentials file beside `mcp.json`, never in `mcp.json`. The BAS OnPremise override is saved only when its tunnel route returns a CSRF token and session cookie.
+For on-premise systems, configure Cloud Connector access to the backend host and port first. The add-on uses the authentication already configured in BAS or the Cloud Foundry Destination service; manage SAP credentials there.
 
 Think of `H2O_URL` as BAS's front door: it must point to the endpoint serving `/api/listDestinations`, not to the SAP backend.
 
@@ -734,14 +734,13 @@ The response contains a `tools` array. A `RunQuery` entry resembles this excerpt
 | `SAP_AI_DEV_TOOLKIT_MODE` | VSP child mode (`expert` by default; `focused` omits `ActivateMultiple`, `GetUserTransports`, and `GetTransportInfo`). The proxy exposes its curated tool subset and local workflow tools, including `LintABAP`. |
 | `SAP_ALLOW_TRANSPORTABLE_EDITS` | Generated MCP entries set this to `true` to permit source edits in transportable packages; VSP safety checks and SAP authorizations still apply. |
 | `SAP_AI_DEV_TOOLKIT_DISABLE_BAS_RELAY=true` | Disable the built-in BAS destination relay. By default the add-on self-heals `.dest` destinations through a local relay that keeps all access destination-based while handling ADT CSRF fetch/retry behavior before VSP calls SAP. |
-| `SAP_AI_DEV_TOOLKIT_HTTP_PROXY` | Egress proxy for relay and discovery traffic. Takes precedence over `HTTP_PROXY`/`http_proxy`; unset means the default BAS proxy for `.dest` hosts, empty means direct except for OnPremise credential overrides, which require a BAS proxy tunnel. |
+| `SAP_AI_DEV_TOOLKIT_HTTP_PROXY` | Egress proxy for relay and discovery traffic. Takes precedence over `HTTP_PROXY`/`http_proxy`; unset means the default BAS proxy for `.dest` hosts, empty means direct. |
 | `SAP_AI_DEV_TOOLKIT_MAX_CSRF_RETRIES` | Bounded retries after explicit CSRF-session rejection per unsafe request (default 3, maximum 10). Invalid values use the default. |
 | `SAP_AI_DEV_TOOLKIT_READ_ONLY=true` | Read-only mode: hides `WriteSource`, `EditSource`, `Activate`, `ActivateMultiple`, `CreateTransport`, `SetBreakpoint`, and the change-set workflow tools, and starts VSP with `--transport-read-only`. |
 | `SAP_AI_DEV_TOOLKIT_REQUEST_TIMEOUT_MS` | Per-request timeout for calls forwarded to a VSP child (default 600000 = 10 minutes; `0` disables). A stalled request fails with a timeout error; the child is left running. |
 | `SAP_AI_DEV_MCP_CONFIG` | Explicit MCP configuration path; highest precedence. |
 | `SAP_AI_DEV_TOOLKIT_MCP_CONFIG` | Branded compatibility alias for the MCP configuration path. |
 | `BAS_VSP_MCP_CONFIG` | Backward-compatible alias for the MCP configuration path. |
-| `SAP_AI_DEV_TOOLKIT_CREDENTIALS_FILE` | Explicit path for the optional SAP backend credential-override file (default: beside `mcp.json`). |
 | `SAP_AI_DEV_TOOLKIT_BINARY` | Trusted prebuilt VSP executable; skips binary provisioning. Legacy `BAS_VSP_BINARY` still works. |
 | `SAP_AI_DEV_TOOLKIT_BINARY_URL` | Alternate VSP binary download URL (checksum-verified). Legacy `BAS_VSP_BINARY_URL` still works. |
 | `SAP_AI_DEV_TOOLKIT_RELEASE_BASE_URL` | Override the base URL that VSP release binaries are downloaded from. |
@@ -760,8 +759,7 @@ The relay between the VSP child and each BAS destination recovers from the failu
 2. **Session refresh** — when SAP explicitly rejects a CSRF token, the cached session is dropped, a fresh token+cookie pair is fetched, and the request is retried within the configured bound. Generic authorization 401/403 responses are returned without being mislabeled or retried as CSRF failures.
 3. **Proxy tunnel fallback** — when the BAS proxy refuses absolute-form requests (502/504 or transport errors), the relay switches to a CONNECT tunnel through the same proxy and keeps going.
 4. **Child crash recovery** — a crashed VSP child is restarted transparently, re-initialized, tools re-registered, and the interrupted `tools/call` retried once before any error reaches the client.
-5. **Direct connect for Internet destinations** — the BAS `.dest` proxy strips SAP `Set-Cookie` headers, which makes CSRF token/session binding impossible for ADT writes (`403 CSRF token validation failed`). When you select an Internet destination with BasicAuthentication, setup asks whether to override its credentials. A Yes prompts for SAP user/password and stores them in `sap-ai-dev-toolkit-credentials.json` **next to** `mcp.json` (never inside it, permissions `0600`). The relay connects straight to the backend host so cookies survive and ADT writes can use the paired CSRF session.
-6. **Cloud Connector credential overrides** — setup also offers per-destination overrides for BasicAuthentication OnPremise destinations. BAS OnPremise credentials travel through an HTTP CONNECT tunnel to the BAS `.dest` endpoint, retaining its Cloud Connector mapping; setup saves the override only after a read-only probe returns both a CSRF token and a session cookie. If that route check fails, the override is not saved. Cloud Foundry OnPremise overrides replace only the SAP backend user/password; Connectivity service-key authentication and its proxy route remain unchanged. PrincipalPropagation is never overridden. Rerun `sap-ai-dev --setup` to change credentials or answer No to disable a stored override. Deselecting a destination (or selecting none) removes stale overrides.
+5. **Configured destination authentication** — the add-on always uses the URL, authentication mode, and credentials already configured for the selected destination. Setup does not prompt for or store SAP usernames/passwords, and the relay does not connect directly to a backend host as a credential fallback. Correct the credentials in BAS or the Cloud Foundry Destination service if SAP rejects them.
 Existing installs that still set the previous `BAS_VSP_*` environment variables remain supported. The setup wizard writes new MCP entries with the `SAP_AI_DEV_TOOLKIT_*` names.
 
 #### Server logging
