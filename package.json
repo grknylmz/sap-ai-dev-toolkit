@@ -1,6 +1,6 @@
 {
   "name": "sap-ai-dev-toolkit",
-  "version": "0.7.0",
+  "version": "0.7.3",
   "description": "SAP AI development toolkit for BAS, ABAP, RAP, CAP, HANA Cloud, Fiori, UI5, and MCP",
   "author": "Gurkan Yilmaz",
   "type": "module",
@@ -27,6 +27,7 @@
     "test:visibility": "node --test test/setup.test.mjs test/terminal-ui.test.mjs",
     "test:mutation": "node scripts/mutation-terminal-ui.mjs",
     "publish:npm": "node scripts/publish-npm.mjs",
+    "prepublishOnly": "node scripts/build-vsp.mjs && node scripts/publish-npm.mjs --verify-only",
     "ensure:go": "node scripts/ensure-go.mjs",
     "build:vsp": "node scripts/build-vsp.mjs"
   },

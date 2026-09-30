@@ -813,7 +813,8 @@ NPM_PUBLISH_TOKEN=npm_...
 
 - `npm run publish:npm` publishes the version already set in `package.json`.
 - To publish a patch bump, run `npm run publish:npm -- --patch`; it updates `package.json` and `package-lock.json` before publishing. If publishing fails after the bump, retry without `--patch`.
-- Preview the package without publishing or changing its version with `npm run publish:npm -- --dry-run`.
+- npm's `prepublishOnly` hook builds the pinned VSP binaries for all platforms (including the Go toolchain if missing) and refuses to ship a tarball whose `dist/checksums.txt` does not list all five assets; it guards `npm run publish:npm` and a plain `npm publish` alike. Pass `--skip-build` to republish an already-built `dist/` without rebuilding.
+- Preview the package without publishing, changing its version, or building with `npm run publish:npm -- --dry-run`.
 
 The token is not printed or stored in the repository.
 

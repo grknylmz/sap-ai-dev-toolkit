@@ -15,13 +15,19 @@ const platformMap = {
   'linux:arm64': ['linux', 'arm64', ''],
   'darwin:x64': ['darwin', 'x64', ''],
   'darwin:arm64': ['darwin', 'arm64', ''],
-  'win32:x64': ['windows', 'x64', '.exe']
+  'win32:x64': ['win32', 'x64', '.exe']
 };
 
 export function binaryTarget(platform = process.platform, arch = process.arch) {
   const target = platformMap[`${platform}:${arch}`];
   if (!target) throw new Error(`Unsupported platform ${platform}/${arch}. Set SAP_AI_DEV_TOOLKIT_BINARY or build cmd/vsp with scripts/build-vsp.mjs.`);
   return { os: target[0], arch: target[1], extension: target[2], asset: `vsp-${target[0]}-${target[1]}${target[2]}` };
+}
+
+// Every VSP asset the npm tarball must bundle; publish:npm refuses to ship a
+// package whose dist/checksums.txt does not list all of them.
+export function packagedBinaryAssets() {
+  return Object.keys(platformMap).map(key => binaryTarget(...key.split(':')).asset);
 }
 
 export function bundledBinaryPath(platform = process.platform, arch = process.arch) {
