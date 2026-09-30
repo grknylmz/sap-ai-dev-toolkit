@@ -57,7 +57,7 @@ function runSetupVisibilityInPty(fixture, env, keys = '\r') {
 
 function runPostinstallInPty(env, keys, assetsAnswer = '\r') {
   return new Promise((resolve, reject) => {
-    const command = `${JSON.stringify(process.execPath)} scripts/postinstall.mjs </dev/null | cat`;
+    const command = `stty cols 100 rows 30; ${JSON.stringify(process.execPath)} scripts/postinstall.mjs </dev/null | cat`;
     const child = spawnWithPty(command, { env, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
@@ -70,7 +70,7 @@ function runPostinstallInPty(env, keys, assetsAnswer = '\r') {
         selectionSent = true;
         child.stdin.write(keys);
       }
-      if (!assetsAnswerSent && stdout.includes('Install the bundled agents and all skills')) {
+      if (!assetsAnswerSent && stdout.includes('Install bundled agents and skills for')) {
         assetsAnswerSent = true;
         child.stdin.write(assetsAnswer);
       }
@@ -111,6 +111,27 @@ async function assertUserCopilotAssets(home) {
   for (const skillName of skillNames) {
     assert.equal((await stat(join(copilotRoot, 'skills', skillName, 'SKILL.md'))).isFile(), true);
   }
+}
+
+async function assertUserClaudeAssets(home) {
+  const claudeRoot = join(home, '.claude');
+  const agentNames = (await readdir(join(claudeRoot, 'agents'))).sort();
+  assert.deepEqual(agentNames, [
+    'abap-developer.md',
+    'abap-runtime-debugger.md',
+    'hana-cloud-hdi-specialist.md',
+    'rap-service-developer.md',
+    'sap-solution-architect.md'
+  ]);
+  const architect = await readFile(join(claudeRoot, 'agents', 'sap-solution-architect.md'), 'utf8');
+  assert.match(architect, /^---\nname: [^\n]+\ndescription: [^\n]+\n---\n/s);
+  assert.doesNotMatch(architect, /(^|\n)(target|user-invocable):/);
+  const skillNames = (await readdir(join(claudeRoot, 'skills'))).sort();
+  assert.equal(skillNames.length, 14);
+  for (const skillName of skillNames) {
+    assert.equal((await stat(join(claudeRoot, 'skills', skillName, 'SKILL.md'))).isFile(), true);
+  }
+  assert.equal((await stat(join(claudeRoot, '.sap-ai-dev-toolkit-assets.json'))).isFile(), true);
 }
 
 test('reconciles generated entries while preserving unrelated MCP config', async () => {
@@ -276,34 +297,38 @@ test('global postinstall completes BAS selection before default Copilot asset in
     await rm(directory, { recursive: true, force: true });
   });
 
-  const declined = await runPostinstallInPty(env, '\r', 'n\r');
+  const declined = await runPostinstallInPty(env, '\r', 'aa\r');
   assert.equal(declined.code, 0, `${declined.stdout}\n${declined.stderr}`);
   assert.equal(declined.selectionSent, true, declined.stdout);
   assert.equal(declined.assetsAnswerSent, true, declined.stdout);
   const declineLogs = `${declined.stdout}\n${declined.stderr}`;
   assert.match(declineLogs, /Configured 0 MCP servers/);
-  assert.match(declineLogs, /\[Y\/n\]/);
-  assert.match(declineLogs, /Type n then press Enter to skip installing or updating the bundled files/);
+  assert.match(declineLogs, /The bundled agents and skills can be installed for several AI coding harnesses/);
+  assert.match(declineLogs, /Space = select or deselect · a = toggle all · Enter = confirm/);
   assert.match(declineLogs, /🤖 sap-ai-dev-toolkit/);
   assert.match(declineLogs, /\u001b\[1;35m/);
-  assert.match(declineLogs, /Bundled Copilot agents and skills are installed by default/);
-  assert.match(declineLogs, /Copilot agent and skills were skipped\. Your files were not changed/);
-  assert.ok(declineLogs.indexOf('Bundled Copilot agents and skills are installed by default') > declineLogs.indexOf('Configured 0 MCP servers'), declineLogs);
-  assert.ok(declineLogs.indexOf('Install the bundled agents and all skills') > declineLogs.indexOf('Bundled Copilot agents and skills are installed by default'), declineLogs);
-  assert.ok(declineLogs.indexOf('No MCP server entries are configured for this add-on.') > declineLogs.indexOf('Copilot agent and skills were skipped'), declineLogs);
+  assert.match(declineLogs, /GitHub Copilot \(skills \+ agents\)/);
+  assert.match(declineLogs, /Gemini CLI \(skills\)/);
+  assert.match(declineLogs, /Bundled agents and skills were skipped\. Your files were not changed/);
+  assert.ok(declineLogs.indexOf('The bundled agents and skills can be installed for several AI coding harnesses') > declineLogs.indexOf('Configured 0 MCP servers'), declineLogs);
+  assert.ok(declineLogs.indexOf('Install bundled agents and skills for') > declineLogs.indexOf('The bundled agents and skills can be installed for several AI coding harnesses'), declineLogs);
+  assert.ok(declineLogs.indexOf('No MCP server entries are configured for this add-on.') > declineLogs.indexOf('Bundled agents and skills were skipped'), declineLogs);
   assert.ok(declineLogs.includes(`MCP config file: ${config}`), declineLogs);
   const configAfterDecline = JSON.parse(await readFile(config, 'utf8'));
   assert.equal(Object.values(configAfterDecline.servers).filter(entry => entry.BAS_EXT === 'true').length, 0);
   await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
+  await assert.rejects(stat(join(directory, '.claude')), { code: 'ENOENT' });
 
   const accepted = await runPostinstallInPty(env, ' \r', '\r');
   assert.equal(accepted.code, 0, `${accepted.stdout}\n${accepted.stderr}`);
   assert.equal(accepted.selectionSent, true, accepted.stdout);
   assert.equal(accepted.assetsAnswerSent, true, accepted.stdout);
   const acceptLogs = `${accepted.stdout}\n${accepted.stderr}`;
-  assert.ok(acceptLogs.indexOf('Install the bundled agents and all skills') > acceptLogs.indexOf('Configured 1 MCP server'), acceptLogs);
-  assert.match(acceptLogs, /Installed 19 Copilot files/);
-  assert.ok(acceptLogs.indexOf('Installation configuration summary') > acceptLogs.indexOf('Installed 19 Copilot files'), acceptLogs);
+  assert.ok(acceptLogs.indexOf('Install bundled agents and skills for') > acceptLogs.indexOf('Configured 1 MCP server'), acceptLogs);
+  assert.match(acceptLogs, /GitHub Copilot: 19 files installed or updated in [^\n]*\.copilot; 0 already current/);
+  assert.match(acceptLogs, /Claude Code: 19 files installed or updated in [^\n]*\.claude; 0 already current/);
+  assert.match(acceptLogs, /Installed 38 files across 2 harnesses/);
+  assert.ok(acceptLogs.indexOf('Installation configuration summary') > acceptLogs.indexOf('Installed 38 files across 2 harnesses'), acceptLogs);
   assert.ok(acceptLogs.includes(`MCP config file: ${config}`), acceptLogs);
   assert.ok(acceptLogs.includes('Destination: BAS · alpha-system · client 100 · Basic'), acceptLogs);
   assert.match(acceptLogs, /Launch: stdio · (?:[^\r\n]*[\\/])?sap-ai-dev(?:\.cmd)?(?:\r?\n|$)/, acceptLogs);
@@ -313,6 +338,21 @@ test('global postinstall completes BAS selection before default Copilot asset in
     .filter(entry => entry.BAS_EXT === 'true')
     .map(entry => entry.env.SAP_AI_DEV_TOOLKIT_DESTINATION), ['alpha-system']);
   await assertUserCopilotAssets(directory);
+  await assertUserClaudeAssets(directory);
+
+  const extendedHome = join(directory, 'home-extended');
+  env.HOME = extendedHome;
+  const extended = await runPostinstallInPty(env, ' \r', 'jjj \r');
+  assert.equal(extended.code, 0, `${extended.stdout}\n${extended.stderr}`);
+  assert.equal(extended.assetsAnswerSent, true, extended.stdout);
+  const extendedLogs = `${extended.stdout}\n${extended.stderr}`;
+  assert.match(extendedLogs, /Cursor: 14 files installed or updated in [^\n]*\.cursor; 0 already current/);
+  assert.match(extendedLogs, /Installed 52 files across 3 harnesses/);
+  await assertUserCopilotAssets(extendedHome);
+  await assertUserClaudeAssets(extendedHome);
+  const cursorSkills = (await readdir(join(extendedHome, '.cursor', 'skills'))).sort();
+  assert.equal(cursorSkills.length, 14);
+  await assert.rejects(stat(join(extendedHome, '.cursor', 'agents')), { code: 'ENOENT' });
 
 });
 
@@ -350,6 +390,7 @@ test('non-TTY postinstall skips setup and installs Copilot assets by default', a
       }
     }
     await assertUserCopilotAssets(directory);
+    await assert.rejects(stat(join(directory, '.claude')), { code: 'ENOENT' });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -378,13 +419,121 @@ test('postinstall installs Copilot assets without an interactive terminal', asyn
     });
     const logs = `${result.stdout}\n${result.stderr}`;
     assert.equal(result.code, 0, logs);
-    assert.match(logs, /Installing bundled agents and skills by default because no interactive terminal is available/);
+    assert.match(logs, /Installing bundled agents and skills for GitHub Copilot by default because no interactive terminal is available/);
     await assertUserCopilotAssets(join(directory, 'home'));
     await assert.rejects(stat(join(directory, '.github')), { code: 'ENOENT' });
     await assert.rejects(readFile(config), { code: 'ENOENT' });
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('non-TTY postinstall honors the harness environment override', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-postinstall-harness-env-'));
+  const env = {
+    ...process.env,
+    HOME: directory,
+    SAP_AI_DEV_TOOLKIT_BINARY: '/bin/true',
+    SAP_AI_DEV_TOOLKIT_HARNESSES: 'claude-code,gemini-cli'
+  };
+  delete env.H2O_URL;
+  delete env.npm_config_ignore_scripts;
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['scripts/postinstall.mjs'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.on('error', reject);
+      child.on('exit', (code, signal) => resolve({ code, signal, stdout, stderr }));
+    });
+    const logs = `${result.stdout}\n${result.stderr}`;
+    assert.equal(result.code, 0, logs);
+    assert.match(logs, /Installing bundled agents and skills for Claude Code, Gemini CLI by default because no interactive terminal is available/);
+    await assertUserClaudeAssets(directory);
+    const geminiSkills = (await readdir(join(directory, '.gemini', 'skills'))).sort();
+    assert.equal(geminiSkills.length, 14);
+    await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('non-TTY postinstall warns about an unknown harness override and falls back to Copilot', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-postinstall-harness-invalid-'));
+  const env = {
+    ...process.env,
+    HOME: directory,
+    SAP_AI_DEV_TOOLKIT_BINARY: '/bin/true',
+    SAP_AI_DEV_TOOLKIT_HARNESSES: 'windsurf'
+  };
+  delete env.H2O_URL;
+  delete env.npm_config_ignore_scripts;
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['scripts/postinstall.mjs'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', chunk => { stdout += chunk; });
+      child.stderr.on('data', chunk => { stderr += chunk; });
+      child.on('error', reject);
+      child.on('exit', (code, signal) => resolve({ code, signal, stdout, stderr }));
+    });
+    const logs = `${result.stdout}\n${result.stderr}`;
+    assert.equal(result.code, 0, logs);
+    assert.match(logs, /Unknown harness id: windsurf\. Valid harness ids: github-copilot, claude-code, codex, cursor, gemini-cli, opencode\. Ignoring SAP_AI_DEV_TOOLKIT_HARNESSES/);
+    await assertUserCopilotAssets(directory);
+    await assert.rejects(stat(join(directory, '.claude')), { code: 'ENOENT' });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('postinstall harness selection honors the environment override in a live TTY', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-postinstall-harness-pty-'));
+  const env = {
+    ...process.env,
+    HOME: directory,
+    SAP_AI_DEV_TOOLKIT_BINARY: '/bin/true',
+    SAP_AI_DEV_TOOLKIT_HARNESSES: 'gemini-cli',
+    FORCE_COLOR: '1'
+  };
+  delete env.H2O_URL;
+  delete env.NO_COLOR;
+  delete env.npm_config_ignore_scripts;
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const result = await runPostinstallInPty(env, '', '\r');
+  const logs = `${result.stdout}\n${result.stderr}`;
+  assert.equal(result.code, 0, logs);
+  assert.equal(result.assetsAnswerSent, true, logs);
+  assert.match(logs, /Gemini CLI: 14 files installed or updated in [^\n]*\.gemini; 0 already current/);
+  assert.match(logs, /Installed 14 files across 1 harness/);
+  const geminiSkills = (await readdir(join(directory, '.gemini', 'skills'))).sort();
+  assert.equal(geminiSkills.length, 14);
+  await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
+  await assert.rejects(stat(join(directory, '.claude')), { code: 'ENOENT' });
+});
+
+test('postinstall harness selection skips without changes when interrupted', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-postinstall-harness-interrupt-'));
+  const env = {
+    ...process.env,
+    HOME: directory,
+    SAP_AI_DEV_TOOLKIT_BINARY: '/bin/true',
+    FORCE_COLOR: '1'
+  };
+  delete env.H2O_URL;
+  delete env.NO_COLOR;
+  delete env.npm_config_ignore_scripts;
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const result = await runPostinstallInPty(env, '', '\u0003');
+  const logs = `${result.stdout}\n${result.stderr}`;
+  assert.equal(result.code, 0, logs);
+  assert.equal(result.assetsAnswerSent, true, logs);
+  assert.match(logs, /Bundled agents and skills were skipped because the prompt was interrupted\. Your files were not changed/);
+  await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
+  await assert.rejects(stat(join(directory, '.claude')), { code: 'ENOENT' });
 });
 
 test('postinstall runs when invoked through a symlinked install path', async () => {

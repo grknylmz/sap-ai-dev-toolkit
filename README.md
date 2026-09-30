@@ -84,7 +84,7 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 
 **Included skills:** `abap-development` · `abap-testing-quality` · `cds-development` · `rap-development` · `abap-debugging` · `abap-runtime-analysis` · `rap-service-delivery` · `sap-standard-api-analysis` · `clean-core-extensibility` · `sap-sdlc-orchestration` · `sap-transport-release` · `hana-cloud-inspection` · `hana-cloud-native-development` · `hana-cloud-validation`
 
-Agents and skills install into `$HOME/.copilot` by default during global installation; press Enter to accept or type `n` to skip. In non-interactive installs they are installed automatically. Repository-scoped installation instructions appear below.
+Agents and skills install for the harnesses you pick during global installation: a multi-select offers GitHub Copilot and Claude Code pre-checked, plus OpenAI Codex, Cursor, Gemini CLI, and opencode. In non-interactive installs they are installed for GitHub Copilot only. Repository-scoped installation instructions appear below.
 
 ## ✨ Your SAP development cockpit, inside Copilot Chat
 
@@ -278,7 +278,7 @@ The installer handles VSP provisioning automatically:
 With `H2O_URL` set, an interactive install opens a checkbox picker with no destinations selected by default. Use **Space** to choose destinations and **Enter** to confirm. Press **a** to toggle all destinations (select all if any are unchecked; otherwise clear the selection). Confirming with none selected removes this add-on's managed MCP entries. When the `cf` CLI 8.18 or newer is authenticated to a targeted space, setup first offers an optional import from that space's Destination service; type **y** then **Enter** to include it, or press **Enter** to skip. Accepted CF and BAS destinations appear together in the picker. npm may run its install hook without an interactive terminal, even when the shell is interactive; in that case, selection is skipped without changing MCP config.
 
 
-The same postinstall installs bundled Copilot agents and skills under `$HOME/.copilot` by default. Press Enter at `[Y/n]` to install or update them; type `n` to leave them unchanged. With no interactive terminal, installation proceeds automatically.
+The same postinstall offers the bundled agents and skills for several AI coding harnesses in a checkbox picker. **GitHub Copilot** and **Claude Code** start pre-checked, so pressing **Enter** alone installs both; **Space** selects or deselects a harness, **a** toggles all six, and confirming with none selected skips the step without changing files. With no interactive terminal, the assets are installed for GitHub Copilot only; set `SAP_AI_DEV_TOOLKIT_HARNESSES` to a comma-separated list of harness ids (`github-copilot`, `claude-code`, `codex`, `cursor`, `gemini-cli`, `opencode`) to choose non-interactively.
 
 Some current npm versions also require install hooks to be approved. If npm reports that `sap-ai-dev-toolkit`'s `postinstall` was blocked, allow it during a fresh install with `npm install --global --allow-scripts=sap-ai-dev-toolkit sap-ai-dev-toolkit`, or run `sap-ai-dev --setup` from an interactive BAS terminal after installation.
 
@@ -325,7 +325,7 @@ The package includes five user-invocable custom agents (**SAP Solution Architect
 2. **Understand the request.** Establish the expected behavior and, for SAP changes, the destination, package, and transport or temporary target. Ask only when a material detail is missing.
 3. **Plan before implementing.** Every implementation task starts with a presented plan: objects to change, ABAP Unit test approach, local authoring/validation, and the SAP write/activation steps it requires. The agents proceed while work stays read-only or workspace-local and wait for explicit approval before any plan that writes to, activates in, or publishes to the SAP system.
 4. **Inspect before editing.** Read relevant source, tests, callers, dependencies, standard APIs, release state, and conventions; query the active MCP server's live `tools/list` and use its exact destination-prefixed tools and schemas.
-5. **Implement with behavior in mind, locally first.** Add or refine an ABAP Unit assertion first when an executable regression test is available, then make the smallest change that meets the request. Sources are authored locally as abapGit-serialized workspace files (`object.type.extension`), and checked and linted there before they are sent to SAP.
+5. **Implement with behavior in mind, locally first.** Add or refine an ABAP Unit assertion first when an executable regression test is available, then make the smallest change that meets the request. Sources are authored locally as plain workspace source files (`object.type.extension`), and checked and linted there before they are sent to SAP.
 6. **Check and lint before sending to SAP.** Run the local `LintABAP` tool on the caller-supplied files plus required dependencies and consume BAS editor LSP diagnostics when configured; fix findings locally and re-lint. Only then transfer the sources to SAP and use the remote `SyntaxCheck`, `RunUnitTests`, and `RunATCCheck` when exposed and relevant. Lint and syntax checks do not replace behavior tests.
 7. **Protect SAP state.** Only make requested changes. Activate objects or publish services only when asked; create transports only when explicitly authorized. Release and deletion of transports are unavailable through this add-on.
 8. **Report observed results.** Summarize architecture decisions, changed objects, implementation handoff or actual validation, activation, and publication outcomes. Identify skipped checks and exact blockers; never claim a check passed if it did not run.
@@ -351,11 +351,22 @@ The package includes five user-invocable custom agents (**SAP Solution Architect
 
 ### 📥 Install for your BAS user
 
-After destination setup, the installer prints a 🤖 notice that it is waiting for confirmation, then offers to install all bundled agents and skills under `$HOME/.copilot`. Type **y** then **Enter** to install; pressing **Enter** alone skips (the default). Declining leaves those files unchanged.
+After destination setup, the installer prints a 🤖 notice and a checkbox picker asking which AI coding harnesses should receive the bundled agents and skills. **Space** selects or deselects, **a** toggles all, **Enter** confirms. **GitHub Copilot** and **Claude Code** are pre-checked, so pressing **Enter** without changes installs both; confirming with none selected skips the step and leaves your files unchanged.
 
-These user-level customizations are available across workspaces opened by the same BAS user in the same dev space. Copilot must be available in BAS and may need a window reload to discover new files. A non-interactive install skips the optional prompt; `npm install --ignore-scripts` skips the postinstall wizard entirely.
+| Harness | Skills land in | Agents land in |
+| --- | --- | --- |
+| GitHub Copilot | `$HOME/.copilot/skills/` | `$HOME/.copilot/agents/*.agent.md` |
+| Claude Code | `$HOME/.claude/skills/` | `$HOME/.claude/agents/<id>.md` (frontmatter reduced to `name` and `description`) |
+| OpenAI Codex | `$HOME/.agents/skills/` | — |
+| Cursor | `$HOME/.cursor/skills/` | — |
+| Gemini CLI | `$HOME/.gemini/skills/` | — |
+| opencode | `$XDG_CONFIG_HOME/opencode/skills/` (default `$HOME/.config/opencode/skills/`) | `$XDG_CONFIG_HOME/opencode/agents/<id>.md` (as subagents) |
 
-On reinstall or package upgrade, unchanged add-on-managed files are updated. Existing customizations and files edited since the previous install are preserved; postinstall reports paths that need manual review instead of overwriting them.
+All 14 skills use the portable `SKILL.md` format and are installed verbatim. The 5 agents use Copilot's `.agent.md` format, so they are only installed for harnesses with a custom-agent mechanism (GitHub Copilot, Claude Code, opencode), with frontmatter adapted where needed. Selecting several harnesses duplicates the small markdown payloads on disk.
+
+These user-level customizations are available across workspaces opened by the same BAS user in the same dev space. The harness must be available in BAS and may need a window reload to discover new files. A non-interactive install skips the picker and installs for GitHub Copilot only; override with `SAP_AI_DEV_TOOLKIT_HARNESSES` (comma-separated harness ids). `npm install --ignore-scripts` skips the postinstall wizard entirely.
+
+On reinstall or package upgrade, unchanged add-on-managed files are updated per harness. Existing customizations and files edited since the previous install are preserved; postinstall reports paths that need manual review instead of overwriting them.
 
 ### 🗂️ Add the agents and skills to a repository
 
@@ -508,7 +519,7 @@ The menu includes the tools registered by the active VSP mode, the `GetApplicati
 
 ### 🧹 Lint submitted ABAP source locally
 
-The tool is named `lint_abap` (the local workflow name `LintABAP` exposed in snake_case; on a multi-destination server it is `<destination-slug>_lint_abap`). It accepts caller-supplied abapGit-serialized source files; config is optional and, when present, is the full abaplint configuration rather than a merge with defaults.
+The tool is named `lint_abap` (the local workflow name `LintABAP` exposed in snake_case; on a multi-destination server it is `<destination-slug>_lint_abap`). It accepts caller-supplied source files with `object.type.extension` filenames; config is optional and, when present, is the full abaplint configuration rather than a merge with defaults.
 
 ```json
 {
@@ -607,7 +618,7 @@ The write and activation tools change SAP state. Confirm the target, package, an
 | `RunATCCheck` | Run an ABAP Test Cockpit check and return findings. |
 | `GetSystemInfo` | Read system ID, SAP release, kernel, and database details. |
 | `GetInstalledComponents` | List installed software components and versions. |
-| `GetFeatures` | Probe optional system capabilities, including abapGit, RAP/OData, AMDP debugging, UI5/BSP, and CTS transports. |
+| `GetFeatures` | Probe optional system capabilities, including RAP/OData, AMDP debugging, UI5/BSP, and CTS transports. |
 | `GetConnectionInfo` | Show the connected user, client, URL, mode, and feature-probe summary for the current destination session. |
 | `PrettyPrint` | Format ABAP source text without saving it to SAP. |
 

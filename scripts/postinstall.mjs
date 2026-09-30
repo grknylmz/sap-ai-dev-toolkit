@@ -4,11 +4,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installBinary } from '../src/binary.mjs';
 import { runSetup } from '../src/setup.mjs';
-import { installUserCopilotAssets } from './install-user-copilot-assets.mjs';
-import { createInterface } from 'node:readline/promises';
+import { installUserAssetsForHarnesses } from '../src/install-user-assets.mjs';
+import { DEFAULT_HARNESS_IDS, HARNESSES, HARNESS_ENV_VAR, NON_INTERACTIVE_HARNESS_IDS, envHarnessSelection, harnessRoot } from '../src/harnesses.mjs';
 import { ReadStream as TTYReadStream, WriteStream as TTYWriteStream } from 'node:tty';
 import { homedir } from 'node:os';
-import { colorText, formatStatus } from '../src/terminal-ui.mjs';
+import { checkboxPrompt, colorText, formatStatus } from '../src/terminal-ui.mjs';
 import { brandedEnvValue, withBrandedEnvironment } from '../src/branding.mjs';
 import { generatedServerName } from '../src/mcp-config.mjs';
 import { redactText } from '../src/redact.mjs';
@@ -67,47 +67,83 @@ async function runInstallSetup() {
   return withInstallTerminal(terminal => runSetup({ env: runtimeEnv, ...(terminal || {}) }));
 }
 
-async function runCopilotAssetInstall() {
-  const copilotRoot = join(process.env.HOME || homedir(), '.copilot');
-  const installAssets = async () => {
-    const assets = await installUserCopilotAssets({ root });
+function harnessSelectionLabels(ids) {
+  return HARNESSES.filter(harness => ids.includes(harness.id)).map(harness => harness.label).join(', ');
+}
+
+async function resolveHarnessOverride() {
+  try {
+    return envHarnessSelection(runtimeEnv);
+  } catch (error) {
+    await announce(`${error.message} Ignoring ${HARNESS_ENV_VAR}.`, 'warning');
+    return null;
+  }
+}
+
+async function installSelectedHarnessAssets(ids) {
+  const { results, failures } = await installUserAssetsForHarnesses(ids, { root });
+  for (const failure of failures) {
+    await announce(`${failure.label}: bundled agent and skill installation failed: ${failure.error.message}`, 'error');
+  }
+  for (const assets of results) {
     const installed = assets.installed + assets.updated;
-    await announce(`Installed ${installed} Copilot files in ${assets.root}; ${assets.unchanged} already current.`, 'success');
+    await announce(`${assets.label}: ${installed} file${installed === 1 ? '' : 's'} installed or updated in ${assets.root}; ${assets.unchanged} already current.`, 'success');
     if (assets.conflicts.length > 0) {
       const paths = assets.conflicts.map(path => join(assets.root, path)).join(', ');
-      await announce(`Existing Copilot customizations were preserved; review these paths: ${paths}`, 'warning');
+      await announce(`${assets.label}: existing customizations were preserved; review these paths: ${paths}`, 'warning');
     }
-  };
+  }
+  const total = results.reduce((sum, assets) => sum + assets.installed + assets.updated, 0);
+  if (results.length > 0) {
+    await announce(`Installed ${total} files across ${results.length} harness${results.length === 1 ? '' : 'es'}.`, 'success');
+  }
+}
+
+async function runHarnessAssetInstall() {
+  const home = process.env.HOME || homedir();
+  const override = await resolveHarnessOverride();
   await withInstallTerminal(async terminal => {
+    let selected = override;
     if (!terminal) {
-      await announce('Installing bundled agents and skills by default because no interactive terminal is available.', 'progress');
-      await installAssets();
+      if (!selected) selected = NON_INTERACTIVE_HARNESS_IDS;
+      await announce(`Installing bundled agents and skills for ${harnessSelectionLabels(selected)} by default because no interactive terminal is available.`, 'progress');
+      await installSelectedHarnessAssets(selected);
       return;
     }
+    if (!selected) selected = DEFAULT_HARNESS_IDS;
     await announce([
-      'Bundled Copilot agents and skills are installed by default.',
+      'The bundled agents and skills can be installed for several AI coding harnesses.',
       '',
-      'Type n then press Enter to skip installing or updating the bundled files.',
+      'Space = select or deselect · a = toggle all · Enter = confirm. Pressing Enter without changes installs the pre-checked harnesses; confirming with none selected skips this step.',
       '',
-      `${colorText('✅ Press Enter', 'green', true)} to install or update the bundled agents and all skills.`,
-      `${colorText('⏭️  Type n then Enter', 'yellow', true)} to skip this step.`,
-      '',
-      `${colorText('📁 Target folder:', 'cyan', true)}`,
-      `   ${copilotRoot}`,
+      `${colorText('📁 Target folders:', 'cyan', true)}`,
+      ...HARNESSES.map(harness => `   ${harnessRoot(harness, { home, env: runtimeEnv })} — ${harness.label} (${harness.supportsAgents ? 'skills + agents' : 'skills only'})`),
       ''
     ].join('\n'), 'copilot');
-    const prompt = createInterface({ input: terminal.input, output: terminal.output });
     let answer;
     try {
-      answer = await prompt.question(`${colorText('🤖 Install the bundled agents and all skills?', 'magenta', terminal.output)} ${colorText('[Y/n]', 'yellow', terminal.output)} `);
-    } finally {
-      prompt.close();
+      answer = await checkboxPrompt({
+        message: colorText('🤖 Install bundled agents and skills for', 'magenta', terminal.output),
+        choices: HARNESSES.map(harness => ({
+          value: harness.id,
+          name: `${harness.label} (${harness.supportsAgents ? 'skills + agents' : 'skills'})`,
+          checked: selected.includes(harness.id)
+        })),
+        required: false,
+        shortcuts: { all: 'a' }
+      }, { input: terminal.input, output: terminal.output });
+    } catch (error) {
+      if (error.message === 'Prompt interrupted') {
+        await announce('Bundled agents and skills were skipped because the prompt was interrupted. Your files were not changed.', 'info');
+        return;
+      }
+      throw error;
     }
-    if (/^n(?:o)?$/i.test(answer.trim())) {
-      await announce('Copilot agent and skills were skipped. Your files were not changed.', 'info');
+    if (answer.length === 0) {
+      await announce('Bundled agents and skills were skipped. Your files were not changed.', 'info');
       return;
     }
-    await installAssets();
+    await installSelectedHarnessAssets(answer);
   });
 }
 
@@ -256,9 +292,9 @@ async function main() {
   }
 
   try {
-    await runCopilotAssetInstall();
+    await runHarnessAssetInstall();
   } catch (error) {
-    await announce(`Copilot agent and skill installation failed: ${error.message}`, 'error');
+    await announce(`Bundled agent and skill installation failed: ${error.message}`, 'error');
   }
   if (setupCompleted) await announceSetup(setupResult);
 }

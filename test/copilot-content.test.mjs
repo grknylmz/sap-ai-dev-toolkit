@@ -72,7 +72,9 @@ function assertPlanFirstPolicy(markdown, path) {
 }
 
 function assertLocalFirstPolicy(markdown, path) {
-  assert.match(markdown, /abapGit[- ]serialized|abapGit-style/, `${path} must require local abapGit-style source files`);
+  assert.match(markdown, /plain (?:workspace )?source files|files named `object\.type\.extension`/i, `${path} must require local source files`);
+  assert.doesNotMatch(markdown, /abapgit/i, `${path} must not prescribe abapGit-style serialization or XML sidecar files`);
+  assert.match(markdown, /do not generate XML/i, `${path} must forbid generating XML or object-metadata sidecar files`);
   assert.match(markdown, /object\.type\.extension/, `${path} must document the object.type.extension file naming`);
   assert.match(markdown, /LintABAP/, `${path} must require local linting with LintABAP`);
   assert.match(markdown, /before (?:they are )?sent to the SAP system|before sending to SAP|check and lint before sending/i, `${path} must require local checks before the SAP transfer`);
@@ -101,6 +103,15 @@ test('all bundled agents invoke chat-attached MCP tools without terminal JSON-RP
     const markdown = await readMarkdown(path);
     assertDirectMcpUsage(markdown, path);
     assertMentionsLiveToolDiscovery(markdown, path);
+  }
+});
+
+test('agent file names match the slugified frontmatter names for harness renames', async () => {
+  for (const name of expectedAgents) {
+    const path = join(agentsRoot, name);
+    const metadata = parseFrontmatter(await readMarkdown(path), path);
+    const slug = metadata.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    assert.equal(name.replace(/\.agent\.md$/, ''), slug, `${path} file name must match the slugified frontmatter name`);
   }
 });
 

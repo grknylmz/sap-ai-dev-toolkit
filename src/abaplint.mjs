@@ -2,7 +2,7 @@ import { Config, MemoryFile, Registry } from '@abaplint/core';
 
 export const ABAP_LINT_TOOL = {
   name: 'LintABAP',
-  description: 'Run abaplint on caller-supplied ABAPGit-serialized files in memory; does not read workspace files or call SAP.',
+  description: 'Run abaplint on caller-supplied source files in memory; does not read workspace files or call SAP.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -50,7 +50,7 @@ function validateArguments(arguments_) {
     }
     const basename = file.filename.split(/[\\/]/).at(-1);
     if (!/^[^.]+\.[^.]+\.[^.]+$/.test(basename)) {
-      throw new Error('Each filename must have an abapGit object.type.extension basename');
+      throw new Error('Each filename must have an object.type.extension basename');
     }
   }
   if (arguments_.config !== undefined && !isObject(arguments_.config)) {
