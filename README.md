@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>Build, test, and deliver ABAP with AI that understands your SAP landscape.</strong><br>
-  Bring GitHub Copilot Chat into your development workflow with destination-aware SAP tools.<br>
+  Bring your favorite AI coding assistant into your SAP development workflow with destination-aware SAP tools.<br>
   Explore real system context, make focused changes, and verify results before delivery.
 </p>
 
@@ -15,7 +15,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/SAP-Business%20Application%20Studio-0A6ED1?style=flat-square&logo=sap&logoColor=white" alt="SAP Business Application Studio">
-  <img src="https://img.shields.io/badge/GitHub%20Copilot-Agent-000000?style=flat-square&logo=githubcopilot&logoColor=white" alt="GitHub Copilot Agent">
+  <img src="https://img.shields.io/badge/AI%20agents-Copilot%20%7C%20Claude%20%7C%20Codex%20%7C%20Cursor%20%7C%20Gemini%20%7C%20opencode-000000?style=flat-square" alt="Works with GitHub Copilot, Claude Code, OpenAI Codex, Cursor, Gemini CLI, and opencode">
   <img src="https://img.shields.io/badge/MCP-enabled-7B61FF?style=flat-square" alt="MCP enabled">
   <img src="https://img.shields.io/badge/SAP%20ADT-connected-0A6ED1?style=flat-square&logo=sap&logoColor=white" alt="SAP ADT connected">
   <img src="https://img.shields.io/badge/ABAP-CDS%20%7C%20RAP-EA4AAA?style=flat-square" alt="ABAP CDS RAP">
@@ -23,24 +23,19 @@
 
 <p align="center">
   <a href="#install"><strong>Get started →</strong></a> ·
-  <a href="#copilot-agent">Meet the agents</a> ·
+  <a href="#agents">Meet the agents</a> ·
   <a href="#bas">Connect your SAP systems</a> ·
   <a href="#tools">Explore the tools</a>
 </p>
 
 ## From a prompt to SAP-ready work
 
-SAP AI Dev Toolkit connects GitHub Copilot Chat to the SAP development tools available for each selected destination. Agents can inspect ABAP and CDS, propose changes, run checks, and return the evidence—without losing sight of which SAP system each operation targets.
+SAP AI Dev Toolkit connects your AI coding assistant to the SAP development tools available for each selected destination. Agents can inspect ABAP and CDS, propose changes, run checks, and return the evidence—without losing sight of which SAP system each operation targets.
 
-```mermaid
-flowchart LR
-  Dev[Developer] --> Chat[GitHub Copilot Chat]
-  Chat -->|request and tool calls| Toolkit[SAP AI Dev Toolkit]
-  Toolkit -->|destination-scoped MCP| VSP[VSP and BAS destination]
-  VSP -->|SAP ADT| SAP[SAP system]
-  SAP -->|results and diagnostics| Toolkit
-  Toolkit --> Chat
-```
+<p align="center">
+  <strong>Agent chat</strong> → <strong>destination-scoped MCP</strong> → <strong>VSP + BAS destination</strong> → <strong>SAP ADT</strong> → <strong>your SAP system</strong><br>
+  <em>results and diagnostics flow back along the same path</em>
+</p>
 
 <p align="center"><strong>Explore → Build → Verify → Prepare for delivery</strong></p>
 
@@ -62,9 +57,9 @@ Then connect a destination in SAP Business Application Studio:
 1. Open the Command Palette.
 2. Run **MCP: List Servers**.
 3. Start the server named after your selected BAS destination (the lowercase slug, for example `demo-abap` for destination `DEMO_ABAP`).
-4. In GitHub Copilot Chat, choose the best-fit bundled agent from the agent picker: **SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, or **HANA Cloud/HDI Specialist**.
+4. In your AI assistant's chat, choose the best-fit bundled agent from the agent picker (GitHub Copilot, Claude Code, and opencode install the agents): **SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, or **HANA Cloud/HDI Specialist**.
 5. In the Chat tools picker, enable the server for that BAS destination.
-6. Ask Copilot to inspect, build, test, or verify something in your SAP landscape.
+6. Ask the agent to inspect, build, test, or verify something in your SAP landscape.
 
 Use the attached destination-prefixed tools directly in chat. Do not launch `sap-ai-dev` or handcraft MCP JSON-RPC in a terminal to discover or call them.
 
@@ -72,7 +67,7 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 
 ## 🤖 Available agents and skills
 
-**Agents:** Five user-invocable custom agents are included. Select the best fit from the agent picker in GitHub Copilot Chat, as shown in Quick start.
+**Agents:** Five user-invocable custom agents are included. Select the best fit from the agent picker in your harness's chat (GitHub Copilot, Claude Code, or opencode), as shown in Quick start.
 
 | | Agent | Best for |
 | --- | --- | --- |
@@ -86,7 +81,7 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 
 Agents and skills install for the harnesses you pick during global installation: a multi-select offers GitHub Copilot and Claude Code pre-checked, plus OpenAI Codex, Cursor, Gemini CLI, and opencode. In non-interactive installs they are installed for GitHub Copilot only. Repository-scoped installation instructions appear below.
 
-## ✨ Your SAP development cockpit, inside Copilot Chat
+## ✨ Your SAP development cockpit, inside your AI assistant
 
 `sap-ai-dev-toolkit` installs `sap-ai-dev`, discovers your BAS destinations, and exposes a curated SAP development toolset through MCP. Instead of manually switching between chat, terminal commands, repository searches, ADT screens, and SAP checks, describe the outcome you want and let the appropriate bundled agent coordinate the available tools.
 
@@ -156,7 +151,7 @@ The catalog below covers source inspection, data, editing, quality, transports, 
 
 ## 🧠 Five agents, fourteen focused skills
 
-The package ships with five custom agents plus fourteen task-focused Copilot Agent Skills:
+The package ships with five custom agents plus fourteen task-focused Agent Skills:
 
 | | Skill | Best for |
 | --- | --- | --- |
@@ -217,7 +212,7 @@ The configured identity must be a separate least-privileged read-only HANA user.
 
 ## 💡 Example requests
 
-Once the destination server is enabled in Copilot Chat, ask for outcomes instead of manually orchestrating individual SAP operations:
+Once the destination server is enabled in your chat's tools picker, ask for outcomes instead of manually orchestrating individual SAP operations:
 
 > Find every reference to `ZCL_ORDER`, explain the impact of changing method `CREATE_ORDER`, and show me the callers before editing anything.
 
@@ -313,11 +308,11 @@ At the end of a global install, the color-coded summary shows the MCP config pat
 3. Select the generated server name shown in the report and choose **Start Server**.
 4. Use **MCP: Open User Configuration** to inspect or edit the generated entries. Each entry is isolated to its destination.
 
-<a id="copilot-agent"></a>
+<a id="agents"></a>
 
-## 🤖 GitHub Copilot ABAP agents and skills
+## 🤖 ABAP agents and skills for your AI harness
 
-The package includes five user-invocable custom agents (**SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, and **HANA Cloud/HDI Specialist**) and fourteen task-focused Agent Skills for GitHub Copilot in BAS.
+The package includes five user-invocable custom agents (**SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, and **HANA Cloud/HDI Specialist**) and fourteen task-focused Agent Skills for GitHub Copilot, Claude Code, and other supported AI coding harnesses in BAS.
 
 ### 🧠 How the SAP Solution Architect and ABAP Developer agents work
 

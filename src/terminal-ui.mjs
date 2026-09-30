@@ -103,6 +103,13 @@ function truncateToColumns(text, columns) {
   return truncateString(value, Math.max(1, columns));
 }
 
+// A rendered line can wrap onto several physical terminal rows; redrawing must
+// count those rows or cursor-up clears too little and stale fragments remain.
+function physicalRows(lines, columns) {
+  if (columns <= 0) return lines.length;
+  return lines.reduce((total, line) => total + Math.max(1, Math.ceil(stringWidth(line) / columns)), 0);
+}
+
 function checkboxPageSize(output, choiceCount) {
   const rows = Number.isFinite(output?.rows) ? output.rows : 24;
   return clamp(Math.min(choiceCount, rows - 7), 1, Math.max(1, choiceCount));
@@ -134,7 +141,7 @@ export async function checkboxPrompt({ message, choices, required = false, short
     const pageSize = checkboxPageSize(output, choices.length);
     ensureVisible(pageSize);
     const lines = [];
-    lines.push(`${message} (Space: select, ${shortcuts?.all || 'a'}: toggle all, Enter: confirm)`);
+    lines.push(truncateToColumns(`${message} (Space: select, ${shortcuts?.all || 'a'}: toggle all, Enter: confirm)`, columns));
     const end = Math.min(choices.length, top + pageSize);
     for (let index = top; index < end; index += 1) {
       const choice = choices[index];
@@ -147,12 +154,12 @@ export async function checkboxPrompt({ message, choices, required = false, short
       lines.push(truncateToColumns(label, columns));
     }
     if (choices.length > pageSize) {
-      lines.push(colorText(`  Showing ${top + 1}-${end} of ${choices.length}; use ↑/↓ to scroll.`, 'cyan', output));
+      lines.push(truncateToColumns(colorText(`  Showing ${top + 1}-${end} of ${choices.length}; use ↑/↓ to scroll.`, 'cyan', output), columns));
     }
-    if (error) lines.push(colorText(`  ${error}`, 'red', output));
+    if (error) lines.push(truncateToColumns(colorText(`  ${error}`, 'red', output), columns));
     clearRendered();
     write(`${lines.join('\n')}\n`);
-    renderedLines = lines.length;
+    renderedLines = physicalRows(lines, columns);
   };
 
   return new Promise((resolve, reject) => {
@@ -237,10 +244,10 @@ export async function textPrompt({ message, secret = false, required = true, pla
     const shown = secret ? masked() : value;
     const display = shown || colorText(placeholder, 'cyan', output);
     lines.push(truncateToColumns(`❯ ${display}`, columns));
-    if (error) lines.push(colorText(`  ${error}`, 'red', output));
+    if (error) lines.push(truncateToColumns(colorText(`  ${error}`, 'red', output), columns));
     clearRendered();
     write(`${lines.join('\n')}\n`);
-    renderedLines = lines.length;
+    renderedLines = physicalRows(lines, columns);
   };
 
   return new Promise((resolve, reject) => {
