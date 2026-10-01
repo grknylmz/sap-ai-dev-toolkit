@@ -77,6 +77,34 @@ test('restarts a crashed VSP child and retries the tool call once', async t => {
   assert.ok(events.some(row => row.event === 'call' && row.name === 'GetSystemInfo'), 'the retried call must reach the child');
 });
 
+test('launches local SAP GUI systems without BAS proxy auth and with destination login env', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-local-child-'));
+  const log = join(directory, 'children.log');
+  const destination = {
+    source: 'sap-gui-local',
+    name: 'local-dev',
+    url: 'https://abap.example.com:44300',
+    client: '100',
+    authentication: 'Basic',
+    childEnv: { SAP_USER: 'local-user', SAP_PASSWORD: 'local-password' }
+  };
+  const proxy = new MCPProxy({
+    binary: fixture,
+    destinations: [destination],
+    env: { ...process.env, FAKE_LOG: log, SAP_USER: 'parent-user', SAP_PASSWORD: 'parent-password', HTTP_PROXY: 'http://proxy.example:8080' },
+    log: () => {}
+  });
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+  proxy.start();
+  const initialized = await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  assert.ok(initialized.result);
+  const event = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).find(row => row.event === 'initialize');
+  assert.deepEqual(event.argv.slice(0, 4), ['--url', 'https://abap.example.com:44300', '--client', '100']);
+  assert.equal(event.argv.includes('--proxy-auth'), false);
+  assert.equal(event.env.user, 'local-user');
+  assert.equal(event.env.password, 'local-password');
+});
+
 test('closes each Cloud Foundry route after child exit and on startup failure', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-cf-child-lifecycle-'));
   const log = join(directory, 'children.log');

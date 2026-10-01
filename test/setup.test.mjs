@@ -238,6 +238,25 @@ await runSetup({
   }
 });
 
+test('local setup with no SAP GUI systems skips without installing', async () => {
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = outputStream();
+  let installCalls = 0;
+  const result = await runSetup({
+    env: { HOME: '/tmp/no-sap-gui-test' },
+    input,
+    output,
+    discoverLocalSapGui: async () => [],
+    install: async () => { installCalls += 1; }
+  });
+  assert.equal(result.skipped, true);
+  assert.equal(result.reason, 'no-destinations');
+  assert.equal(installCalls, 0);
+  assert.match(output.text(), /No SAP GUI systems were found/);
+});
+
 test('non-TTY setup skips without writing config', async () => {
   const input = new PassThrough();
   input.isTTY = false;

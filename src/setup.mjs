@@ -1,7 +1,9 @@
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
-import { checkboxPrompt, colorText, formatStatus } from './terminal-ui.mjs';
+import { platform } from 'node:os';
+import { checkboxPrompt, colorText, formatStatus, textPrompt } from './terminal-ui.mjs';
 import { discoverDestinations, remediation } from './bas-discovery.mjs';
+import { defaultAdtUrl, discoverSapGuiSystems } from './local-sap-gui.mjs';
 import { discoverCloudFoundryDestinations, getCloudFoundryTarget, deleteManagedCloudFoundryServiceKeys, findOrphanedCloudFoundryServiceKeys } from './cf-destination.mjs';
 import { SAP_DEVELOPMENT_MCP_SERVERS, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, installMcpConfig, readMcpConfig, resolveMcpConfigPath } from './mcp-config.mjs';
 
@@ -11,6 +13,24 @@ function print(output, message) {
   output.write(`${message}\n`);
 }
 
+function windowsSsoSetupAvailable(env = process.env) {
+  return platform() === 'win32' || env.SAP_AI_DEV_TOOLKIT_ENABLE_WINDOWS_SSO_SETUP === 'true';
+}
+
+async function chooseLocalAuthMode(destination, { input = stdin, output = stdout, env = process.env } = {}) {
+  if (!windowsSsoSetupAvailable(env)) return 'basic';
+  const answer = await textPrompt({
+    message: `Authentication for ${destination.name} (password/sso)`,
+    placeholder: 'password',
+    required: false,
+    validate: value => {
+      const candidate = String(value || 'password').trim().toLowerCase();
+      return ['password', 'basic', 'sso', 'windows-sso'].includes(candidate) || 'Enter password or sso.';
+    }
+  }, { input, output });
+  const normalized = String(answer || 'password').trim().toLowerCase();
+  return ['sso', 'windows-sso'].includes(normalized) ? 'windows-sso' : 'basic';
+}
 
 async function confirmCloudFoundryImport({ input = stdin, output = stdout } = {}) {
   const readline = createInterface({ input, output });
@@ -43,6 +63,24 @@ function safeBasDestination(destination) {
     proxyType: destination.proxyType,
     backendUrl: destination.backendUrl || null,
     probe: safeProbe(destination.probe)
+  };
+}
+
+function safeLocalSapGuiDestination(destination) {
+  return {
+    source: 'sap-gui-local',
+    name: destination.name,
+    serverName: destination.serverName || destination.name,
+    url: destination.url,
+    host: destination.host,
+    systemId: destination.systemId,
+    instance: destination.instance,
+    client: destination.client || '001',
+    authentication: destination.authentication || 'Basic',
+    authMode: destination.authMode,
+    proxyType: 'Internet',
+    probe: safeProbe(destination.probe),
+    childEnv: destination.childEnv || {}
   };
 }
 
@@ -99,28 +137,41 @@ export async function runSetup({
   output = stdout,
   discover = discoverDestinations,
   discoverCf = discoverCloudFoundryDestinations,
+  discoverLocalSapGui = discoverSapGuiSystems,
   confirmCfImport = confirmCloudFoundryImport,
   install = installMcpConfig,
   includeSapDevelopmentToolsPrompt = false
 } = {}) {
-  if (!env.H2O_URL) {
-    print(output, formatStatus(`Setup skipped: H2O_URL is not set. Run ${SETUP_COMMAND} in a BAS dev space.`, 'info', output, 'SAP AI Dev Toolkit'));
+  const isBas = Boolean(env.H2O_URL);
+  if (!isBas && (!input.isTTY || !output.isTTY)) {
+    print(output, formatStatus('BAS destination setup was skipped because H2O_URL is not set.', 'info', output, 'SAP AI Dev Toolkit'));
     return { skipped: true, reason: 'non-bas' };
   }
   if (!input.isTTY || !output.isTTY) {
-    print(output, formatStatus(`Interactive setup needs a terminal. Rerun ${SETUP_COMMAND} from a BAS terminal.`, 'warning', output, 'SAP AI Dev Toolkit'));
+    print(output, formatStatus(`Interactive setup needs a terminal. Rerun ${SETUP_COMMAND} from a terminal.`, 'warning', output, 'SAP AI Dev Toolkit'));
     return { skipped: true, reason: 'non-tty' };
   }
   print(output, '');
-  print(output, formatStatus('Contacting BAS to discover destinations; this may take a moment.', 'progress', output, 'Setup'));
+  print(output, formatStatus(isBas ? 'Contacting BAS to discover destinations; this may take a moment.' : 'Looking for local SAP GUI system configuration.', 'progress', output, 'Setup'));
 
-  let basDestinations;
-  try {
-    basDestinations = await discover({ env: { ...env, SAP_AI_DEV_TOOLKIT_DESTINATION: '' } });
-  } catch (error) {
-    throw new Error(`BAS discovery failed: ${error.message}`);
+  let destinations = [];
+  if (isBas) {
+    let basDestinations;
+    try {
+      basDestinations = await discover({ env: { ...env, SAP_AI_DEV_TOOLKIT_DESTINATION: '' } });
+    } catch (error) {
+      throw new Error(`BAS discovery failed: ${error.message}`);
+    }
+    destinations = basDestinations.map(safeBasDestination);
+  } else {
+    let localSystems;
+    try {
+      localSystems = await discoverLocalSapGui({ env });
+    } catch (error) {
+      throw new Error(`SAP GUI discovery failed: ${error.message}`);
+    }
+    destinations = localSystems.map(safeLocalSapGuiDestination);
   }
-  const destinations = basDestinations.map(safeBasDestination);
   const warnings = [];
   let createdKeys = [];
   let configPath;
@@ -132,9 +183,9 @@ export async function runSetup({
     warnings.push('Existing MCP config could not be read before setup; existing CF service keys will not be reused.');
   }
 
-  const target = await getCloudFoundryTarget({ env });
+  const target = isBas ? await getCloudFoundryTarget({ env }) : { available: false, reason: 'Cloud Foundry import is only available in BAS setup.' };
   if (!target.available) {
-    warnings.push(target.reason);
+    if (isBas) warnings.push(target.reason);
   } else {
     // Sweep for service keys this toolkit created but no config references
     // (an interrupted earlier setup leaves them behind; a Destination key
@@ -205,8 +256,8 @@ export async function runSetup({
   };
   const selectable = destinations.filter(destination => !destination.disabledReason);
   if (!selectable.length) {
-    print(output, formatStatus('No selectable BAS or Cloud Foundry destinations were found.', 'warning', output, 'Setup'));
-    print(output, remediation);
+    print(output, formatStatus(isBas ? 'No selectable BAS or Cloud Foundry destinations were found.' : 'No SAP GUI systems were found on this computer.', 'warning', output, 'Setup'));
+    print(output, isBas ? remediation : 'Install SAP GUI and create SAP Logon entries, or set SAP_AI_DEV_MCP_CONFIG and add systems manually. ADT still needs an HTTP(S) URL; SAP GUI files contain DIAG routing only.');
     await reportWarnings(warnings);
     const cleanupWarnings = await cleanupNewKeysWithoutConfigChange();
     await reportWarnings(cleanupWarnings);
@@ -222,9 +273,9 @@ export async function runSetup({
     const probe = destination.probe?.status || 'unknown';
     const source = destination.source === 'cloud-foundry'
       ? `CF ${destination.cf.destinationInstanceName}`
-      : 'BAS';
+      : (destination.source === 'sap-gui-local' ? `SAP GUI ${destination.systemId || destination.host || ''}`.trim() : 'BAS');
     const disabled = destination.disabledReason;
-    const state = disabled ? 'disabled' : (destination.probe?.available === false ? `fail:${probe}` : `ok:${probe}`);
+    const state = disabled ? 'disabled' : (probe === 'needs-adt-url' ? probe : (destination.probe?.available === false ? `fail:${probe}` : `ok:${probe}`));
     return {
       value: destination,
       name: `${destination.name} (${source}, client ${destination.client}, ${state})`,
@@ -244,6 +295,52 @@ export async function runSetup({
     required: false,
     shortcuts: { all: 'a' }
   }, { input, output });
+
+  if (!isBas && selected.length) {
+    print(output, '');
+    print(output, formatStatus('SAP GUI landscapes do not contain ADT HTTP(S) endpoints. Confirm the ADT URL and authentication for each selected system.', 'step', output, 'Local SAP GUI'));
+    if (windowsSsoSetupAvailable(env)) print(output, '  Windows SSO is experimental and only applies to ADT systems configured for HTTP Integrated Authentication. Username/password remains the default.');
+    for (const destination of selected) {
+      const fallback = defaultAdtUrl(destination);
+      const url = await textPrompt({
+        message: `ADT URL for ${destination.name}`,
+        placeholder: fallback || 'https://host:44300',
+        validate: value => {
+          const candidate = value || fallback;
+          if (!candidate) return 'Enter an ADT base URL, for example https://host:44300.';
+          try {
+            const parsed = new URL(candidate);
+            if (!['http:', 'https:'].includes(parsed.protocol)) return 'Use an http:// or https:// URL.';
+            if (parsed.username || parsed.password) return 'Do not embed credentials in the ADT URL; use the login prompts.';
+            if (parsed.search || parsed.hash) return 'Enter an ADT base URL without a query or fragment.';
+            return true;
+          }
+          catch { return 'Enter a valid URL.'; }
+        },
+        required: false
+      }, { input, output });
+      destination.url = url || fallback;
+      const authMode = await chooseLocalAuthMode(destination, { input, output, env });
+      destination.authentication = authMode === 'windows-sso' ? 'WindowsSSO' : 'Basic';
+      destination.authMode = authMode;
+      if (authMode === 'windows-sso') {
+        destination.childEnv = { SAP_AUTH_MODE: 'windows-sso' };
+        destination.inputs = [];
+      } else {
+        const userInputId = `sap-ai-dev-${destination.serverName || destination.name}-user`.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+        const passwordInputId = `sap-ai-dev-${destination.serverName || destination.name}-password`.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+        destination.childEnv = {
+          SAP_AUTH_MODE: 'basic',
+          SAP_USER: `\${input:${userInputId}}`,
+          SAP_PASSWORD: `\${input:${passwordInputId}}`
+        };
+        destination.inputs = [
+          { id: userInputId, type: 'promptString', description: `SAP user for ${destination.name}` },
+          { id: passwordInputId, type: 'promptString', description: `SAP password for ${destination.name}`, password: true }
+        ];
+      }
+    }
+  }
 
   let sapDevelopmentServers = [];
   if (includeSapDevelopmentToolsPrompt) {
@@ -269,18 +366,20 @@ export async function runSetup({
     const location = result?.path ? ` in ${result.path}` : '';
     print(output, '');
     const configuredCount = selected.length + sapDevelopmentServers.length;
-    print(output, formatStatus(`Configured ${configuredCount} MCP server${configuredCount === 1 ? '' : 's'}${location}.`, 'success', output, 'BAS setup'));
+    print(output, formatStatus(`Configured ${configuredCount} MCP server${configuredCount === 1 ? '' : 's'}${location}.`, 'success', output, isBas ? 'BAS setup' : 'Local setup'));
     printConnectionInstructions(output, result);
     let cleanupWarnings = [];
     const finalPath = result?.path || configPath;
-    if (!finalPath) {
-      cleanupWarnings.push('CF service-key cleanup skipped because the final MCP config path is unavailable.');
-    } else {
-      try {
-        const finalConfig = await readMcpConfig(finalPath);
-        cleanupWarnings = await cleanupKeys([...managedKeys, ...createdKeys], finalConfig);
-      } catch {
-        cleanupWarnings.push('CF service-key cleanup skipped because the final MCP config could not be read.');
+    if (isBas) {
+      if (!finalPath) {
+        cleanupWarnings.push('CF service-key cleanup skipped because the final MCP config path is unavailable.');
+      } else {
+        try {
+          const finalConfig = await readMcpConfig(finalPath);
+          cleanupWarnings = await cleanupKeys([...managedKeys, ...createdKeys], finalConfig);
+        } catch {
+          cleanupWarnings.push('CF service-key cleanup skipped because the final MCP config could not be read.');
+        }
       }
     }
     await reportWarnings(warnings);

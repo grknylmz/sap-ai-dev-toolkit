@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -42,6 +43,10 @@ async function createSourceTree(root) {
   await writeAsset(root, 'agents/abap-developer.agent.md', agentSource);
   await writeAsset(root, 'agents/sap-solution-architect.agent.md', agentSource.replace('Example Developer', 'SAP Solution Architect'));
   await writeAsset(root, 'skills/example/SKILL.md', '---\nname: example\ndescription: An example skill used by the harness tests.\n---\n\n# Example\n');
+}
+
+function sha256(content) {
+  return createHash('sha256').update(content).digest('hex');
 }
 
 test('harness registry covers the seven supported harnesses in canonical order', () => {
@@ -184,6 +189,114 @@ test('installUserAssets is idempotent and preserves user edits per harness', asy
   assert.deepEqual(third.conflicts, [join('agents', 'sap-solution-architect.md')]);
   assert.equal(await readFile(join(home, '.claude', 'agents', 'sap-solution-architect.md'), 'utf8'), 'user customization');
   assert.equal(await readFile(join(home, '.claude', 'agents', 'abap-developer.md'), 'utf8'), claudeCodeAgentDocument(updatedSource));
+});
+
+test('installUserAssets removes managed legacy agent aliases instead of multiplying entries', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-harness-dedupe-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = join(directory, 'package');
+  const home = join(directory, 'home');
+  await createSourceTree(root);
+
+  const oldPath = join(home, '.claude', 'agents', 'abap-developer.agent.md');
+  const unmanagedDuplicate = join(home, '.claude', 'agents', 'sap-solution-architect.agent.md');
+  await mkdir(dirname(oldPath), { recursive: true });
+  await writeFile(oldPath, 'old managed claude agent');
+  await writeFile(unmanagedDuplicate, claudeCodeAgentDocument(agentSource.replace('Example Developer', 'SAP Solution Architect')));
+  await writeFile(join(home, '.claude', MANIFEST_NAME), JSON.stringify({
+    version: 1,
+    files: {
+      [join('agents', 'abap-developer.agent.md')]: createHash('sha256').update('old managed claude agent').digest('hex')
+    }
+  }));
+
+  const result = await installUserAssets({ harness: harnessById('claude-code'), home, root });
+  assert.equal(result.installed, 3);
+  assert.equal(result.removed, 2);
+  assert.equal(await readFile(join(home, '.claude', 'agents', 'abap-developer.md'), 'utf8'), claudeCodeAgentDocument(agentSource));
+  await assert.rejects(readFile(oldPath), { code: 'ENOENT' });
+  await assert.rejects(readFile(unmanagedDuplicate), { code: 'ENOENT' });
+  assert.deepEqual((await readdir(join(home, '.claude', 'agents'))).sort(), ['abap-developer.md', 'sap-solution-architect.md']);
+
+  const second = await installUserAssets({ harness: harnessById('claude-code'), home, root });
+  assert.equal(second.installed, 0);
+  assert.equal(second.updated, 0);
+  assert.equal(second.removed, 0);
+  assert.equal(second.unchanged, 3);
+  assert.deepEqual((await readdir(join(home, '.claude', 'agents'))).sort(), ['abap-developer.md', 'sap-solution-architect.md']);
+});
+
+test('installUserAssets preserves customized legacy aliases and reports them as conflicts', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-harness-custom-alias-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = join(directory, 'package');
+  const home = join(directory, 'home');
+  await createSourceTree(root);
+
+  const customAlias = join(home, '.claude', 'agents', 'abap-developer.agent.md');
+  await mkdir(dirname(customAlias), { recursive: true });
+  await writeFile(customAlias, 'user-customized old-format agent');
+  await writeFile(join(home, '.claude', MANIFEST_NAME), JSON.stringify({
+    version: 1,
+    files: {
+      [join('agents', 'abap-developer.agent.md')]: sha256('old managed content before user edit')
+    }
+  }));
+
+  const result = await installUserAssets({ harness: harnessById('claude-code'), home, root });
+  assert.equal(result.removed, 0);
+  assert.deepEqual(result.conflicts, [join('agents', 'abap-developer.agent.md')]);
+  assert.equal(await readFile(customAlias, 'utf8'), 'user-customized old-format agent');
+  assert.equal(await readFile(join(home, '.claude', 'agents', 'abap-developer.md'), 'utf8'), claudeCodeAgentDocument(agentSource));
+});
+
+test('installUserAssets removes stale managed files that disappeared from the package', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-harness-stale-managed-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = join(directory, 'package');
+  const home = join(directory, 'home');
+  await createSourceTree(root);
+
+  const staleTarget = join('skills', 'obsolete', 'SKILL.md');
+  const stalePath = join(home, '.claude', staleTarget);
+  await mkdir(dirname(stalePath), { recursive: true });
+  await writeFile(stalePath, 'old managed skill');
+  await writeFile(join(home, '.claude', MANIFEST_NAME), JSON.stringify({
+    version: 1,
+    files: { [staleTarget]: sha256('old managed skill') }
+  }));
+
+  const result = await installUserAssets({ harness: harnessById('claude-code'), home, root });
+  assert.equal(result.removed, 1);
+  assert.deepEqual(result.conflicts, []);
+  await assert.rejects(readFile(stalePath), { code: 'ENOENT' });
+  const manifest = JSON.parse(await readFile(join(home, '.claude', MANIFEST_NAME), 'utf8'));
+  assert.equal(manifest.files[staleTarget], undefined);
+});
+
+test('installUserAssets removes Pi prompt duplicates from all legacy agent locations', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-harness-pi-dedupe-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const root = join(directory, 'package');
+  const home = join(directory, 'home');
+  await createSourceTree(root);
+
+  const duplicateContent = piCodingAgentPromptDocument(agentSource);
+  const duplicates = [
+    join(home, '.pi', 'agent', 'agents', 'abap-developer.agent.md'),
+    join(home, '.pi', 'agent', 'agents', 'abap-developer.md'),
+    join(home, '.pi', 'agent', 'prompts', 'abap-developer.agent.md')
+  ];
+  for (const duplicate of duplicates) {
+    await mkdir(dirname(duplicate), { recursive: true });
+    await writeFile(duplicate, duplicateContent);
+  }
+
+  const result = await installUserAssets({ harness: harnessById('pi-coding-agent'), home, root });
+  assert.equal(result.removed, 3);
+  assert.deepEqual(result.conflicts, []);
+  assert.equal(await readFile(join(home, '.pi', 'agent', 'prompts', 'abap-developer.md'), 'utf8'), duplicateContent);
+  for (const duplicate of duplicates) await assert.rejects(readFile(duplicate), { code: 'ENOENT' });
 });
 
 test('installUserAssetsForHarnesses isolates harness failures and reports results', async t => {

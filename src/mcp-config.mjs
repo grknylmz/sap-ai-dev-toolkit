@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { access, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, platform } from 'node:os';
 import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { brandedEnvValue } from './branding.mjs';
@@ -103,11 +103,22 @@ export async function resolveMcpConfigPath(env = process.env) {
     .find(value => typeof value === 'string' && value.length > 0);
   if (configuredPath) return configuredPath;
   const home = env.HOME || homedir();
-  const candidates = [
+  const appData = env.APPDATA || (env.USERPROFILE ? join(env.USERPROFILE, 'AppData', 'Roaming') : '');
+  const localVsCodeCandidates = [
+    ...(appData ? [join(appData, 'Code', 'User', 'mcp.json'), join(appData, 'Code - Insiders', 'User', 'mcp.json')] : []),
+    ...(platform() === 'darwin' ? [
+      join(home, 'Library', 'Application Support', 'Code', 'User', 'mcp.json'),
+      join(home, 'Library', 'Application Support', 'Code - Insiders', 'User', 'mcp.json')
+    ] : []),
+    join(home, '.config', 'Code', 'User', 'mcp.json'),
+    join(home, '.config', 'Code - Insiders', 'User', 'mcp.json')
+  ];
+  const basCandidates = [
     join(home, '.vscode', 'data', 'User', 'mcp.json'),
     join(home, '.vscode-server', 'data', 'User', 'mcp.json'),
     join(home, '.code-server', 'data', 'User', 'mcp.json')
   ];
+  const candidates = env.H2O_URL ? [...basCandidates, ...localVsCodeCandidates] : [...localVsCodeCandidates, ...basCandidates];
   for (const candidate of candidates) if (await exists(candidate)) return candidate;
   return candidates[0];
 }
@@ -141,15 +152,17 @@ export function buildSapDevelopmentMcpEntries(serverIds = SAP_DEVELOPMENT_MCP_SE
 
 export function buildMcpEntries(destinations, env = process.env) {
   const h2oUrl = env.H2O_URL;
-  if (!h2oUrl) throw new Error('H2O_URL is required to write SAP AI Dev Toolkit configuration');
+  const hasNonLocal = destinations.some(destination => destination?.source !== 'sap-gui-local');
+  if (destinations.length && hasNonLocal && !h2oUrl) throw new Error('H2O_URL is required to write SAP AI Dev Toolkit configuration');
   const entries = Object.create(null);
   const selected = [...destinations].sort((a, b) => String(a.serverName || a.name).localeCompare(String(b.serverName || b.name)));
   for (const destination of selected) {
     const isCf = destination.source === 'cloud-foundry';
+    const isLocalSapGui = destination.source === 'sap-gui-local';
     const name = generatedServerName(isCf ? destination.serverName : destination.name);
     if (Object.hasOwn(entries, name)) throw new Error(`Duplicate MCP destination server name: ${name} (two destination names normalize to the same lowercase server name)`);
     const entryEnv = {
-      H2O_URL: String(h2oUrl),
+      ...(h2oUrl ? { H2O_URL: String(h2oUrl) } : {}),
       SAP_ALLOW_TRANSPORTABLE_EDITS: 'true'
     };
     if (isCf) {
@@ -171,6 +184,16 @@ export function buildMcpEntries(destinations, env = process.env) {
           BAS_CF_CONNECTIVITY_KEY: String(cf.connectivityKeyName)
         });
       }
+    } else if (isLocalSapGui) {
+      if (!destination.url) throw new Error(`Local SAP GUI destination "${destination.name}" is missing an ADT URL`);
+      Object.assign(entryEnv, {
+        SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
+        SAP_AI_DEV_TOOLKIT_DESTINATION: String(destination.name),
+        SAP_URL: String(destination.url),
+        SAP_CLIENT: String(destination.client || '001'),
+        ...(destination.systemId ? { SAP_SYSTEM_ID: String(destination.systemId) } : {}),
+        ...(destination.childEnv || {})
+      });
     } else {
       entryEnv.SAP_AI_DEV_TOOLKIT_DESTINATION = String(destination.name);
     }
@@ -316,6 +339,12 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
     ...buildMcpEntries(destinations, env),
     ...buildSapDevelopmentMcpEntries(options.sapDevelopmentServers || [], { packageVersions: companionVersions })
   };
+  const generatedInputs = new Map();
+  for (const destination of destinations) {
+    for (const input of Array.isArray(destination?.inputs) ? destination.inputs : []) {
+      if (input?.id) generatedInputs.set(input.id, input);
+    }
+  }
   const launcherCommand = options.command || (destinations.length ? await resolveMcpServerCommand(env) : null);
   if (launcherCommand) {
     for (const entry of Object.values(generated)) {
@@ -325,12 +354,19 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
     }
   }
   const servers = Object.create(null);
+  const managedInputIds = new Set();
   for (const [name, entry] of Object.entries(config.servers)) {
     const managed = isPackageLauncher(entry)
       && typeof destinationValue(entry?.env) === 'string'
       && (destinationSource(entry.env) === 'cloud-foundry'
         ? typeof entry.env.BAS_CF_DESTINATION_KEY === 'string'
-        : destinationSource(entry.env) === undefined);
+        : (destinationSource(entry.env) === undefined || destinationSource(entry.env) === 'sap-gui-local'));
+    if (managed && destinationSource(entry.env) === 'sap-gui-local') {
+      for (const value of Object.values(entry.env || {})) {
+        const match = typeof value === 'string' ? value.match(/^\$\{input:([^}]+)}$/) : null;
+        if (match) managedInputIds.add(match[1]);
+      }
+    }
     if (!LEGACY_MCP_SERVER_PREFIXES.some(prefix => name.startsWith(prefix)) && !managed && !isCompanionServer(entry)) servers[name] = entry;
   }
   for (const name of Object.keys(generated)) {
@@ -339,6 +375,10 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
     }
   }
   config.servers = { ...servers, ...generated };
+  if (generatedInputs.size || managedInputIds.size) {
+    const existingInputs = Array.isArray(config.inputs) ? config.inputs.filter(input => !generatedInputs.has(input?.id) && !managedInputIds.has(input?.id)) : [];
+    config.inputs = [...existingInputs, ...generatedInputs.values()];
+  }
   await writeConfig(path, config);
   return { path, servers: generated };
 }

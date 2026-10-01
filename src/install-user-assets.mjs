@@ -69,15 +69,41 @@ async function planDestinations(harness, files) {
   for (const file of files) {
     const raw = await readFile(file.source);
     if (!file.target.startsWith(`agents${sep}`)) {
-      destinations.push({ target: file.target, content: raw });
+      destinations.push({ target: file.target, content: raw, aliases: [] });
       continue;
     }
     if (!harness.supportsAgents) continue;
-    const fileName = harness.agentFileName ? harness.agentFileName(basename(file.target)) : basename(file.target);
+    const sourceName = basename(file.target);
+    const fileName = harness.agentFileName ? harness.agentFileName(sourceName) : sourceName;
+    const prefix = harness.agentTargetPrefix || 'agents';
+    const target = join(prefix, fileName);
+    const aliasCandidates = [
+      file.target,
+      join(prefix, sourceName),
+      join('agents', fileName)
+    ];
+    const aliases = [...new Set(aliasCandidates.filter(alias => alias !== target))];
     const content = harness.agentDocument ? Buffer.from(harness.agentDocument(raw.toString('utf8')), 'utf8') : raw;
-    destinations.push({ target: join(harness.agentTargetPrefix || 'agents', fileName), content });
+    destinations.push({ target, content, aliases });
   }
   return destinations;
+}
+
+async function reconcileRemovableFile({ targetRoot, target, contentHash, previousFiles }) {
+  const path = join(targetRoot, target);
+  let existing;
+  try {
+    existing = await readFile(path);
+  } catch (error) {
+    if (error.code === 'ENOENT') return 'missing';
+    throw error;
+  }
+  const existingHash = digest(existing);
+  if (previousFiles[target] === existingHash || existingHash === contentHash) {
+    await rm(path, { force: true });
+    return 'removed';
+  }
+  return 'conflict';
 }
 
 export async function installUserAssets({ harness, home = process.env.HOME || homedir(), root = packageRoot, env = process.env } = {}) {
@@ -89,15 +115,22 @@ export async function installUserAssets({ harness, home = process.env.HOME || ho
   const legacyFiles = harness.legacyManifest ? await readManagedFiles(legacyManifestPath) : {};
   const currentFiles = await readManagedFiles(manifestPath);
   const previousFiles = { ...legacyFiles, ...currentFiles };
-  const managedFiles = { ...previousFiles };
+  const managedFiles = {};
+  const activeTargets = new Set(destinations.flatMap(file => [file.target, ...file.aliases]));
   const conflicts = [];
   let installed = 0;
   let updated = 0;
   let unchanged = 0;
+  let removed = 0;
 
   for (const file of destinations) {
     const destination = join(targetRoot, file.target);
     const contentHash = digest(file.content);
+    for (const alias of file.aliases) {
+      const status = await reconcileRemovableFile({ targetRoot, target: alias, contentHash, previousFiles });
+      if (status === 'removed') removed += 1;
+      if (status === 'conflict') conflicts.push(alias);
+    }
     await mkdir(dirname(destination), { recursive: true, mode: 0o755 });
 
     let existing;
@@ -129,9 +162,16 @@ export async function installUserAssets({ harness, home = process.env.HOME || ho
     }
   }
 
+  for (const target of Object.keys(previousFiles)) {
+    if (activeTargets.has(target) || managedFiles[target]) continue;
+    const status = await reconcileRemovableFile({ targetRoot, target, contentHash: '', previousFiles });
+    if (status === 'removed') removed += 1;
+    if (status === 'conflict') conflicts.push(target);
+  }
+
   await replaceFile(manifestPath, `${JSON.stringify({ version: 1, files: managedFiles }, null, 2)}\n`);
   if (harness.legacyManifest) await rm(legacyManifestPath, { force: true });
-  return { harness: harness.id, label: harness.label, root: targetRoot, installed, updated, unchanged, conflicts };
+  return { harness: harness.id, label: harness.label, root: targetRoot, installed, updated, unchanged, removed, conflicts };
 }
 
 export async function installUserAssetsForHarnesses(ids, { home, root = packageRoot, env = process.env } = {}) {

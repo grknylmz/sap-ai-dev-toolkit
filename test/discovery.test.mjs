@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { normalizeDestination, destinationUrl, discoverDestinations, fetchDestinationList, redact, sanitizeChildEnv, slugifyDestination } from '../src/bas-discovery.mjs';
+import { defaultAdtUrl, discoverSapGuiSystems, sapGuiLandscapeCandidates } from '../src/local-sap-gui.mjs';
 
 test('normalizes destination metadata case-insensitively', () => {
   const destination = normalizeDestination({
@@ -181,6 +185,126 @@ test('probes .dest only through configured HTTP proxy and accepts proxy-auth res
   await new Promise(resolve => proxy.close(resolve));
   assert.equal(found[0].probe.status, 'auth-required');
   assert.deepEqual(requests, [{ host: 'proxy-system.dest', path: 'http://proxy-system.dest/sap/bc/adt/discovery' }]);
+});
+
+test('discovers SAP GUI landscape XML entries for local setup', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-landscape-'));
+  const landscape = join(directory, 'SAPUILandscape.xml');
+  await writeFile(landscape, `<?xml version="1.0"?><Landscape><Services><Service type="SAPGUI" name="Dev ABAP" server="abap.example.com" systemid="A4H" instancenumber="00" client="100" /></Services></Landscape>`);
+  try {
+    const systems = await discoverSapGuiSystems({ paths: [landscape] });
+    assert.equal(systems.length, 1);
+    assert.equal(systems[0].source, 'sap-gui-local');
+    assert.equal(systems[0].name, 'Dev ABAP');
+    assert.equal(systems[0].host, 'abap.example.com');
+    assert.equal(systems[0].systemId, 'A4H');
+    assert.equal(systems[0].client, '100');
+    assert.equal(systems[0].authentication, 'Basic');
+    assert.equal(systems[0].ssoHint, false);
+    assert.equal(defaultAdtUrl(systems[0]), 'https://abap.example.com:44300');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('SAP GUI discovery handles candidates, INI files, XML decoding, duplicates, and defaults', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-edge-'));
+  const appData = join(directory, 'AppData', 'Roaming');
+  const candidates = sapGuiLandscapeCandidates({ HOME: directory, USERPROFILE: directory, APPDATA: appData });
+  assert.ok(candidates.some(path => path.endsWith(join('SAP', 'Common', 'SAPUILandscape.xml'))));
+  assert.ok(candidates.some(path => path.endsWith(join('SAP', 'Common', 'saplogon.ini'))));
+  assert.ok(candidates.some(path => path.includes(join('Library', 'Preferences', 'SAP'))));
+
+  const landscape = join(directory, 'landscape.xml');
+  const ini = join(directory, 'saplogon.ini');
+  await writeFile(landscape, `<?xml version="1.0"?>
+    <Landscape><Services>
+      <Service type="SAPGUI" name="QA &amp; DEV" messageserver="msg.example.com" systemid="QAD" client="" sncname="p/host@example.com" />
+      <Service type="SAPGUI" name="QA &amp; DEV" messageserver="msg.example.com" systemid="QAD" client="001" />
+      <Service type="WEB" name="Portal" server="portal.example.com" />
+    </Services></Landscape>`);
+  await writeFile(ini, `[Description]\nItem1=Prod System\n[Server]\nItem1=prod.example.com\n[Database]\nItem1=PRD\n[Client]\nItem1=200\n`);
+  try {
+    const systems = await discoverSapGuiSystems({ paths: [join(directory, 'missing.xml'), landscape, ini] });
+    assert.deepEqual(systems.map(system => system.name), ['Prod System', 'QA & DEV']);
+    const qa = systems.find(system => system.name === 'QA & DEV');
+    assert.equal(qa.host, 'msg.example.com');
+    assert.equal(qa.client, '001');
+    assert.equal(qa.ssoHint, true);
+    assert.equal(qa.authentication, 'Basic/SSO hint');
+    assert.equal(defaultAdtUrl(qa), 'https://msg.example.com');
+    const prod = systems.find(system => system.name === 'Prod System');
+    assert.equal(prod.host, 'prod.example.com');
+    assert.equal(prod.systemId, 'PRD');
+    assert.equal(prod.client, '200');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('SAP GUI discovery supports single-quoted attributes and filters incomplete records', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-single-quote-'));
+  const landscape = join(directory, 'landscape.xml');
+  await writeFile(landscape, `<Landscape><Services>
+    <Service type='SAPGUI' name='Single Quote' server='single.example.com' sid='SGL' sysnr='02' />
+    <Service type='SAPGUI' name='Missing Host' sid='BAD' />
+  </Services></Landscape>`);
+  try {
+    const systems = await discoverSapGuiSystems({ paths: [landscape] });
+    assert.equal(systems.length, 1);
+    assert.equal(systems[0].name, 'Single Quote');
+    assert.equal(systems[0].host, 'single.example.com');
+    assert.equal(systems[0].systemId, 'SGL');
+    assert.equal(defaultAdtUrl(systems[0]), 'https://single.example.com:44302');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('SAP GUI discovery de-duplicates case-insensitive duplicate records', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-case-duplicate-'));
+  const landscape = join(directory, 'landscape.xml');
+  await writeFile(landscape, `<Landscape><Services>
+    <Service type="SAPGUI" name="Case Dev" server="case.example.com" systemid="CSE" client="100" />
+    <Service type="SAPGUI" name="case dev" server="CASE.EXAMPLE.COM" systemid="cse" client="100" />
+  </Services></Landscape>`);
+  try {
+    const systems = await discoverSapGuiSystems({ paths: [landscape] });
+    assert.equal(systems.length, 1);
+    assert.equal(systems[0].name, 'Case Dev');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('SAP GUI discovery ignores INI entries without servers', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-incomplete-ini-'));
+  const ini = join(directory, 'saplogon.ini');
+  await writeFile(ini, `[Description]\nItem1=No Server\n[Database]\nItem1=NSV\n`);
+  try {
+    assert.deepEqual(await discoverSapGuiSystems({ paths: [ini] }), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('SAP GUI discovery reads connection directories and ignores unreadable garbage', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-connection-dir-'));
+  const connections = join(directory, 'connections');
+  await mkdir(connections, { recursive: true });
+  await writeFile(join(connections, 'java.xml'), `<Landscape><Item type="SAPGUI" name="Java GUI" host="java.example.com" sid="JAV" instance="01" client="300" /></Landscape>`);
+  await writeFile(join(connections, 'notes.txt'), 'not enough fields');
+  try {
+    const systems = await discoverSapGuiSystems({ paths: [connections] });
+    assert.equal(systems.length, 1);
+    assert.equal(systems[0].name, 'Java GUI');
+    assert.equal(systems[0].host, 'java.example.com');
+    assert.equal(systems[0].systemId, 'JAV');
+    assert.equal(systems[0].client, '300');
+    assert.equal(defaultAdtUrl(systems[0]), 'https://java.example.com:44301');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('uses the documented branded HTTP proxy for destination probes and respects explicit direct mode', async t => {

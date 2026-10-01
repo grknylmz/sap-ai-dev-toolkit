@@ -88,7 +88,9 @@ async function installSelectedHarnessAssets(ids) {
   }
   for (const assets of results) {
     const installed = assets.installed + assets.updated;
-    await announce(`${assets.label}: ${installed} file${installed === 1 ? '' : 's'} installed or updated in ${assets.root}; ${assets.unchanged} already current.`, 'success');
+    const removed = assets.removed || 0;
+    const cleanup = removed > 0 ? `; ${removed} duplicate or legacy file${removed === 1 ? '' : 's'} removed` : '';
+    await announce(`${assets.label}: ${installed} file${installed === 1 ? '' : 's'} installed or updated in ${assets.root}; ${assets.unchanged} already current${cleanup}.`, 'success');
     if (assets.conflicts.length > 0) {
       const paths = assets.conflicts.map(path => join(assets.root, path)).join(', ');
       await announce(`${assets.label}: existing customizations were preserved; review these paths: ${paths}`, 'warning');
@@ -152,6 +154,11 @@ async function runHarnessAssetInstall() {
 async function wireHarnessMcpServers(ids, servers) {
   const entries = servers && Object.keys(servers).length ? servers : null;
   if (!entries || !ids?.length) return;
+  const hasLocalSapGui = Object.values(entries).some(entry => entry?.env?.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'sap-gui-local');
+  if (hasLocalSapGui) {
+    await announce('Local SAP GUI MCP entries use VS Code input prompts for SAP login, so automatic wiring into non-VS Code harness MCP files was skipped. Configure those harnesses manually if they support secure runtime prompts.', 'info');
+    return;
+  }
   const { results, failures } = await installMcpServersForHarnesses(ids, entries, { env: runtimeEnv });
   for (const result of results) {
     if (!result.supported) {
@@ -190,7 +197,7 @@ export function destinationTable(destinations, registeredNames) {
     const registered = registeredNames.has(generatedServerName(destination.serverName || destination.name));
     const source = destination.source === 'cloud-foundry'
       ? `CF ${destination.cf?.destinationInstanceName || 'unknown instance'}`
-      : 'BAS';
+      : (destination.source === 'sap-gui-local' ? 'SAP GUI' : 'BAS');
     return [
       { text: destination.name, output: destination.name },
       { text: source, output: source },
@@ -242,9 +249,10 @@ async function announceSetup(result) {
   const registeredNames = new Set(servers.map(([name]) => name));
   const entryDetails = servers.flatMap(([name, entry]) => {
     const destination = destinationsByServer.get(name);
-    const source = brandedEnvValue(entry.env, 'DESTINATION_SOURCE') === 'cloud-foundry' || destination?.source === 'cloud-foundry'
+    const configuredSource = brandedEnvValue(entry.env, 'DESTINATION_SOURCE') || destination?.source;
+    const source = configuredSource === 'cloud-foundry'
       ? 'Cloud Foundry'
-      : 'BAS';
+      : (configuredSource === 'sap-gui-local' ? 'Local SAP GUI' : 'BAS');
     const destinationName = brandedEnvValue(entry.env, 'DESTINATION') || destination?.name || 'unknown';
     const client = destination?.client || '001';
     const authentication = destination?.authentication || 'unknown';

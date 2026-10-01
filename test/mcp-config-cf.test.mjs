@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildMcpEntries, buildSapDevelopmentMcpEntries, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, generatedServerName, installMcpConfig, readMcpConfig, repairManagedMcpConfig, resolveMcpConfigPath } from '../src/mcp-config.mjs';
@@ -61,6 +61,127 @@ test('writes source-qualified CF entries beside same-named BAS destinations', ()
   assert.equal(onPremise['cf-space-one-onprem-instance-shared'].env.BAS_CF_CONNECTIVITY_KEY, 'connectivity-key');
 });
 
+test('local SAP GUI config rejects missing ADT URLs and mixed non-local entries without BAS', () => {
+  assert.throws(() => buildMcpEntries([{ source: 'sap-gui-local', name: 'Local Missing URL', client: '100' }], {}), /missing an ADT URL/);
+  assert.throws(() => buildMcpEntries([
+    { source: 'sap-gui-local', name: 'Local Dev', url: 'https://abap.example.com:44300', client: '100' },
+    bas
+  ], {}), /H2O_URL is required/);
+});
+
+test('local SAP GUI entries detect normalized name collisions', () => {
+  assert.throws(() => buildMcpEntries([
+    { source: 'sap-gui-local', name: 'Local Dev', url: 'https://one.example.com', client: '100' },
+    { source: 'sap-gui-local', name: 'Local_Dev', url: 'https://two.example.com', client: '200' }
+  ], {}), /Duplicate MCP destination server name/);
+});
+
+test('local SAP GUI generated inputs replace stale managed inputs but preserve user inputs', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-stale-inputs-'));
+  const path = join(directory, 'mcp.json');
+  await writeFile(path, JSON.stringify({
+    inputs: [
+      { id: 'keep-me', type: 'promptString' },
+      { id: 'sap-ai-dev-local-dev-user', type: 'promptString', description: 'old user' },
+      { id: 'sap-ai-dev-local-dev-password', type: 'promptString', description: 'old password', password: true }
+    ],
+    servers: {
+      'local-dev': {
+        type: 'stdio',
+        command: 'sap-ai-dev',
+        BAS_EXT: 'true',
+        env: {
+          SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
+          SAP_AI_DEV_TOOLKIT_DESTINATION: 'Local Dev',
+          SAP_URL: 'https://old.example.com',
+          SAP_USER: '${input:sap-ai-dev-local-dev-user}',
+          SAP_PASSWORD: '${input:sap-ai-dev-local-dev-password}'
+        }
+      }
+    }
+  }));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  await installMcpConfig([{
+    source: 'sap-gui-local',
+    name: 'Local Dev',
+    url: 'https://new.example.com',
+    client: '200',
+    childEnv: { SAP_USER: '${input:sap-ai-dev-local-dev-user}', SAP_PASSWORD: '${input:sap-ai-dev-local-dev-password}' },
+    inputs: [
+      { id: 'sap-ai-dev-local-dev-user', type: 'promptString', description: 'SAP user for Local Dev' },
+      { id: 'sap-ai-dev-local-dev-password', type: 'promptString', description: 'SAP password for Local Dev', password: true }
+    ]
+  }], { env: {}, path, command: 'sap-ai-dev' });
+  const config = await readMcpConfig(path);
+  assert.equal(config.servers['local-dev'].env.SAP_URL, 'https://new.example.com');
+  assert.deepEqual(config.inputs, [
+    { id: 'keep-me', type: 'promptString' },
+    { id: 'sap-ai-dev-local-dev-user', type: 'promptString', description: 'SAP user for Local Dev' },
+    { id: 'sap-ai-dev-local-dev-password', type: 'promptString', description: 'SAP password for Local Dev', password: true }
+  ]);
+});
+
+test('writes local SAP GUI entries with VS Code login inputs and no BAS dependency', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-mcp-config-'));
+  const path = join(directory, 'mcp.json');
+  const command = join(directory, 'sap-ai-dev');
+  await writeFile(command, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  await writeFile(path, JSON.stringify({ inputs: [{ id: 'keep-me', type: 'promptString' }], servers: { userServer: { command: 'custom-server' } } }));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const local = {
+    source: 'sap-gui-local',
+    name: 'Dev ABAP',
+    serverName: 'Dev ABAP',
+    url: 'https://abap.example.com:44300',
+    client: '100',
+    systemId: 'A4H',
+    childEnv: { SAP_USER: '${input:sap-ai-dev-dev-abap-user}', SAP_PASSWORD: '${input:sap-ai-dev-dev-abap-password}' },
+    inputs: [
+      { id: 'sap-ai-dev-dev-abap-user', type: 'promptString', description: 'SAP user for Dev ABAP' },
+      { id: 'sap-ai-dev-dev-abap-password', type: 'promptString', description: 'SAP password for Dev ABAP', password: true }
+    ]
+  };
+  const installed = await installMcpConfig([local], { env: { PATH: directory }, path });
+  assert.equal(installed.servers['dev-abap'].env.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE, 'sap-gui-local');
+  assert.equal(installed.servers['dev-abap'].env.SAP_URL, 'https://abap.example.com:44300');
+  assert.equal(installed.servers['dev-abap'].env.H2O_URL, undefined);
+  let config = await readMcpConfig(path);
+  assert.deepEqual(config.inputs.map(input => input.id), ['keep-me', 'sap-ai-dev-dev-abap-user', 'sap-ai-dev-dev-abap-password']);
+
+  await installMcpConfig([], { env: { PATH: directory }, path });
+  config = await readMcpConfig(path);
+  assert.deepEqual(Object.keys(config.servers), ['userServer']);
+  assert.deepEqual(config.inputs, [{ id: 'keep-me', type: 'promptString' }]);
+});
+
+test('writes local SAP GUI Windows SSO entries without username or password inputs', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-sso-mcp-config-'));
+  const path = join(directory, 'mcp.json');
+  const command = join(directory, 'sap-ai-dev');
+  await writeFile(command, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const installed = await installMcpConfig([{
+    source: 'sap-gui-local',
+    name: 'SSO ABAP',
+    serverName: 'SSO ABAP',
+    url: 'https://sso.example.com:44300',
+    client: '100',
+    systemId: 'S4H',
+    authentication: 'WindowsSSO',
+    childEnv: { SAP_AUTH_MODE: 'windows-sso' },
+    inputs: []
+  }], { env: { PATH: directory }, path });
+
+  assert.equal(installed.servers['sso-abap'].env.SAP_AUTH_MODE, 'windows-sso');
+  assert.equal(installed.servers['sso-abap'].env.SAP_USER, undefined);
+  assert.equal(installed.servers['sso-abap'].env.SAP_PASSWORD, undefined);
+  const config = await readMcpConfig(path);
+  assert.deepEqual(config.inputs || [], []);
+});
+
 test('stores and reconciles the MCP launcher executable location', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-launcher-location-'));
   const path = join(directory, 'mcp.json');
@@ -89,6 +210,41 @@ test('resolves documented, toolkit, and legacy MCP config paths in order', async
     BAS_VSP_MCP_CONFIG: '/tmp/legacy-mcp.json'
   }), '/tmp/toolkit-mcp.json');
   assert.equal(await resolveMcpConfigPath({ BAS_VSP_MCP_CONFIG: '/tmp/legacy-mcp.json' }), '/tmp/legacy-mcp.json');
+});
+
+test('resolves BAS MCP fallback path before local VS Code path inside BAS when no config exists', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-bas-vscode-fallback-'));
+  const appData = join(directory, 'AppData', 'Roaming');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  assert.equal(
+    await resolveMcpConfigPath({ HOME: directory, APPDATA: appData, H2O_URL: 'http://bas.example' }),
+    join(directory, '.vscode', 'data', 'User', 'mcp.json')
+  );
+});
+
+test('resolves a local VS Code MCP fallback path outside BAS when no config exists', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-vscode-fallback-'));
+  const appData = join(directory, 'AppData', 'Roaming');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  assert.equal(
+    await resolveMcpConfigPath({ HOME: directory, APPDATA: appData }),
+    join(appData, 'Code', 'User', 'mcp.json')
+  );
+});
+
+test('resolves local VS Code MCP config paths before BAS server paths outside BAS', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-vscode-config-'));
+  const appData = join(directory, 'AppData', 'Roaming');
+  const localConfig = join(appData, 'Code', 'User', 'mcp.json');
+  const basConfig = join(directory, '.vscode', 'data', 'User', 'mcp.json');
+  await mkdir(join(appData, 'Code', 'User'), { recursive: true });
+  await mkdir(join(directory, '.vscode', 'data', 'User'), { recursive: true });
+  await writeFile(localConfig, JSON.stringify({ servers: {} }));
+  await writeFile(basConfig, JSON.stringify({ servers: {} }));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  assert.equal(await resolveMcpConfigPath({ HOME: directory, APPDATA: appData }), localConfig);
+  assert.equal(await resolveMcpConfigPath({ HOME: directory, APPDATA: appData, H2O_URL: 'http://bas.example' }), basConfig);
 });
 
 test('doctor repair updates only discovered toolkit BAS entries and is idempotent', async t => {

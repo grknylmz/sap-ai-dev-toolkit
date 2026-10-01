@@ -52,13 +52,13 @@ To also add optional full-stack SAP companion MCP servers for Fiori, UI5, CAP, a
 sap-ai-dev --setup --tools
 ```
 
-Then connect a destination in SAP Business Application Studio:
+Then connect a destination in SAP Business Application Studio, or run the same setup locally to discover SAP GUI systems and create VS Code MCP entries:
 
 1. Open the Command Palette.
 2. Run **MCP: List Servers**.
-3. Start the server named after your selected BAS destination (the lowercase slug, for example `demo-abap` for destination `DEMO_ABAP`).
+3. Start the server named after your selected destination (the lowercase slug, for example `demo-abap` for destination `DEMO_ABAP`).
 4. In your AI assistant's chat, choose the best-fit bundled agent from the agent picker (GitHub Copilot, Claude Code, and opencode install the agents) or invoke the matching Pi prompt template (`/sap-solution-architect`, `/abap-developer`, `/abap-runtime-debugger`, `/rap-service-developer`, or `/hana-cloud-hdi-specialist`): **SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, or **HANA Cloud/HDI Specialist**.
-5. In the Chat tools picker, enable the server for that BAS destination.
+5. In the Chat tools picker, enable the server for that destination.
 6. Ask the agent to inspect, build, test, or verify something in your SAP landscape.
 
 Use the attached destination-prefixed tools directly in chat. Do not launch `sap-ai-dev` or handcraft MCP JSON-RPC in a terminal to discover or call them.
@@ -236,13 +236,13 @@ Once the destination server is enabled in your chat's tools picker, ask for outc
 | 🔒 **SAP authorization remains authoritative** | The add-on does not bypass backend SAP permissions. |
 | 🚚 **Curated VSP tool surface** | The proxy exposes the same curated developer-lifecycle set for every destination, plus local workflow tools; SAP authorizations and VSP safety checks still apply. |
 | 🧱 **Per-destination isolation** | Generated MCP entries are scoped to a single `SAP_AI_DEV_TOOLKIT_DESTINATION`. |
-| 🔑 **No credentials in `mcp.json`** | Authentication material stays in BAS destination configuration rather than MCP config. |
+| 🔑 **Credential-aware setup** | BAS authentication material stays in Destination configuration. Local SAP GUI setup writes VS Code input prompts for SAP user/password instead of raw credentials. |
 
 <a id="install"></a>
 
 ## 📦 Installation
 
-Install globally from a BAS dev space:
+Install globally from SAP Business Application Studio or from a local workstation with SAP GUI installed:
 
 ```sh
 npm install --global sap-ai-dev-toolkit
@@ -270,7 +270,9 @@ The installer handles VSP provisioning automatically:
 - Uses the package's bundled patched VSP binary for the current platform, verified against the npm-published `dist/checksums.txt`. A checksum-anchored remote download is the fallback only when the package has no bundled asset.
 - No Go toolchain is downloaded or required at install time; Go is only used by the repository's own `build:vsp` development script.
 
-With `H2O_URL` set, an interactive install opens a checkbox picker with no destinations selected by default. Use **Space** to choose destinations and **Enter** to confirm. Press **a** to toggle all destinations (select all if any are unchecked; otherwise clear the selection). Confirming with none selected removes this add-on's managed MCP entries. When the `cf` CLI 8.18 or newer is authenticated to a targeted space, setup first offers an optional import from that space's Destination service; type **y** then **Enter** to include it, or press **Enter** to skip. Accepted CF and BAS destinations appear together in the picker. npm may run its install hook without an interactive terminal, even when the shell is interactive; in that case, selection is skipped without changing MCP config.
+Setup detects where it is running. With `H2O_URL` set, it treats the environment as SAP Business Application Studio and opens a checkbox picker for BAS destinations, with no destinations selected by default. Use **Space** to choose destinations and **Enter** to confirm. Press **a** to toggle all destinations (select all if any are unchecked; otherwise clear the selection). Confirming with none selected removes this add-on's managed MCP entries. When the `cf` CLI 8.18 or newer is authenticated to a targeted space, setup first offers an optional import from that space's Destination service; type **y** then **Enter** to include it, or press **Enter** to skip. Accepted CF and BAS destinations appear together in the picker.
+
+Without `H2O_URL`, interactive setup looks for local SAP GUI system configuration on macOS and Windows (for example SAP GUI landscape XML and `saplogon.ini`). SAP GUI landscape files describe SAP GUI/DIAG connectivity, not the ADT HTTP(S) endpoint, so setup asks you to confirm the ADT URL for each selected system. The generated MCP entry uses VS Code input prompts for the SAP user and password at server start; raw SAP credentials are not stored in `mcp.json`. On Windows, setup can instead write an experimental `SAP_AUTH_MODE=windows-sso` entry without username/password prompts; this requires the ADT endpoint to support HTTP Negotiate/SPNEGO. Runtime uses the bundled Windows Negotiate helper by default, or a trusted custom helper configured with `SAP_AI_DEV_TOOLKIT_NEGOTIATE_HELPER`. npm may run its install hook without an interactive terminal, even when the shell is interactive; in that case, destination selection is skipped without changing MCP config.
 
 
 The same postinstall offers the bundled agents and skills for several AI coding harnesses in a checkbox picker. **GitHub Copilot** and **Claude Code** start pre-checked, so pressing **Enter** alone installs both; **Space** selects or deselects a harness, **a** toggles all seven, and confirming with none selected skips the step without changing files. When destination MCP setup succeeds, the generated managed MCP servers are also mirrored into selected harnesses that have a stable user-level JSON MCP configuration (Claude Code, Cursor, Gemini CLI, and Pi Coding Agent). GitHub Copilot continues to use the BAS/VS Code MCP configuration written during destination setup. With no interactive terminal, the assets are installed for GitHub Copilot only; set `SAP_AI_DEV_TOOLKIT_HARNESSES` to a comma-separated list of harness ids (`github-copilot`, `claude-code`, `codex`, `cursor`, `gemini-cli`, `opencode`, `pi-coding-agent`) to choose non-interactively.
@@ -279,9 +281,9 @@ Some current npm versions also require install hooks to be approved. If npm repo
 
 The setup report uses icons and terminal colors; set `NO_COLOR=1` to disable ANSI colors. The table is a weather report, not a bouncer: green **PASS** means the ADT probe responded, red **FAIL** means it failed, and yellow **SKIPPED** means it was skipped. Probe failures do not block MCP registration or startup for destinations you select.
 
-Run `sap-ai-dev --setup` later to change the destination selection or remove generated destination entries. Run `sap-ai-dev --setup --tools` to also choose optional companion tools. Use `--npx` to make generated BAS/VSP destination entries start the pinned package through npm instead of relying on a global `sap-ai-dev` command; companion tools already use `npx` with their own npm packages.
+Run `sap-ai-dev --setup` later to change the destination selection or remove generated destination entries. Run `sap-ai-dev --setup --tools` to also choose optional companion tools. Use `--npx` to make generated destination entries start the pinned package through npm instead of relying on a global `sap-ai-dev` command; companion tools already use `npx` with their own npm packages.
 
-If a setup step is skipped or fails, rerun it from an interactive BAS terminal:
+If a setup step is skipped or fails, rerun it from an interactive terminal:
 
 ```sh
 sap-ai-dev --setup
@@ -293,7 +295,7 @@ To configure without a global install, run the guided setup directly through npm
 npx --yes --ignore-scripts --package=sap-ai-dev-toolkit sap-ai-dev --setup --npx
 ```
 
-This lists discovered systems in the same checkbox picker, with nothing selected by default. Use **Space** to choose destinations, **Enter** to confirm, and **a** to toggle all (select all if any are unchecked; otherwise clear the selection). It writes MCP entries that launch the selected servers through npx. The entries pin the package version used during setup, and `--ignore-scripts` avoids running the install-time wizard a second time. After setup, in BAS run **MCP: List Servers**, select each chosen destination, and choose **Start Server**.
+This lists discovered systems in the same checkbox picker, with nothing selected by default. Use **Space** to choose destinations, **Enter** to confirm, and **a** to toggle all (select all if any are unchecked; otherwise clear the selection). It writes MCP entries that launch the selected servers through npx. The entries pin the package version used during setup, and `--ignore-scripts` avoids running the install-time wizard a second time. After setup, in BAS or VS Code run **MCP: List Servers**, select each chosen destination, and choose **Start Server**.
 
 For a non-interactive installation or a platform without a published VSP asset, provide a trusted binary override:
 
@@ -747,6 +749,8 @@ The response contains a `tools` array. A `RunQuery` entry resembles this excerpt
 | `SAP_AI_DEV_TOOLKIT_DESTINATION` | Comma-separated destination allowlist for normal runtime discovery. Setup clears this temporarily so it can display all eligible systems. |
 | `SAP_AI_DEV_TOOLKIT_MODE` | VSP child mode (`expert` by default; `focused` omits `ActivateMultiple`, `GetUserTransports`, and `GetTransportInfo`). The proxy exposes its curated tool subset and local workflow tools, including `LintABAP`. |
 | `SAP_ALLOW_TRANSPORTABLE_EDITS` | Generated MCP entries set this to `true` to permit source edits in transportable packages; VSP safety checks and SAP authorizations still apply. |
+| `SAP_AUTH_MODE=windows-sso` | Local SAP GUI entry mode for experimental Windows Integrated Authentication. Runtime starts a loopback ADT proxy and does not pass SAP username/password credentials to VSP. |
+| `SAP_AI_DEV_TOOLKIT_NEGOTIATE_HELPER` / `SAP_AI_DEV_TOOLKIT_SSPI_HELPER` | Optional trusted Windows helper executable used by the local Windows SSO proxy to convert an HTTP `WWW-Authenticate: Negotiate` challenge into a Kerberos/SPNEGO token. NTLM fallback is rejected because it is connection-oriented and unsafe for this proxy shape. When unset on Windows, the bundled PowerShell SSPI helper is used. A custom helper receives one JSON line on stdin (`url`, `challenge`, `mechanism`) and prints the base64 token on stdout. |
 | `SAP_AI_DEV_TOOLKIT_HTTP_PROXY` | Egress proxy for BAS discovery and probe traffic. Takes precedence over `HTTP_PROXY`/`http_proxy`; unset means the default BAS proxy for `.dest` hosts, empty means direct. |
 | `SAP_AI_DEV_TOOLKIT_REQUEST_TIMEOUT_MS` | Per-request timeout for calls forwarded to a VSP child (default 600000 = 10 minutes; `0` disables). A stalled request fails with a timeout error; the child is left running. |
 | `SAP_AI_DEV_MCP_CONFIG` | Explicit MCP configuration path; highest precedence. |

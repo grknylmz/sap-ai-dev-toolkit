@@ -4,11 +4,13 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { discoverDestinations, remediation, slugifyDestination, statusRows } from './bas-discovery.mjs';
+import { discoverSapGuiSystems } from './local-sap-gui.mjs';
 import { findBinary } from './binary.mjs';
 import { MCPProxy } from './mcp-proxy.mjs';
 import { installMcpConfig, repairManagedMcpConfig } from './mcp-config.mjs';
 import { runSetup } from './setup.mjs';
 import { resolveConfiguredCloudFoundryDestination } from './cf-destination.mjs';
+import { createWindowsSsoAdtProxy } from './windows-sso-adt-proxy.mjs';
 import { withBrandedEnvironment } from './branding.mjs';
 import { redactText } from './redact.mjs';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -25,7 +27,7 @@ function usage() {
   return [
     'Usage: sap-ai-dev [options]',
     '',
-    'With H2O_URL set and no command, starts the SAP AI Dev Toolkit stdio server for selected BAS destinations.',
+    'With H2O_URL set, starts the SAP AI Dev Toolkit stdio server for selected BAS destinations; with local SAP GUI setup, starts the selected local ADT system.',
     'Options:',
     '  --setup                  Configure generated BAS MCP servers',
     '  --tools                  Also offer full-stack SAP companion MCP servers (use with --setup)',
@@ -161,7 +163,44 @@ async function binaryOrError() {
 async function discoverForCommand() {
   const env = { ...runtimeEnv };
   if (env.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'cloud-foundry') env.SAP_AI_DEV_TOOLKIT_DESTINATION = '';
+  if (!env.H2O_URL) {
+    const systems = await discoverSapGuiSystems({ env });
+    if (!systems.length) throw new Error('H2O_URL is required for BAS destination discovery');
+    return systems;
+  }
   return discoverDestinations({ env });
+}
+
+async function configuredLocalSapGuiDestination(env) {
+  const name = env.SAP_AI_DEV_TOOLKIT_DESTINATION || env.SAP_SYSTEM_ID || 'local-sap';
+  if (!env.SAP_URL) throw new Error('SAP_URL is required for local SAP GUI MCP entries. Rerun sap-ai-dev --setup and enter the ADT URL.');
+  const authMode = String(env.SAP_AUTH_MODE || '').toLowerCase();
+  if (authMode === 'windows-sso') {
+    const route = await createWindowsSsoAdtProxy({ destinationUrl: env.SAP_URL, env });
+    return {
+      source: 'sap-gui-local',
+      name,
+      url: route.url,
+      backendUrl: env.SAP_URL,
+      client: env.SAP_CLIENT || '001',
+      authentication: 'WindowsSSO',
+      childEnv: {},
+      close: route.close,
+      probe: { status: 'configured', available: true }
+    };
+  }
+  return {
+    source: 'sap-gui-local',
+    name,
+    url: env.SAP_URL,
+    client: env.SAP_CLIENT || '001',
+    authentication: 'Basic',
+    childEnv: {
+      SAP_USER: env.SAP_USER || env.SAP_USERNAME || '',
+      SAP_PASSWORD: env.SAP_PASSWORD || env.SAP_PASS || ''
+    },
+    probe: { status: 'configured', available: true }
+  };
 }
 
 async function main() {
@@ -184,7 +223,9 @@ async function main() {
     try {
       const destinations = runtimeEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'cloud-foundry'
         ? [await resolveConfiguredCloudFoundryDestination({ env: runtimeEnv })]
-        : await discoverForCommand();
+        : (runtimeEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'sap-gui-local'
+          ? [await configuredLocalSapGuiDestination(runtimeEnv)]
+          : await discoverForCommand());
       report = await runDoctor(destinations);
     } catch (error) {
       report = { ok: false, destinations: 0, checks: [doctorRow('-', 'destination discovery', 'failed', redactText(error.message || error).slice(0, 300))] };
@@ -219,8 +260,10 @@ async function main() {
     return;
   }
 
-  if (runtimeEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'cloud-foundry') {
-    const destination = await resolveConfiguredCloudFoundryDestination({ env: runtimeEnv });
+  if (['cloud-foundry', 'sap-gui-local'].includes(runtimeEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE)) {
+    const destination = runtimeEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'cloud-foundry'
+      ? await resolveConfiguredCloudFoundryDestination({ env: runtimeEnv })
+      : await configuredLocalSapGuiDestination(runtimeEnv);
     let proxy;
     try {
       const binary = await binaryOrError();
