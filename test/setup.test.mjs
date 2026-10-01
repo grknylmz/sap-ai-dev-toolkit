@@ -482,7 +482,7 @@ test('non-TTY postinstall warns about an unknown harness override and falls back
     });
     const logs = `${result.stdout}\n${result.stderr}`;
     assert.equal(result.code, 0, logs);
-    assert.match(logs, /Unknown harness id: windsurf\. Valid harness ids: github-copilot, claude-code, codex, cursor, gemini-cli, opencode\. Ignoring SAP_AI_DEV_TOOLKIT_HARNESSES/);
+    assert.match(logs, /Unknown harness id: windsurf\. Valid harness ids: github-copilot, claude-code, codex, cursor, gemini-cli, opencode, pi-coding-agent\. Ignoring SAP_AI_DEV_TOOLKIT_HARNESSES/);
     await assertUserCopilotAssets(directory);
     await assert.rejects(stat(join(directory, '.claude')), { code: 'ENOENT' });
   } finally {

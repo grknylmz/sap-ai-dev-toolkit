@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { installBinary } from '../src/binary.mjs';
 import { runSetup } from '../src/setup.mjs';
 import { installUserAssetsForHarnesses } from '../src/install-user-assets.mjs';
+import { installMcpServersForHarnesses } from '../src/harness-mcp-config.mjs';
 import { DEFAULT_HARNESS_IDS, HARNESSES, HARNESS_ENV_VAR, NON_INTERACTIVE_HARNESS_IDS, envHarnessSelection, harnessRoot } from '../src/harnesses.mjs';
 import { ReadStream as TTYReadStream, WriteStream as TTYWriteStream } from 'node:tty';
 import { homedir } from 'node:os';
@@ -102,13 +103,13 @@ async function installSelectedHarnessAssets(ids) {
 async function runHarnessAssetInstall() {
   const home = process.env.HOME || homedir();
   const override = await resolveHarnessOverride();
-  await withInstallTerminal(async terminal => {
+  return withInstallTerminal(async terminal => {
     let selected = override;
     if (!terminal) {
       if (!selected) selected = NON_INTERACTIVE_HARNESS_IDS;
       await announce(`Installing bundled agents and skills for ${harnessSelectionLabels(selected)} by default because no interactive terminal is available.`, 'progress');
       await installSelectedHarnessAssets(selected);
-      return;
+      return selected;
     }
     if (!selected) selected = DEFAULT_HARNESS_IDS;
     await announce([
@@ -135,16 +136,33 @@ async function runHarnessAssetInstall() {
     } catch (error) {
       if (error.message === 'Prompt interrupted') {
         await announce('Bundled agents and skills were skipped because the prompt was interrupted. Your files were not changed.', 'info');
-        return;
+        return [];
       }
       throw error;
     }
     if (answer.length === 0) {
       await announce('Bundled agents and skills were skipped. Your files were not changed.', 'info');
-      return;
+      return [];
     }
     await installSelectedHarnessAssets(answer);
+    return answer;
   });
+}
+
+async function wireHarnessMcpServers(ids, servers) {
+  const entries = servers && Object.keys(servers).length ? servers : null;
+  if (!entries || !ids?.length) return;
+  const { results, failures } = await installMcpServersForHarnesses(ids, entries, { env: runtimeEnv });
+  for (const result of results) {
+    if (!result.supported) {
+      await announce(`${result.label}: MCP auto-wiring skipped. ${result.skipped}`, 'info');
+      continue;
+    }
+    await announce(`${result.label}: wired ${result.servers} MCP server${result.servers === 1 ? '' : 's'} in ${result.path}.`, 'success');
+  }
+  for (const failure of failures) {
+    await announce(`${failure.label}: MCP auto-wiring failed: ${failure.error.message}`, 'error');
+  }
 }
 
 
@@ -291,10 +309,16 @@ async function main() {
     await announce('Rerun sap-ai-dev --setup.', 'info');
   }
 
+  let harnessIds = [];
   try {
-    await runHarnessAssetInstall();
+    harnessIds = await runHarnessAssetInstall();
   } catch (error) {
     await announce(`Bundled agent and skill installation failed: ${error.message}`, 'error');
+  }
+  try {
+    if (setupCompleted) await wireHarnessMcpServers(harnessIds, setupResult?.servers);
+  } catch (error) {
+    await announce(`Harness MCP auto-wiring failed: ${error.message}`, 'error');
   }
   if (setupCompleted) await announceSetup(setupResult);
 }

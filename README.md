@@ -15,7 +15,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/SAP-Business%20Application%20Studio-0A6ED1?style=flat-square&logo=sap&logoColor=white" alt="SAP Business Application Studio">
-  <img src="https://img.shields.io/badge/AI%20agents-Copilot%20%7C%20Claude%20%7C%20Codex%20%7C%20Cursor%20%7C%20Gemini%20%7C%20opencode-000000?style=flat-square" alt="Works with GitHub Copilot, Claude Code, OpenAI Codex, Cursor, Gemini CLI, and opencode">
+  <img src="https://img.shields.io/badge/AI%20agents-Copilot%20%7C%20Claude%20%7C%20Codex%20%7C%20Cursor%20%7C%20Gemini%20%7C%20opencode%20%7C%20Pi-000000?style=flat-square" alt="Works with GitHub Copilot, Claude Code, OpenAI Codex, Cursor, Gemini CLI, opencode, and Pi Coding Agent">
   <img src="https://img.shields.io/badge/MCP-enabled-7B61FF?style=flat-square" alt="MCP enabled">
   <img src="https://img.shields.io/badge/SAP%20ADT-connected-0A6ED1?style=flat-square&logo=sap&logoColor=white" alt="SAP ADT connected">
   <img src="https://img.shields.io/badge/ABAP-CDS%20%7C%20RAP-EA4AAA?style=flat-square" alt="ABAP CDS RAP">
@@ -57,7 +57,7 @@ Then connect a destination in SAP Business Application Studio:
 1. Open the Command Palette.
 2. Run **MCP: List Servers**.
 3. Start the server named after your selected BAS destination (the lowercase slug, for example `demo-abap` for destination `DEMO_ABAP`).
-4. In your AI assistant's chat, choose the best-fit bundled agent from the agent picker (GitHub Copilot, Claude Code, and opencode install the agents): **SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, or **HANA Cloud/HDI Specialist**.
+4. In your AI assistant's chat, choose the best-fit bundled agent from the agent picker (GitHub Copilot, Claude Code, and opencode install the agents) or invoke the matching Pi prompt template (`/sap-solution-architect`, `/abap-developer`, `/abap-runtime-debugger`, `/rap-service-developer`, or `/hana-cloud-hdi-specialist`): **SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, or **HANA Cloud/HDI Specialist**.
 5. In the Chat tools picker, enable the server for that BAS destination.
 6. Ask the agent to inspect, build, test, or verify something in your SAP landscape.
 
@@ -67,7 +67,7 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 
 ## 🤖 Available agents and skills
 
-**Agents:** Five user-invocable custom agents are included. Select the best fit from the agent picker in your harness's chat (GitHub Copilot, Claude Code, or opencode), as shown in Quick start.
+**Agents:** Five user-invocable custom agents are included. Select the best fit from the agent picker in your harness's chat (GitHub Copilot, Claude Code, or opencode), or use the matching Pi prompt command, as shown in Quick start.
 
 | | Agent | Best for |
 | --- | --- | --- |
@@ -79,7 +79,7 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 
 **Included skills:** `abap-development` · `abap-testing-quality` · `cds-development` · `rap-development` · `abap-debugging` · `abap-runtime-analysis` · `rap-service-delivery` · `sap-standard-api-analysis` · `clean-core-extensibility` · `sap-sdlc-orchestration` · `sap-transport-release` · `hana-cloud-inspection` · `hana-cloud-native-development` · `hana-cloud-validation`
 
-Agents and skills install for the harnesses you pick during global installation: a multi-select offers GitHub Copilot and Claude Code pre-checked, plus OpenAI Codex, Cursor, Gemini CLI, and opencode. In non-interactive installs they are installed for GitHub Copilot only. Repository-scoped installation instructions appear below.
+Agents and skills install for the harnesses you pick during global installation: a multi-select offers GitHub Copilot and Claude Code pre-checked, plus OpenAI Codex, Cursor, Gemini CLI, opencode, and Pi Coding Agent. In non-interactive installs they are installed for GitHub Copilot only. Repository-scoped installation instructions appear below.
 
 ## ✨ Your SAP development cockpit, inside your AI assistant
 
@@ -273,7 +273,7 @@ The installer handles VSP provisioning automatically:
 With `H2O_URL` set, an interactive install opens a checkbox picker with no destinations selected by default. Use **Space** to choose destinations and **Enter** to confirm. Press **a** to toggle all destinations (select all if any are unchecked; otherwise clear the selection). Confirming with none selected removes this add-on's managed MCP entries. When the `cf` CLI 8.18 or newer is authenticated to a targeted space, setup first offers an optional import from that space's Destination service; type **y** then **Enter** to include it, or press **Enter** to skip. Accepted CF and BAS destinations appear together in the picker. npm may run its install hook without an interactive terminal, even when the shell is interactive; in that case, selection is skipped without changing MCP config.
 
 
-The same postinstall offers the bundled agents and skills for several AI coding harnesses in a checkbox picker. **GitHub Copilot** and **Claude Code** start pre-checked, so pressing **Enter** alone installs both; **Space** selects or deselects a harness, **a** toggles all six, and confirming with none selected skips the step without changing files. With no interactive terminal, the assets are installed for GitHub Copilot only; set `SAP_AI_DEV_TOOLKIT_HARNESSES` to a comma-separated list of harness ids (`github-copilot`, `claude-code`, `codex`, `cursor`, `gemini-cli`, `opencode`) to choose non-interactively.
+The same postinstall offers the bundled agents and skills for several AI coding harnesses in a checkbox picker. **GitHub Copilot** and **Claude Code** start pre-checked, so pressing **Enter** alone installs both; **Space** selects or deselects a harness, **a** toggles all seven, and confirming with none selected skips the step without changing files. When destination MCP setup succeeds, the generated managed MCP servers are also mirrored into selected harnesses that have a stable user-level JSON MCP configuration (Claude Code, Cursor, Gemini CLI, and Pi Coding Agent). GitHub Copilot continues to use the BAS/VS Code MCP configuration written during destination setup. With no interactive terminal, the assets are installed for GitHub Copilot only; set `SAP_AI_DEV_TOOLKIT_HARNESSES` to a comma-separated list of harness ids (`github-copilot`, `claude-code`, `codex`, `cursor`, `gemini-cli`, `opencode`, `pi-coding-agent`) to choose non-interactively.
 
 Some current npm versions also require install hooks to be approved. If npm reports that `sap-ai-dev-toolkit`'s `postinstall` was blocked, allow it during a fresh install with `npm install --global --allow-scripts=sap-ai-dev-toolkit sap-ai-dev-toolkit`, or run `sap-ai-dev --setup` from an interactive BAS terminal after installation.
 
@@ -348,16 +348,19 @@ The package includes five user-invocable custom agents (**SAP Solution Architect
 
 After destination setup, the installer prints a 🤖 notice and a checkbox picker asking which AI coding harnesses should receive the bundled agents and skills. **Space** selects or deselects, **a** toggles all, **Enter** confirms. **GitHub Copilot** and **Claude Code** are pre-checked, so pressing **Enter** without changes installs both; confirming with none selected skips the step and leaves your files unchanged.
 
-| Harness | Skills land in | Agents land in |
-| --- | --- | --- |
-| GitHub Copilot | `$HOME/.copilot/skills/` | `$HOME/.copilot/agents/*.agent.md` |
-| Claude Code | `$HOME/.claude/skills/` | `$HOME/.claude/agents/<id>.md` (frontmatter reduced to `name` and `description`) |
-| OpenAI Codex | `$HOME/.agents/skills/` | — |
-| Cursor | `$HOME/.cursor/skills/` | — |
-| Gemini CLI | `$HOME/.gemini/skills/` | — |
-| opencode | `$XDG_CONFIG_HOME/opencode/skills/` (default `$HOME/.config/opencode/skills/`) | `$XDG_CONFIG_HOME/opencode/agents/<id>.md` (as subagents) |
+| Harness | Skills land in | Agents land in | MCP auto-wiring |
+| --- | --- | --- | --- |
+| GitHub Copilot | `$HOME/.copilot/skills/` | `$HOME/.copilot/agents/*.agent.md` | Uses the BAS/VS Code `mcp.json` written by destination setup |
+| Claude Code | `$HOME/.claude/skills/` | `$HOME/.claude/agents/<id>.md` (frontmatter reduced to `name` and `description`) | `$HOME/.claude.json` |
+| OpenAI Codex | `$HOME/.agents/skills/` | — | Not changed automatically |
+| Cursor | `$HOME/.cursor/skills/` | — | `$HOME/.cursor/mcp.json` |
+| Gemini CLI | `$HOME/.gemini/skills/` | — | `$HOME/.gemini/settings.json` |
+| opencode | `$XDG_CONFIG_HOME/opencode/skills/` (default `$HOME/.config/opencode/skills/`) | `$XDG_CONFIG_HOME/opencode/agents/<id>.md` (as subagents) | Not changed automatically |
+| Pi Coding Agent | `$PI_CODING_AGENT_DIR/skills/` (default `$HOME/.pi/agent/skills/`) | `$PI_CODING_AGENT_DIR/prompts/<id>.md` (as `/` prompt commands) | `$PI_CODING_AGENT_DIR/mcp.json` (default `$HOME/.pi/agent/mcp.json`) |
 
-All 14 skills use the portable `SKILL.md` format and are installed verbatim. The 5 agents use Copilot's `.agent.md` format, so they are only installed for harnesses with a custom-agent mechanism (GitHub Copilot, Claude Code, opencode), with frontmatter adapted where needed. Selecting several harnesses duplicates the small markdown payloads on disk.
+All 14 skills use the portable `SKILL.md` format and are installed verbatim. The 5 agents use Copilot's `.agent.md` format, so they are installed as native custom agents for harnesses with a custom-agent mechanism (GitHub Copilot, Claude Code, opencode), with frontmatter adapted where needed. Pi receives equivalent prompt templates (`/abap-developer`, `/sap-solution-architect`, and so on) because Pi exposes reusable personas through prompts rather than a separate custom-agent file type. Selecting several harnesses duplicates the small markdown payloads on disk.
+
+MCP auto-wiring preserves unrelated servers in each harness config and replaces only entries previously managed by `sap-ai-dev-toolkit`. Generated entries carry `SAP_AI_DEV_TOOLKIT_MANAGED=true` in their server environment so future reinstalls can reconcile them without touching user-owned MCP servers.
 
 These user-level customizations are available across workspaces opened by the same BAS user in the same dev space. The harness must be available in BAS and may need a window reload to discover new files. A non-interactive install skips the picker and installs for GitHub Copilot only; override with `SAP_AI_DEV_TOOLKIT_HARNESSES` (comma-separated harness ids). `npm install --ignore-scripts` skips the postinstall wizard entirely.
 

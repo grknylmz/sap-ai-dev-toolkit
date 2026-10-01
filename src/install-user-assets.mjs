@@ -75,7 +75,7 @@ async function planDestinations(harness, files) {
     if (!harness.supportsAgents) continue;
     const fileName = harness.agentFileName ? harness.agentFileName(basename(file.target)) : basename(file.target);
     const content = harness.agentDocument ? Buffer.from(harness.agentDocument(raw.toString('utf8')), 'utf8') : raw;
-    destinations.push({ target: join('agents', fileName), content });
+    destinations.push({ target: join(harness.agentTargetPrefix || 'agents', fileName), content });
   }
   return destinations;
 }

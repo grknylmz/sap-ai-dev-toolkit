@@ -31,6 +31,11 @@ export function agentMarkdownName(fileName) {
   return String(fileName).replace(/\.agent\.md$/, '.md');
 }
 
+export function piCodingAgentRoot({ home = process.env.HOME || homedir(), env = process.env } = {}) {
+  const override = typeof env?.PI_CODING_AGENT_DIR === 'string' ? env.PI_CODING_AGENT_DIR.trim() : '';
+  return override || join(home, '.pi', 'agent');
+}
+
 export function claudeCodeAgentDocument(source) {
   const frontmatter = splitFrontmatter(source);
   if (!frontmatter) throw new Error('unsupported agent frontmatter');
@@ -51,13 +56,35 @@ export function opencodeAgentDocument(source) {
   return renderDocument([{ key: 'description', value: description }, { key: 'mode', value: 'subagent' }], frontmatter.body);
 }
 
+export function piCodingAgentPromptDocument(source) {
+  const frontmatter = splitFrontmatter(source);
+  if (!frontmatter) throw new Error('unsupported agent frontmatter');
+  const name = requiredField(frontmatter.fields, 'name');
+  const description = requiredField(frontmatter.fields, 'description');
+  if (!name || !description) throw new Error('unsupported agent frontmatter');
+  const body = frontmatter.body
+    .replaceAll('from the Chat tools picker', 'from Pi\'s MCP tool context')
+    .replaceAll('the Chat tools picker', 'Pi\'s MCP tool context')
+    .replaceAll('current workspace and SAP MCP server', 'current workspace and configured SAP MCP server');
+  return renderDocument([
+    { key: 'description', value: `Use the ${name} SAP agent persona. ${description}` },
+    { key: 'argument-hint', value: '"[request]"' }
+  ], `Act as **${name}** for the following request. Follow these agent instructions and use relevant installed SAP skills when helpful.
+
+${body.trim()}
+
+User request: $ARGUMENTS
+`);
+}
+
 export const HARNESSES = [
   { id: 'github-copilot', label: 'GitHub Copilot', directory: '.copilot', supportsAgents: true, legacyManifest: true },
   { id: 'claude-code', label: 'Claude Code', directory: '.claude', supportsAgents: true, agentFileName: agentMarkdownName, agentDocument: claudeCodeAgentDocument },
   { id: 'codex', label: 'OpenAI Codex', directory: '.agents', supportsAgents: false },
   { id: 'cursor', label: 'Cursor', directory: '.cursor', supportsAgents: false },
   { id: 'gemini-cli', label: 'Gemini CLI', directory: '.gemini', supportsAgents: false },
-  { id: 'opencode', label: 'opencode', directory: 'opencode', configHome: true, supportsAgents: true, agentFileName: agentMarkdownName, agentDocument: opencodeAgentDocument }
+  { id: 'opencode', label: 'opencode', directory: 'opencode', configHome: true, supportsAgents: true, agentFileName: agentMarkdownName, agentDocument: opencodeAgentDocument },
+  { id: 'pi-coding-agent', label: 'Pi Coding Agent', directory: '.pi/agent', supportsAgents: true, agentTargetPrefix: 'prompts', agentFileName: agentMarkdownName, agentDocument: piCodingAgentPromptDocument, root: piCodingAgentRoot }
 ];
 
 export function harnessById(id) {
@@ -69,6 +96,7 @@ export function harnessById(id) {
 }
 
 export function harnessRoot(harness, { home = process.env.HOME || homedir(), env = process.env } = {}) {
+  if (harness.root) return harness.root({ home, env });
   if (harness.configHome) {
     const override = typeof env?.XDG_CONFIG_HOME === 'string' ? env.XDG_CONFIG_HOME.trim() : '';
     return join(override || join(home, '.config'), harness.directory);

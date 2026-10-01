@@ -14,9 +14,11 @@ import {
   harnessById,
   harnessRoot,
   opencodeAgentDocument,
-  parseHarnessSelection
+  parseHarnessSelection,
+  piCodingAgentPromptDocument
 } from '../src/harnesses.mjs';
 import { MANIFEST_NAME, installUserAssets, installUserAssetsForHarnesses } from '../src/install-user-assets.mjs';
+import { harnessMcpConfigPath, installMcpServersForHarnesses } from '../src/harness-mcp-config.mjs';
 
 const agentSource = [
   '---',
@@ -42,9 +44,9 @@ async function createSourceTree(root) {
   await writeAsset(root, 'skills/example/SKILL.md', '---\nname: example\ndescription: An example skill used by the harness tests.\n---\n\n# Example\n');
 }
 
-test('harness registry covers the six supported harnesses in canonical order', () => {
-  assert.deepEqual(HARNESSES.map(harness => harness.id), ['github-copilot', 'claude-code', 'codex', 'cursor', 'gemini-cli', 'opencode']);
-  assert.deepEqual(HARNESSES.filter(harness => harness.supportsAgents).map(harness => harness.id), ['github-copilot', 'claude-code', 'opencode']);
+test('harness registry covers the seven supported harnesses in canonical order', () => {
+  assert.deepEqual(HARNESSES.map(harness => harness.id), ['github-copilot', 'claude-code', 'codex', 'cursor', 'gemini-cli', 'opencode', 'pi-coding-agent']);
+  assert.deepEqual(HARNESSES.filter(harness => harness.supportsAgents).map(harness => harness.id), ['github-copilot', 'claude-code', 'opencode', 'pi-coding-agent']);
   assert.deepEqual(DEFAULT_HARNESS_IDS, ['github-copilot', 'claude-code']);
   assert.deepEqual(NON_INTERACTIVE_HARNESS_IDS, ['github-copilot']);
 });
@@ -59,10 +61,12 @@ test('harness roots resolve to the documented user-level directories', () => {
   assert.equal(harnessRoot(harnessById('opencode'), { home }), join(home, '.config', 'opencode'));
   assert.equal(harnessRoot(harnessById('opencode'), { home, env: { XDG_CONFIG_HOME: join('/', 'xdg') } }), join('/', 'xdg', 'opencode'));
   assert.equal(harnessRoot(harnessById('opencode'), { home, env: { XDG_CONFIG_HOME: '   ' } }), join(home, '.config', 'opencode'));
+  assert.equal(harnessRoot(harnessById('pi-coding-agent'), { home }), join(home, '.pi', 'agent'));
+  assert.equal(harnessRoot(harnessById('pi-coding-agent'), { home, env: { PI_CODING_AGENT_DIR: join('/', 'pi-agent') } }), join('/', 'pi-agent'));
 });
 
 test('harnessById rejects unknown ids with the valid id list', () => {
-  assert.throws(() => harnessById('windsurf'), /Unknown harness id: windsurf\. Valid harness ids: github-copilot, claude-code, codex, cursor, gemini-cli, opencode\./);
+  assert.throws(() => harnessById('windsurf'), /Unknown harness id: windsurf\. Valid harness ids: github-copilot, claude-code, codex, cursor, gemini-cli, opencode, pi-coding-agent\./);
 });
 
 test('parseHarnessSelection normalizes, dedupes, and orders selections', () => {
@@ -70,7 +74,7 @@ test('parseHarnessSelection normalizes, dedupes, and orders selections', () => {
   assert.deepEqual(parseHarnessSelection(' Cursor, github-copilot ,cursor'), ['github-copilot', 'cursor']);
   assert.deepEqual(parseHarnessSelection('Codex'), ['codex']);
   assert.deepEqual(parseHarnessSelection(',, '), []);
-  assert.throws(() => parseHarnessSelection('windsurf'), /Unknown harness id: windsurf\. Valid harness ids: github-copilot, claude-code, codex, cursor, gemini-cli, opencode\./);
+  assert.throws(() => parseHarnessSelection('windsurf'), /Unknown harness id: windsurf\. Valid harness ids: github-copilot, claude-code, codex, cursor, gemini-cli, opencode, pi-coding-agent\./);
   assert.throws(() => parseHarnessSelection('codex, windsurf, gemini'), /Unknown harness ids: windsurf, gemini\. Valid harness ids:/);
 });
 
@@ -99,8 +103,13 @@ test('opencodeAgentDocument emits description and subagent mode with an identica
   assert.equal(transformed.includes('name:'), false);
 });
 
+test('piCodingAgentPromptDocument emits a prompt template for the agent persona', () => {
+  const transformed = piCodingAgentPromptDocument(agentSource);
+  assert.equal(transformed, '---\ndescription: Use the Example Developer SAP agent persona. An example agent with a description that is long enough to look realistic.\nargument-hint: "[request]"\n---\nAct as **Example Developer** for the following request. Follow these agent instructions and use relevant installed SAP skills when helpful.\n\nExample agent body instructions.\n\nUser request: $ARGUMENTS\n');
+});
+
 test('agent document transforms reject malformed frontmatter', () => {
-  for (const transform of [claudeCodeAgentDocument, opencodeAgentDocument]) {
+  for (const transform of [claudeCodeAgentDocument, opencodeAgentDocument, piCodingAgentPromptDocument]) {
     assert.throws(() => transform('no frontmatter here'), /unsupported agent frontmatter/);
     assert.throws(() => transform('---\nname: missing description\n---\nbody'), /unsupported agent frontmatter/);
   }
@@ -138,6 +147,11 @@ test('installUserAssets writes the expected tree for every harness', async t => 
   const opencode = await installUserAssets({ harness: harnessById('opencode'), home, root, env: { XDG_CONFIG_HOME: xdg } });
   assert.equal(opencode.root, join(xdg, 'opencode'));
   assert.equal((await readFile(join(xdg, 'opencode', 'agents', 'abap-developer.md'), 'utf8')), opencodeAgentDocument(agentSource));
+
+  const pi = await installUserAssets({ harness: harnessById('pi-coding-agent'), home, root });
+  assert.equal(pi.root, join(home, '.pi', 'agent'));
+  assert.equal((await readFile(join(home, '.pi', 'agent', 'prompts', 'abap-developer.md'), 'utf8')), piCodingAgentPromptDocument(agentSource));
+  assert.equal((await stat(join(home, '.pi', 'agent', 'skills', 'example', 'SKILL.md'))).isFile(), true);
 
   for (const harness of HARNESSES) {
     const targetRoot = harnessRoot(harness, { home, env: { XDG_CONFIG_HOME: xdg } });
@@ -190,4 +204,74 @@ test('installUserAssetsForHarnesses isolates harness failures and reports result
   assert.equal(broken.results[0].harness, 'gemini-cli');
   assert.deepEqual(broken.failures.map(failure => failure.id), ['cursor', 'windsurf']);
   assert.equal(broken.failures[0].label, 'Cursor');
+});
+
+test('harness MCP paths target supported user-level JSON configs', () => {
+  const home = join('/', 'home', 'example');
+  assert.equal(harnessMcpConfigPath('github-copilot', { home }), null);
+  assert.equal(harnessMcpConfigPath('claude-code', { home }), join(home, '.claude.json'));
+  assert.equal(harnessMcpConfigPath('cursor', { home }), join(home, '.cursor', 'mcp.json'));
+  assert.equal(harnessMcpConfigPath('gemini-cli', { home }), join(home, '.gemini', 'settings.json'));
+  assert.equal(harnessMcpConfigPath('pi-coding-agent', { home }), join(home, '.pi', 'agent', 'mcp.json'));
+});
+
+test('installMcpServersForHarnesses wires managed servers and preserves unrelated entries', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-harness-mcp-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const home = join(directory, 'home');
+  const env = { PI_CODING_AGENT_DIR: join(directory, 'pi-agent') };
+  const servers = {
+    'demo-abap': {
+      type: 'stdio',
+      command: 'sap-ai-dev',
+      env: { H2O_URL: 'http://h2o.example', SAP_AI_DEV_TOOLKIT_DESTINATION: 'DEMO_ABAP' },
+      BAS_EXT: 'true'
+    },
+    'cap-tools': {
+      type: 'stdio',
+      command: 'npx',
+      args: ['--yes', '--package=@cap-js/mcp-server', 'cds-mcp'],
+      displayName: 'CAP tools',
+      description: 'CAP project inspection.',
+      BAS_EXT: 'true'
+    }
+  };
+
+  await mkdir(join(home, '.cursor'), { recursive: true });
+  await writeFile(join(home, '.cursor', 'mcp.json'), JSON.stringify({
+    mcpServers: {
+      mine: { command: 'node', args: ['mine.js'] },
+      stale: { command: 'sap-ai-dev', env: { SAP_AI_DEV_TOOLKIT_DESTINATION: 'OLD' } }
+    }
+  }));
+
+  const result = await installMcpServersForHarnesses(['github-copilot', 'cursor', 'gemini-cli', 'pi-coding-agent'], servers, { home, env });
+  assert.deepEqual(result.failures, []);
+  assert.equal(result.results.find(entry => entry.harness === 'github-copilot').supported, false);
+
+  const cursor = JSON.parse(await readFile(join(home, '.cursor', 'mcp.json'), 'utf8'));
+  assert.deepEqual(Object.keys(cursor.mcpServers).sort(), ['cap-tools', 'demo-abap', 'mine']);
+  assert.equal(cursor.mcpServers.mine.command, 'node');
+  assert.equal(cursor.mcpServers['demo-abap'].command, 'sap-ai-dev');
+  assert.equal(cursor.mcpServers['demo-abap'].env.SAP_AI_DEV_TOOLKIT_DESTINATION, 'DEMO_ABAP');
+  assert.equal(cursor.mcpServers['demo-abap'].env.SAP_AI_DEV_TOOLKIT_MANAGED, 'true');
+  assert.equal(cursor.mcpServers['cap-tools'].description, 'CAP project inspection.');
+
+  const gemini = JSON.parse(await readFile(join(home, '.gemini', 'settings.json'), 'utf8'));
+  assert.equal(gemini.mcpServers['demo-abap'].command, 'sap-ai-dev');
+  const pi = JSON.parse(await readFile(join(directory, 'pi-agent', 'mcp.json'), 'utf8'));
+  assert.equal(pi.mcpServers['cap-tools'].command, 'npx');
+});
+
+test('installMcpServersForHarnesses refuses to overwrite user-owned MCP entries', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-harness-mcp-conflict-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const home = join(directory, 'home');
+  await mkdir(join(home, '.cursor'), { recursive: true });
+  await writeFile(join(home, '.cursor', 'mcp.json'), JSON.stringify({ mcpServers: { demo: { command: 'other' } } }));
+
+  const result = await installMcpServersForHarnesses(['cursor'], { demo: { type: 'stdio', command: 'sap-ai-dev' } }, { home });
+  assert.equal(result.results.length, 0);
+  assert.equal(result.failures.length, 1);
+  assert.match(result.failures[0].error.message, /already exists and is not managed/);
 });
