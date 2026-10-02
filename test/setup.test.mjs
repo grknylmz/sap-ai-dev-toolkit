@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { installMcpConfig } from '../src/mcp-config.mjs';
-import { runSetup } from '../src/setup.mjs';
+import { parseSapClientList, runSetup } from '../src/setup.mjs';
 import { spawnWithPty } from './pty.mjs';
 
 const destinations = [
@@ -54,6 +54,18 @@ function runSetupVisibilityInPty(fixture, env, keys = '\r') {
     });
   });
 }
+
+test('parseSapClientList handles defaults, whitespace, duplicates, and invalid clients', () => {
+  assert.deepEqual(parseSapClientList('', '100'), ['100']);
+  assert.deepEqual(parseSapClientList('   ', '200'), ['200']);
+  assert.deepEqual(parseSapClientList(undefined, '000'), ['000']);
+  assert.deepEqual(parseSapClientList('100, 200,100,001'), ['100', '200', '001']);
+  assert.deepEqual(parseSapClientList(' 066 '), ['066']);
+  for (const invalid of ['1', '01', '0000', 'abc', '10a', '100;200', '100 200']) {
+    assert.throws(() => parseSapClientList(invalid, '100'), /3 digits/);
+  }
+  assert.throws(() => parseSapClientList('', 'abc'), /3 digits/);
+});
 
 function runPostinstallInPty(env, keys, assetsAnswer = '\r') {
   return new Promise((resolve, reject) => {

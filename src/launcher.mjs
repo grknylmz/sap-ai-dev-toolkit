@@ -11,13 +11,15 @@ import { installMcpConfig, repairManagedMcpConfig } from './mcp-config.mjs';
 import { runSetup } from './setup.mjs';
 import { resolveConfiguredCloudFoundryDestination } from './cf-destination.mjs';
 import { createWindowsSsoAdtProxy } from './windows-sso-adt-proxy.mjs';
+import { createTlsServerNameAdtProxy } from './tls-adt-proxy.mjs';
 import { withBrandedEnvironment } from './branding.mjs';
 import { redactText } from './redact.mjs';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const runtimeEnv = withBrandedEnvironment(process.env);
 
-function hasFlag(name) { return process.argv.slice(2).includes(name); }
+function args() { return process.argv.slice(2); }
+function hasFlag(name) { return args().includes(name); }
 function json(value) { process.stdout.write(`${JSON.stringify(value)}\n`); }
 // Timestamped stderr lines so MCP server output shows when each event
 // happened, not just that it did.
@@ -27,7 +29,7 @@ function usage() {
   return [
     'Usage: sap-ai-dev [options]',
     '',
-    'With H2O_URL set, starts the SAP AI Dev Toolkit stdio server for selected BAS destinations; with local SAP GUI setup, starts the selected local ADT system.',
+    'With H2O_URL set, starts the SAP AI Dev Toolkit stdio server for selected BAS destinations; with local SAP GUI setup, starts the selected local ADT system. With no BAS environment and no options in an interactive terminal, starts local setup.',
     'Options:',
     '  --setup                  Configure generated BAS MCP servers',
     '  --tools                  Also offer full-stack SAP companion MCP servers (use with --setup)',
@@ -175,31 +177,58 @@ async function configuredLocalSapGuiDestination(env) {
   const name = env.SAP_AI_DEV_TOOLKIT_DESTINATION || env.SAP_SYSTEM_ID || 'local-sap';
   if (!env.SAP_URL) throw new Error('SAP_URL is required for local SAP GUI MCP entries. Rerun sap-ai-dev --setup and enter the ADT URL.');
   const authMode = String(env.SAP_AUTH_MODE || '').toLowerCase();
+  const tlsServerName = String(env.SAP_TLS_SERVER_NAME || env.SAP_AI_DEV_TOOLKIT_TLS_SERVER_NAME || '').trim();
+  const tlsServerNames = String(env.SAP_TLS_SERVER_NAMES || env.SAP_AI_DEV_TOOLKIT_TLS_SERVER_NAMES || tlsServerName).split(',').map(value => value.trim()).filter(Boolean);
+  const tlsCaFile = String(env.SAP_TLS_CA_FILE || env.SAP_AI_DEV_TOOLKIT_TLS_CA_FILE || '').trim();
+  const tlsRoute = tlsServerNames.length
+    ? await createTlsServerNameAdtProxy({ destinationUrl: env.SAP_URL, tlsServerNames, caFile: tlsCaFile || undefined })
+    : null;
+  const adtUrl = tlsRoute?.url || env.SAP_URL;
+  const closeRoute = async route => {
+    await Promise.all([route?.close?.(), tlsRoute?.close?.()].filter(Boolean).map(close => Promise.resolve().then(close).catch(() => {})));
+  };
   if (authMode === 'windows-sso') {
-    const route = await createWindowsSsoAdtProxy({ destinationUrl: env.SAP_URL, env });
+    const route = await createWindowsSsoAdtProxy({ destinationUrl: adtUrl, env });
     return {
       source: 'sap-gui-local',
       name,
       url: route.url,
       backendUrl: env.SAP_URL,
       client: env.SAP_CLIENT || '001',
+      systemId: env.SAP_SYSTEM_ID || '',
       authentication: 'WindowsSSO',
       childEnv: {},
-      close: route.close,
-      probe: { status: 'configured', available: true }
+      close: () => closeRoute(route),
+      probe: { status: tlsRoute ? 'configured-tls-server-name' : 'configured', available: true }
     };
   }
+  const childEnv = (() => {
+    if (authMode === 'browser-saml') {
+      return { SAP_BROWSER_AUTH: 'true', SAP_SAML_AUTH: 'true' };
+    }
+    if (authMode === 'saml-password') {
+      return {
+        SAP_SAML_AUTH: 'true',
+        SAP_SAML_USER: env.SAP_SAML_USER || env.SAP_USER || env.SAP_USERNAME || '',
+        SAP_SAML_PASSWORD: env.SAP_SAML_PASSWORD || env.SAP_PASSWORD || env.SAP_PASS || ''
+      };
+    }
+    return {
+      SAP_USER: env.SAP_USER || env.SAP_USERNAME || '',
+      SAP_PASSWORD: env.SAP_PASSWORD || env.SAP_PASS || ''
+    };
+  })();
   return {
     source: 'sap-gui-local',
     name,
-    url: env.SAP_URL,
+    url: adtUrl,
+    backendUrl: tlsRoute ? env.SAP_URL : undefined,
     client: env.SAP_CLIENT || '001',
-    authentication: 'Basic',
-    childEnv: {
-      SAP_USER: env.SAP_USER || env.SAP_USERNAME || '',
-      SAP_PASSWORD: env.SAP_PASSWORD || env.SAP_PASS || ''
-    },
-    probe: { status: 'configured', available: true }
+    systemId: env.SAP_SYSTEM_ID || '',
+    authentication: authMode === 'browser-saml' ? 'BrowserSAML' : authMode === 'saml-password' ? 'SAML' : 'Basic',
+    childEnv,
+    close: tlsRoute?.close,
+    probe: { status: tlsRoute ? 'configured-tls-server-name' : 'configured', available: true }
   };
 }
 
@@ -281,6 +310,11 @@ async function main() {
   }
 
   if (!runtimeEnv.H2O_URL) {
+    if (args().length === 0 && process.stdin.isTTY && process.stdout.isTTY) {
+      console.error('sap-ai-dev: no BAS environment detected; starting local interactive setup. Use --help for other commands.');
+      await runSetup();
+      return;
+    }
     const binary = await binaryOrError();
     const child = spawn(binary, process.argv.slice(2), { env: runtimeEnv, stdio: 'inherit' });
     process.once('SIGINT', () => child.kill('SIGINT'));

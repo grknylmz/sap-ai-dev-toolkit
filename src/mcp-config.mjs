@@ -129,6 +129,15 @@ export function generatedServerName(destinationName) {
   return slugifyDestination(destinationName);
 }
 
+export function generatedDestinationServerName(destination) {
+  if (destination?.source === 'sap-gui-local') {
+    const systemId = String(destination.systemId || '').trim();
+    const client = String(destination.client || '001').trim() || '001';
+    if (systemId) return generatedServerName(`${systemId}-${client}`);
+  }
+  return generatedServerName(destination?.source === 'cloud-foundry' ? destination.serverName : destination?.name);
+}
+
 export function buildSapDevelopmentMcpEntries(serverIds = SAP_DEVELOPMENT_MCP_SERVERS.map(server => server.id), { packageVersions = {}, packageManager = 'npx' } = {}) {
   const selected = new Set(serverIds);
   const entries = Object.create(null);
@@ -159,7 +168,7 @@ export function buildMcpEntries(destinations, env = process.env) {
   for (const destination of selected) {
     const isCf = destination.source === 'cloud-foundry';
     const isLocalSapGui = destination.source === 'sap-gui-local';
-    const name = generatedServerName(isCf ? destination.serverName : destination.name);
+    const name = generatedDestinationServerName(destination);
     if (Object.hasOwn(entries, name)) throw new Error(`Duplicate MCP destination server name: ${name} (two destination names normalize to the same lowercase server name)`);
     const entryEnv = {
       ...(h2oUrl ? { H2O_URL: String(h2oUrl) } : {}),
@@ -192,6 +201,8 @@ export function buildMcpEntries(destinations, env = process.env) {
         SAP_URL: String(destination.url),
         SAP_CLIENT: String(destination.client || '001'),
         ...(destination.systemId ? { SAP_SYSTEM_ID: String(destination.systemId) } : {}),
+        ...(Array.isArray(destination.tlsServerNames) && destination.tlsServerNames.length ? { SAP_TLS_SERVER_NAMES: destination.tlsServerNames.join(',') } : {}),
+        ...(!Array.isArray(destination.tlsServerNames) && destination.tlsServerName ? { SAP_TLS_SERVER_NAME: String(destination.tlsServerName) } : {}),
         ...(destination.childEnv || {})
       });
     } else {
@@ -400,9 +411,9 @@ export async function repairManagedMcpConfig(discoveredDestinations, { env = pro
   for (const [serverName, entry] of Object.entries(config.servers)) {
     if (!isManagedBasDestinationEntry(entry)) continue;
     const destinationName = destinationValue(entry.env);
-    const expectedName = generatedServerName(destinationName);
     const destination = basDestinations.get(destinationName);
     if (!destination) continue;
+    const expectedName = generatedDestinationServerName(destination);
     if (expectedName !== serverName) {
       // Legacy mixed-case entries migrate to the normalized lowercase key.
       // A user-owned entry on the target key blocks the rename; merging is

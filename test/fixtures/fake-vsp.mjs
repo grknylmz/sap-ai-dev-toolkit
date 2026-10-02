@@ -205,7 +205,7 @@ process.stdin.on('data', async chunk => {
     if (!line) continue;
     const message = JSON.parse(line);
     if (message.method === 'initialize') {
-      log({ event: 'initialize', argv: args, env: { guard: process.env.SAP_PROXY_CONTEXTID_GUARD, authorization: process.env.Authorization, cookie: process.env.Cookie, user: process.env.SAP_USER, password: process.env.SAP_PASSWORD, verbose: process.env.SAP_VERBOSE, httpProxy: process.env.HTTP_PROXY, httpsProxy: process.env.HTTPS_PROXY, noProxy: process.env.NO_PROXY, allowTransportableEdits: process.env.SAP_ALLOW_TRANSPORTABLE_EDITS } });
+      log({ event: 'initialize', argv: args, env: { guard: process.env.SAP_PROXY_CONTEXTID_GUARD, authorization: process.env.Authorization, cookie: process.env.Cookie, user: process.env.SAP_USER, password: process.env.SAP_PASSWORD, browserAuth: process.env.SAP_BROWSER_AUTH, samlAuth: process.env.SAP_SAML_AUTH, samlUser: process.env.SAP_SAML_USER, samlPassword: process.env.SAP_SAML_PASSWORD, verbose: process.env.SAP_VERBOSE, httpProxy: process.env.HTTP_PROXY, httpsProxy: process.env.HTTPS_PROXY, noProxy: process.env.NO_PROXY, allowTransportableEdits: process.env.SAP_ALLOW_TRANSPORTABLE_EDITS } });
       if (destination === 'broken') process.exit(2);
       reply(message.id, { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: destination, version: 'fixture' } });
     } else if (message.method === 'tools/list') {

@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
-import { spawn } from 'node:child_process';
+import https from 'node:https';
+import tls from 'node:tls';
+import { spawn, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,6 +13,7 @@ import { spawnWithPty } from './pty.mjs';
 
 const launcher = fileURLToPath(new URL('../src/launcher.mjs', import.meta.url));
 const fakeVsp = fileURLToPath(new URL('./fixtures/fake-vsp.mjs', import.meta.url));
+const exec = promisify(execFile);
 
 function runLauncher(args, env) {
   return new Promise((resolve, reject) => {
@@ -65,6 +69,22 @@ function runLauncherTtyScripted(env, steps, args = ['--setup']) {
     child.on('error', error => { clearTimeout(timeout); reject(error); });
     child.on('exit', (code, signal) => { clearTimeout(timeout); resolve({ code, signal, stdout, stderr, sent: sent.size }); });
   });
+}
+
+async function createCertificate(directory, dnsName = 'sap-auto.example.test') {
+  const key = join(directory, 'key.pem');
+  const cert = join(directory, 'cert.pem');
+  const config = join(directory, 'openssl.cnf');
+  await writeFile(config, `[req]\ndistinguished_name=req_distinguished_name\nx509_extensions=v3_req\nprompt=no\n[req_distinguished_name]\nCN=${dnsName}\n[v3_req]\nsubjectAltName=@alt_names\n[alt_names]\nDNS.1=${dnsName}\n`);
+  await exec('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-keyout', key, '-out', cert, '-config', config]);
+  return { key: await readFile(key), cert: await readFile(cert) };
+}
+
+async function startCertificateServer(directory) {
+  const material = await createCertificate(directory);
+  const server = https.createServer({ key: material.key, cert: material.cert, SNICallback: (_name, callback) => callback(null, tls.createSecureContext({ key: material.key, cert: material.cert })) }, (_request, response) => response.end('<ok/>'));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  return server;
 }
 
 test('help exits before BAS destination discovery', async t => {
@@ -249,6 +269,37 @@ test('runtime starts a configured local SAP GUI destination without BAS discover
   }
 });
 
+test('runtime starts a configured local SAP GUI destination through TLS server-name self-healing proxy', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-tls-runtime-'));
+  const log = join(directory, 'children.log');
+  try {
+    const result = await runLauncher(['--doctor', '--json'], {
+      ...process.env,
+      SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
+      SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
+      SAP_AI_DEV_TOOLKIT_DESTINATION: 'Local TLS',
+      SAP_URL: 'https://196.218.200.67:44300',
+      SAP_TLS_SERVER_NAME: 'sapprd.company.local',
+      SAP_CLIENT: '001',
+      SAP_USER: 'local-user',
+      SAP_PASSWORD: 'local-password',
+      H2O_URL: '',
+      FAKE_LOG: log
+    });
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).ok, true);
+    const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
+    const init = entries.find(entry => entry.event === 'initialize');
+    const url = init.argv[init.argv.indexOf('--url') + 1];
+    assert.match(url, /^http:\/\/127\.0\.0\.1:\d+$/);
+    assert.equal(JSON.stringify(init).includes('196.218.200.67'), false);
+    assert.equal(init.env.user, 'local-user');
+    assert.equal(init.env.password, 'local-password');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('runtime starts a configured local SAP GUI Windows SSO destination through loopback proxy without credentials', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-sso-runtime-'));
   const log = join(directory, 'children.log');
@@ -280,6 +331,61 @@ test('runtime starts a configured local SAP GUI Windows SSO destination through 
     assert.equal(init.env.password, '');
     assert.equal(JSON.stringify(init).includes('must-not-pass'), false);
     assert.equal(JSON.stringify(init).includes('abap.example.com'), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('runtime starts a configured local SAP GUI browser SAML destination with VSP browser auth env', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-browser-saml-runtime-'));
+  const log = join(directory, 'children.log');
+  try {
+    const result = await runLauncher(['--doctor', '--json'], {
+      ...process.env,
+      SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
+      SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
+      SAP_AI_DEV_TOOLKIT_DESTINATION: 'Local Browser SAML',
+      SAP_URL: 'https://abap.example.com:44300',
+      SAP_CLIENT: '100',
+      SAP_AUTH_MODE: 'browser-saml',
+      H2O_URL: '',
+      FAKE_LOG: log
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
+    const init = entries.find(entry => entry.event === 'initialize');
+    assert.equal(init.env.browserAuth, 'true');
+    assert.equal(init.env.samlAuth, 'true');
+    assert.equal(init.argv.includes('--proxy-auth'), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('runtime starts a configured local SAP GUI SAML password destination with SAML env', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-saml-password-runtime-'));
+  const log = join(directory, 'children.log');
+  try {
+    const result = await runLauncher(['--doctor', '--json'], {
+      ...process.env,
+      SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
+      SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
+      SAP_AI_DEV_TOOLKIT_DESTINATION: 'Local SAML',
+      SAP_URL: 'https://abap.example.com:44300',
+      SAP_CLIENT: '100',
+      SAP_AUTH_MODE: 'saml-password',
+      SAP_SAML_USER: 'saml-user',
+      SAP_SAML_PASSWORD: 'saml-password',
+      H2O_URL: '',
+      FAKE_LOG: log
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
+    const init = entries.find(entry => entry.event === 'initialize');
+    assert.equal(init.env.samlAuth, 'true');
+    assert.equal(init.env.samlUser, 'saml-user');
+    assert.equal(init.env.samlPassword, 'saml-password');
+    assert.equal(init.argv.includes('--proxy-auth'), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -341,6 +447,27 @@ test('setup subprocess writes one isolated MCP entry per selected destination', 
   }
 });
 
+test('interactive local no-arg launcher starts setup instead of VSP', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-noarg-'));
+  const env = {
+    ...process.env,
+    HOME: directory,
+    APPDATA: join(directory, 'AppData', 'Roaming'),
+    SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(directory, 'mcp.json')
+  };
+  delete env.H2O_URL;
+  try {
+    const result = await runLauncherTty(env, '', []);
+    const logs = `${result.stdout}\n${result.stderr}`;
+    assert.equal(result.code, 0, logs);
+    assert.match(logs, /starting local interactive setup/);
+    assert.match(logs, /Looking for local SAP GUI system configuration/);
+    assert.match(logs, /No SAP GUI systems were found on this computer/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('local setup discovers SAP GUI systems, prompts for ADT URL, and writes login inputs', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-setup-'));
   const appData = join(directory, 'AppData', 'Roaming');
@@ -359,20 +486,139 @@ test('local setup discovers SAP GUI systems, prompts for ADT URL, and writes log
       SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config
     }, [
       { when: 'Select destinations', input: ' \r', end: false },
+      { when: 'SAP client(s) for Local ABAP', input: '\r', end: false },
       { when: 'ADT URL for Local ABAP', input: '\r' }
     ], ['--setup', '--npx']);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
-    assert.equal(result.sent, 2);
+    assert.equal(result.sent, 3);
     const current = JSON.parse(await readFile(config, 'utf8'));
-    assert.deepEqual(Object.keys(current.servers).sort(), ['local-abap', 'unrelated']);
-    assert.equal(current.servers['local-abap'].env.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE, 'sap-gui-local');
-    assert.equal(current.servers['local-abap'].env.SAP_AUTH_MODE, 'basic');
-    assert.equal(current.servers['local-abap'].env.SAP_URL, 'https://abap.example.com:44300');
-    assert.equal(current.servers['local-abap'].env.SAP_CLIENT, '100');
-    assert.equal(current.servers['local-abap'].env.SAP_USER, '${input:sap-ai-dev-local-abap-user}');
-    assert.equal(current.servers['local-abap'].env.SAP_PASSWORD, '${input:sap-ai-dev-local-abap-password}');
+    assert.deepEqual(Object.keys(current.servers).sort(), ['a4h-100', 'unrelated']);
+    assert.equal(current.servers['a4h-100'].env.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE, 'sap-gui-local');
+    assert.equal(current.servers['a4h-100'].env.SAP_AUTH_MODE, 'basic');
+    assert.equal(current.servers['a4h-100'].env.SAP_URL, 'https://abap.example.com:44300');
+    assert.equal(current.servers['a4h-100'].env.SAP_CLIENT, '100');
+    assert.equal(current.servers['a4h-100'].env.SAP_SYSTEM_ID, 'A4H');
+    assert.equal(current.servers['a4h-100'].env.SAP_USER, '${input:sap-ai-dev-local-abap-user}');
+    assert.equal(current.servers['a4h-100'].env.SAP_PASSWORD, '${input:sap-ai-dev-local-abap-password}');
     assert.deepEqual(current.inputs.map(input => input.id), ['keep-me', 'sap-ai-dev-local-abap-user', 'sap-ai-dev-local-abap-password']);
   } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('local setup creates separate MCP entries for multiple entered SAP clients', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-multi-client-'));
+  const appData = join(directory, 'AppData', 'Roaming');
+  const sapCommon = join(appData, 'SAP', 'Common');
+  await mkdir(sapCommon, { recursive: true });
+  await writeFile(join(sapCommon, 'SAPUILandscape.xml'), `<?xml version="1.0"?><Landscape><Services><Service type="SAPGUI" name="Multi ABAP" server="abap.example.com" systemid="A4H" instancenumber="00" client="100" /></Services></Landscape>`);
+  const config = join(directory, 'mcp.json');
+  await writeFile(config, JSON.stringify({ inputs: [], servers: {} }));
+  try {
+    const result = await runLauncherTtyScripted({
+      ...process.env,
+      HOME: directory,
+      USERPROFILE: directory,
+      APPDATA: appData,
+      H2O_URL: '',
+      SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config
+    }, [
+      { when: 'Select destinations', input: ' \r', end: false },
+      { when: 'SAP client(s) for Multi ABAP', input: ' 100, 200,100 \r', end: false },
+      { when: 'ADT URL for Multi ABAP', input: '\r' }
+    ], ['--setup', '--npx']);
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal(result.sent, 3);
+    const current = JSON.parse(await readFile(config, 'utf8'));
+    assert.deepEqual(Object.keys(current.servers).sort(), ['a4h-100', 'a4h-200']);
+    assert.equal(current.servers['a4h-100'].env.SAP_CLIENT, '100');
+    assert.equal(current.servers['a4h-200'].env.SAP_CLIENT, '200');
+    assert.equal(current.servers['a4h-100'].env.SAP_AI_DEV_TOOLKIT_DESTINATION, 'Multi ABAP 100');
+    assert.equal(current.servers['a4h-200'].env.SAP_AI_DEV_TOOLKIT_DESTINATION, 'Multi ABAP 200');
+    assert.deepEqual(current.inputs.map(input => input.id).sort(), [
+      'sap-ai-dev-multi-abap-100-password',
+      'sap-ai-dev-multi-abap-100-user',
+      'sap-ai-dev-multi-abap-200-password',
+      'sap-ai-dev-multi-abap-200-user'
+    ]);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('local setup disambiguates duplicate SAP GUI system names before writing MCP entries', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-duplicate-names-'));
+  const appData = join(directory, 'AppData', 'Roaming');
+  const sapCommon = join(appData, 'SAP', 'Common');
+  await mkdir(sapCommon, { recursive: true });
+  await writeFile(join(sapCommon, 'SAPUILandscape.xml'), `<?xml version="1.0"?><Landscape><Services><Service type="SAPGUI" name="Duplicate ABAP" server="one.example.com" systemid="A4H" instancenumber="00" client="100" /><Service type="SAPGUI" name="Duplicate ABAP" server="two.example.com" systemid="B4H" instancenumber="01" client="100" /></Services></Landscape>`);
+  const config = join(directory, 'mcp.json');
+  await writeFile(config, JSON.stringify({ inputs: [], servers: {} }));
+  try {
+    const result = await runLauncherTtyScripted({
+      ...process.env,
+      HOME: directory,
+      USERPROFILE: directory,
+      APPDATA: appData,
+      H2O_URL: '',
+      SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config
+    }, [
+      { when: 'Select destinations', input: 'a\r', end: false },
+      { when: 'SAP client(s) for Duplicate ABAP (A4H one.example.com 00)', input: '\r', end: false },
+      { when: 'ADT URL for Duplicate ABAP (A4H one.example.com 00)', input: '\r', end: false },
+      { when: 'SAP client(s) for Duplicate ABAP (B4H two.example.com 01)', input: '\r', end: false },
+      { when: 'ADT URL for Duplicate ABAP (B4H two.example.com 01)', input: '\r' }
+    ], ['--setup', '--npx']);
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal(result.sent, 5);
+    const current = JSON.parse(await readFile(config, 'utf8'));
+    assert.deepEqual(Object.keys(current.servers).sort(), [
+      'a4h-100',
+      'b4h-100'
+    ]);
+    assert.equal(current.servers['a4h-100'].env.SAP_URL, 'https://one.example.com:44300');
+    assert.equal(current.servers['b4h-100'].env.SAP_URL, 'https://two.example.com:44301');
+    assert.equal(current.servers['a4h-100'].env.SAP_AI_DEV_TOOLKIT_DESTINATION, 'Duplicate ABAP 100 A4H one.example.com 00');
+    assert.equal(current.servers['b4h-100'].env.SAP_AI_DEV_TOOLKIT_DESTINATION, 'Duplicate ABAP 100 B4H two.example.com 01');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('local setup auto-discovers TLS certificate DNS names when ADT URL uses an IP address', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-tls-setup-'));
+  const appData = join(directory, 'AppData', 'Roaming');
+  const sapCommon = join(appData, 'SAP', 'Common');
+  await mkdir(sapCommon, { recursive: true });
+  await writeFile(join(sapCommon, 'SAPUILandscape.xml'), `<?xml version="1.0"?><Landscape><Services><Service type="SAPGUI" name="IP ABAP" server="196.218.200.67" systemid="IP1" instancenumber="00" client="001" /></Services></Landscape>`);
+  const config = join(directory, 'mcp.json');
+  await writeFile(config, JSON.stringify({ inputs: [], servers: {} }));
+  const certificateServer = await startCertificateServer(directory);
+  try {
+    const adtUrl = `https://127.0.0.1:${certificateServer.address().port}`;
+    const result = await runLauncherTtyScripted({
+      ...process.env,
+      HOME: directory,
+      USERPROFILE: directory,
+      APPDATA: appData,
+      H2O_URL: '',
+      SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config
+    }, [
+      { when: 'Select destinations', input: ' \r', end: false },
+      { when: 'SAP client(s) for IP ABAP', input: '\r', end: false },
+      { when: 'ADT URL for IP ABAP', input: `${adtUrl}\r`, end: false },
+      { when: 'Use discovered certificate DNS name', input: '\r' }
+    ], ['--setup', '--npx']);
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal(result.sent, 4);
+    assert.match(result.stdout, /TLS self-heal/);
+    const current = JSON.parse(await readFile(config, 'utf8'));
+    assert.equal(current.servers['ip1-001'].env.SAP_URL, adtUrl);
+    assert.equal(current.servers['ip1-001'].env.SAP_TLS_SERVER_NAMES, 'sap-auto.example.test');
+    assert.equal(current.servers['ip1-001'].env.SAP_TLS_SERVER_NAME, undefined);
+    assert.equal(current.servers['ip1-001'].env.SAP_AUTH_MODE, 'basic');
+  } finally {
+    await new Promise(resolve => certificateServer.close(resolve));
     await rm(directory, { recursive: true, force: true });
   }
 });
@@ -396,20 +642,77 @@ test('local setup can write Windows SSO auth mode without login inputs', async (
       SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config
     }, [
       { when: 'Select destinations', input: ' \r', end: false },
+      { when: 'SAP client(s) for SSO ABAP', input: '\r', end: false },
       { when: 'ADT URL for SSO ABAP', input: '\r', end: false },
       { when: 'Authentication for SSO ABAP', input: 'sso\r' }
     ], ['--setup', '--npx']);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
-    assert.equal(result.sent, 3);
+    assert.equal(result.sent, 4);
     const current = JSON.parse(await readFile(config, 'utf8'));
-    assert.equal(current.servers['sso-abap'].env.SAP_AUTH_MODE, 'windows-sso');
-    assert.equal(current.servers['sso-abap'].env.SAP_USER, undefined);
-    assert.equal(current.servers['sso-abap'].env.SAP_PASSWORD, undefined);
-    assert.equal(current.servers['sso-abap'].env.SAP_URL, 'https://sso.example.com:44300');
+    assert.equal(current.servers['s4h-100'].env.SAP_AUTH_MODE, 'windows-sso');
+    assert.equal(current.servers['s4h-100'].env.SAP_USER, undefined);
+    assert.equal(current.servers['s4h-100'].env.SAP_PASSWORD, undefined);
+    assert.equal(current.servers['s4h-100'].env.SAP_URL, 'https://sso.example.com:44300');
     assert.deepEqual(current.inputs.map(input => input.id), ['keep-me']);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('local setup writes browser SAML, SAML password, and Windows credential UI auth modes', async () => {
+  async function runMode({ shortcut, directoryPrefix, expectedEnv, expectedInputIds = [] }) {
+    const directory = await mkdtemp(join(tmpdir(), directoryPrefix));
+    const appData = join(directory, 'AppData', 'Roaming');
+    const sapCommon = join(appData, 'SAP', 'Common');
+    await mkdir(sapCommon, { recursive: true });
+    await writeFile(join(sapCommon, 'SAPUILandscape.xml'), `<?xml version="1.0"?><Landscape><Services><Service type="SAPGUI" name="Auth ABAP" server="auth.example.com" systemid="A9H" instancenumber="00" client="100" /></Services></Landscape>`);
+    const config = join(directory, 'mcp.json');
+    await writeFile(config, JSON.stringify({ inputs: [], servers: {} }));
+    try {
+      const result = await runLauncherTtyScripted({
+        ...process.env,
+        HOME: directory,
+        USERPROFILE: directory,
+        APPDATA: appData,
+        H2O_URL: '',
+        SAP_AI_DEV_TOOLKIT_ENABLE_WINDOWS_SSO_SETUP: 'true',
+        SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config
+      }, [
+        { when: 'Select destinations', input: ' \r', end: false },
+        { when: 'SAP client(s) for Auth ABAP', input: '\r', end: false },
+        { when: 'ADT URL for Auth ABAP', input: '\r', end: false },
+        { when: 'Authentication for Auth ABAP', input: `${shortcut}\r` }
+      ], ['--setup', '--npx']);
+      assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+      const current = JSON.parse(await readFile(config, 'utf8'));
+      for (const [key, value] of Object.entries(expectedEnv)) assert.equal(current.servers['a9h-100'].env[key], value, key);
+      assert.deepEqual((current.inputs || []).map(input => input.id), expectedInputIds);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  }
+
+  await runMode({
+    shortcut: 'w',
+    directoryPrefix: 'sap-ai-local-win-ui-setup-',
+    expectedEnv: { SAP_AUTH_MODE: 'windows-sso', SAP_AI_DEV_TOOLKIT_WINDOWS_CREDENTIAL_UI: 'true' }
+  });
+  await runMode({
+    shortcut: 'b',
+    directoryPrefix: 'sap-ai-local-browser-saml-setup-',
+    expectedEnv: { SAP_AUTH_MODE: 'browser-saml', SAP_BROWSER_AUTH: 'true', SAP_SAML_AUTH: 'true' }
+  });
+  await runMode({
+    shortcut: 'm',
+    directoryPrefix: 'sap-ai-local-saml-password-setup-',
+    expectedEnv: {
+      SAP_AUTH_MODE: 'saml-password',
+      SAP_SAML_AUTH: 'true',
+      SAP_SAML_USER: '${input:sap-ai-dev-auth-abap-user}',
+      SAP_SAML_PASSWORD: '${input:sap-ai-dev-auth-abap-password}'
+    },
+    expectedInputIds: ['sap-ai-dev-auth-abap-user', 'sap-ai-dev-auth-abap-password']
+  });
 });
 
 test('non-BAS list mode reports the required discovery boundary', async () => {

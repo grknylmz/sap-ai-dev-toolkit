@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough, Writable } from 'node:stream';
-import { checkboxPrompt, colorText, formatStatus, promptOutput, quietSpinnerTheme } from '../src/terminal-ui.mjs';
+import { checkboxPrompt, colorText, formatStatus, promptOutput, quietSpinnerTheme, selectPrompt } from '../src/terminal-ui.mjs';
 
 test('progress status uses a stable single-column glyph instead of a wide emoji', () => {
   const rendered = formatStatus('Loading destinations', 'progress', false, 'Setup');
@@ -88,6 +88,29 @@ function makeScreen(columns, rows) {
     }
   };
 }
+
+test('select prompt single-key shortcuts take precedence over value prefixes', async () => {
+  const output = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+  output.isTTY = true;
+  output.columns = 80;
+  output.rows = 24;
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+
+  const selection = selectPrompt({
+    message: 'Authentication',
+    defaultValue: 'basic',
+    choices: [
+      { name: 'windows-sso', value: 'windows-sso', shortcut: 's' },
+      { name: 'windows credential UI', value: 'windows-credential-ui', shortcut: 'w' }
+    ]
+  }, { input, output });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  input.write('w');
+  input.write('\r');
+  assert.equal(await selection, 'windows-credential-ui');
+});
 
 test('checkbox prompt redraws cleanly on arrow keys in terminals narrower than the header', async () => {
   for (const columns of [63, 30]) {

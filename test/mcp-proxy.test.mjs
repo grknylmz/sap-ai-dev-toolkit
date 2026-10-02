@@ -105,6 +105,54 @@ test('launches local SAP GUI systems without BAS proxy auth and with destination
   assert.equal(event.env.password, 'local-password');
 });
 
+test('launches local browser SAML and SAML password systems without proxy auth and with auth env', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-local-saml-child-'));
+  const log = join(directory, 'children.log');
+  const destinations = [
+    {
+      source: 'sap-gui-local',
+      name: 'browser-saml',
+      url: 'https://browser.example.com:44300',
+      client: '100',
+      authentication: 'BrowserSAML',
+      childEnv: { SAP_BROWSER_AUTH: 'true', SAP_SAML_AUTH: 'true' }
+    },
+    {
+      source: 'sap-gui-local',
+      name: 'saml-password',
+      url: 'https://saml.example.com:44300',
+      client: '200',
+      authentication: 'SAML',
+      childEnv: { SAP_SAML_AUTH: 'true', SAP_SAML_USER: 'saml-user', SAP_SAML_PASSWORD: 'saml-password' }
+    }
+  ];
+  const proxy = new MCPProxy({
+    binary: fixture,
+    destinations,
+    env: { ...process.env, FAKE_LOG: log, SAP_BROWSER_AUTH: 'parent-browser', SAP_SAML_AUTH: 'parent-saml', SAP_SAML_USER: 'parent-user', SAP_SAML_PASSWORD: 'parent-password' },
+    log: () => {}
+  });
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+  proxy.start();
+  const initialized = await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  assert.ok(initialized.result);
+  const events = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(row => row.event === 'initialize');
+  assert.equal(events.length, 2);
+  const byUrl = new Map(events.map(event => [event.argv[event.argv.indexOf('--url') + 1], event]));
+  const browser = byUrl.get('https://browser.example.com:44300');
+  const saml = byUrl.get('https://saml.example.com:44300');
+  assert.ok(browser);
+  assert.ok(saml);
+  assert.equal(browser.argv.includes('--proxy-auth'), false);
+  assert.equal(browser.env.browserAuth, 'true');
+  assert.equal(browser.env.samlAuth, 'true');
+  assert.equal(browser.env.samlUser, undefined);
+  assert.equal(saml.argv.includes('--proxy-auth'), false);
+  assert.equal(saml.env.samlAuth, 'true');
+  assert.equal(saml.env.samlUser, 'saml-user');
+  assert.equal(saml.env.samlPassword, 'saml-password');
+});
+
 test('closes each Cloud Foundry route after child exit and on startup failure', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-cf-child-lifecycle-'));
   const log = join(directory, 'children.log');

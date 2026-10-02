@@ -115,6 +115,104 @@ function checkboxPageSize(output, choiceCount) {
   return clamp(Math.min(choiceCount, rows - 7), 1, Math.max(1, choiceCount));
 }
 
+export async function selectPrompt({ message, choices, defaultValue } = {}, { input = process.stdin, output = process.stdout } = {}) {
+  if (!Array.isArray(choices) || !choices.length) return undefined;
+  let cursor = choices.findIndex(choice => !choice.disabled && (choice.value === defaultValue || choice.checked));
+  if (cursor === -1) cursor = firstEnabledIndex(choices);
+  let top = 0;
+  let renderedLines = 0;
+  let done = false;
+  let previousRawMode;
+
+  const write = text => output.write(text);
+  const clearRendered = () => {
+    if (!renderedLines) return;
+    write(`\u001b[${renderedLines}A\u001b[J`);
+    renderedLines = 0;
+  };
+  const ensureVisible = pageSize => {
+    if (cursor < top) top = cursor;
+    if (cursor >= top + pageSize) top = cursor - pageSize + 1;
+    top = clamp(top, 0, Math.max(0, choices.length - pageSize));
+  };
+  const render = () => {
+    const columns = Number.isFinite(output?.columns) ? output.columns : 80;
+    const pageSize = checkboxPageSize(output, choices.length);
+    ensureVisible(pageSize);
+    const lines = [];
+    lines.push(truncateToColumns(`${message} (↑/↓: choose, Enter: confirm)`, columns));
+    const end = Math.min(choices.length, top + pageSize);
+    for (let index = top; index < end; index += 1) {
+      const choice = choices[index];
+      const pointer = index === cursor ? '❯' : ' ';
+      const marker = index === cursor ? colorText('●', 'green', output) : '○';
+      const disabled = choice.disabled ? ` — ${choice.disabled}` : '';
+      const label = `${pointer}${marker} ${choice.name}${disabled}`;
+      lines.push(truncateToColumns(label, columns));
+    }
+    if (choices.length > pageSize) {
+      lines.push(truncateToColumns(colorText(`  Showing ${top + 1}-${end} of ${choices.length}; use ↑/↓ to scroll.`, 'cyan', output), columns));
+    }
+    clearRendered();
+    write(`${lines.join('\n')}\n`);
+    renderedLines = physicalRows(lines, columns);
+  };
+
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      input.off('keypress', onKeypress);
+      if (typeof input.setRawMode === 'function' && previousRawMode !== undefined) input.setRawMode(previousRawMode);
+      if (typeof input.pause === 'function') input.pause();
+      write('\u001b[?25h');
+    };
+    const finish = choice => {
+      if (done) return;
+      done = true;
+      clearRendered();
+      write(`${stripAnsi(message)} ${choice?.name || choice?.value || ''}\n`);
+      cleanup();
+      resolve(choice?.value);
+    };
+    const fail = error => {
+      if (done) return;
+      done = true;
+      cleanup();
+      reject(error);
+    };
+    const onKeypress = (chunk, key = {}) => {
+      if (key.ctrl && key.name === 'c') return fail(new Error('Prompt interrupted'));
+      if (key.name === 'up' || key.name === 'k') cursor = nextEnabledIndex(choices, cursor, -1);
+      else if (key.name === 'down' || key.name === 'j') cursor = nextEnabledIndex(choices, cursor, 1);
+      else if (key.name === 'return' || key.name === 'enter') return finish(choices[cursor]);
+      else if (chunk) {
+        const typed = String(chunk).toLowerCase();
+        let match = choices.findIndex(choice => !choice.disabled && String(choice.shortcut || '').toLowerCase() === typed);
+        if (match === -1) {
+          match = choices.findIndex(choice => !choice.disabled && (
+            String(choice.value || '').toLowerCase().startsWith(typed) ||
+            String(choice.name || '').toLowerCase().startsWith(typed)
+          ));
+        }
+        if (match !== -1) cursor = match;
+        else return;
+      } else return;
+      render();
+    };
+
+    try {
+      readline.emitKeypressEvents(input);
+      previousRawMode = input.isRaw;
+      if (typeof input.setRawMode === 'function') input.setRawMode(true);
+      if (typeof input.resume === 'function') input.resume();
+      write('\u001b[?25l');
+      input.on('keypress', onKeypress);
+      render();
+    } catch (error) {
+      fail(error);
+    }
+  });
+}
+
 export async function checkboxPrompt({ message, choices, required = false, shortcuts = { all: 'a' }, validate } = {}, { input = process.stdin, output = process.stdout } = {}) {
   if (!Array.isArray(choices) || !choices.length) return [];
   const selectable = enabledChoices(choices);

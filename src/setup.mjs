@@ -1,16 +1,53 @@
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { platform } from 'node:os';
-import { checkboxPrompt, colorText, formatStatus, textPrompt } from './terminal-ui.mjs';
+import { isIP } from 'node:net';
+import { checkboxPrompt, colorText, formatStatus, selectPrompt, textPrompt } from './terminal-ui.mjs';
 import { discoverDestinations, remediation } from './bas-discovery.mjs';
 import { defaultAdtUrl, discoverSapGuiSystems } from './local-sap-gui.mjs';
 import { discoverCloudFoundryDestinations, getCloudFoundryTarget, deleteManagedCloudFoundryServiceKeys, findOrphanedCloudFoundryServiceKeys } from './cf-destination.mjs';
 import { SAP_DEVELOPMENT_MCP_SERVERS, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, installMcpConfig, readMcpConfig, resolveMcpConfigPath } from './mcp-config.mjs';
+import { discoverCertificateDnsNames } from './tls-adt-proxy.mjs';
 
 const SETUP_COMMAND = 'sap-ai-dev --setup';
 
 function print(output, message) {
   output.write(`${message}\n`);
+}
+
+function startSapGuiLandscapeAnimation(output, env = process.env) {
+  if (!output?.isTTY || !Number.isFinite(output?.columns)) return () => {};
+  if (env.TERM === 'dumb' || env.CI || env.SAP_AI_DEV_TOOLKIT_DISABLE_SCAN_ANIMATION === 'true') return () => {};
+  const frames = [
+    '=^.^=                         ~(o:>',
+    '  =^.^=                    ~(o:>',
+    '     =^.^=              ~(o:>',
+    '        =^.^=        ~(o:>',
+    '           =^.^=  ~(o:>',
+    '             =^.^= caught it!'
+  ];
+  let index = 0;
+  let active = false;
+  const render = () => {
+    active = true;
+    const columns = Math.max(20, output.columns || 80);
+    const frame = frames[index % frames.length];
+    index += 1;
+    const line = `Scanning SAP GUI landscapes ${frame}`.slice(0, Math.max(1, columns - 1));
+    output.write(`\r\u001b[2K${line}`);
+  };
+  const delay = setTimeout(() => {
+    render();
+    interval = setInterval(render, 160);
+    if (typeof interval.unref === 'function') interval.unref();
+  }, 150);
+  if (typeof delay.unref === 'function') delay.unref();
+  let interval;
+  return () => {
+    clearTimeout(delay);
+    if (interval) clearInterval(interval);
+    if (active) output.write('\r\u001b[2K');
+  };
 }
 
 function windowsSsoSetupAvailable(env = process.env) {
@@ -19,17 +56,18 @@ function windowsSsoSetupAvailable(env = process.env) {
 
 async function chooseLocalAuthMode(destination, { input = stdin, output = stdout, env = process.env } = {}) {
   if (!windowsSsoSetupAvailable(env)) return 'basic';
-  const answer = await textPrompt({
-    message: `Authentication for ${destination.name} (password/sso)`,
-    placeholder: 'password',
-    required: false,
-    validate: value => {
-      const candidate = String(value || 'password').trim().toLowerCase();
-      return ['password', 'basic', 'sso', 'windows-sso'].includes(candidate) || 'Enter password or sso.';
-    }
+  return await selectPrompt({
+    message: `Authentication for ${destination.name}`,
+    defaultValue: 'basic',
+    choices: [
+      { name: 'password', value: 'basic', shortcut: 'p' },
+      { name: 'windows-sso (Kerberos/SPNEGO, silent current Windows logon)', value: 'windows-sso', shortcut: 's' },
+      { name: 'windows-sso with native Windows credential UI / smartcard PIN', value: 'windows-credential-ui', shortcut: 'w' },
+      { name: 'windows-sso with password fallback (self-heal when Negotiate/PIN is unavailable)', value: 'windows-sso-basic-fallback', shortcut: 'f' },
+      { name: 'browser SAML / web SSO (opens browser if supported by VSP)', value: 'browser-saml', shortcut: 'b' },
+      { name: 'SAML username/password', value: 'saml-password', shortcut: 'm' }
+    ]
   }, { input, output });
-  const normalized = String(answer || 'password').trim().toLowerCase();
-  return ['sso', 'windows-sso'].includes(normalized) ? 'windows-sso' : 'basic';
 }
 
 async function confirmCloudFoundryImport({ input = stdin, output = stdout } = {}) {
@@ -41,6 +79,51 @@ async function confirmCloudFoundryImport({ input = stdin, output = stdout } = {}
   } finally {
     readline.close();
   }
+}
+
+export function parseSapClientList(value, fallback = '001') {
+  const supplied = String(value ?? '').trim();
+  const raw = supplied || String(fallback || '001').trim() || '001';
+  const clients = raw.split(',').map(client => client.trim()).filter(Boolean);
+  const unique = [];
+  const seen = new Set();
+  for (const client of clients) {
+    if (!/^\d{3}$/.test(client)) throw new Error('Enter one or more SAP clients as 3 digits, separated by commas, for example 100 or 100,200.');
+    if (!seen.has(client)) {
+      seen.add(client);
+      unique.push(client);
+    }
+  }
+  if (!unique.length) throw new Error('Enter at least one SAP client.');
+  return unique;
+}
+
+async function promptSapClients(destination, { input = stdin, output = stdout } = {}) {
+  const fallback = destination.client || '001';
+  const answer = await textPrompt({
+    message: `SAP client(s) for ${destination.name}`,
+    placeholder: fallback,
+    required: false,
+    validate: value => {
+      try { parseSapClientList(value, fallback); return true; }
+      catch (error) { return error.message; }
+    }
+  }, { input, output });
+  return parseSapClientList(answer, fallback);
+}
+
+function localSystemDiscriminator(destination) {
+  return [destination.systemId, destination.host, destination.instance].map(value => String(value || '').trim()).filter(Boolean).join(' ');
+}
+
+function localClientDestinationName(destination, client, { multipleClients = false, duplicateSystemName = false } = {}) {
+  const suffix = [];
+  if (multipleClients || duplicateSystemName) suffix.push(client);
+  if (duplicateSystemName) {
+    const discriminator = localSystemDiscriminator(destination);
+    if (discriminator) suffix.push(discriminator);
+  }
+  return suffix.length ? `${destination.name} ${suffix.join(' ')}` : destination.name;
 }
 
 
@@ -79,6 +162,8 @@ function safeLocalSapGuiDestination(destination) {
     authentication: destination.authentication || 'Basic',
     authMode: destination.authMode,
     proxyType: 'Internet',
+    tlsServerName: destination.tlsServerName,
+    tlsServerNames: destination.tlsServerNames,
     probe: safeProbe(destination.probe),
     childEnv: destination.childEnv || {}
   };
@@ -165,10 +250,13 @@ export async function runSetup({
     destinations = basDestinations.map(safeBasDestination);
   } else {
     let localSystems;
+    const stopScanAnimation = startSapGuiLandscapeAnimation(output, env);
     try {
       localSystems = await discoverLocalSapGui({ env });
     } catch (error) {
       throw new Error(`SAP GUI discovery failed: ${error.message}`);
+    } finally {
+      stopScanAnimation();
     }
     destinations = localSystems.map(safeLocalSapGuiDestination);
   }
@@ -289,7 +377,7 @@ export async function runSetup({
   print(output, '  Space = select/deselect · a = toggle all · Enter = confirm.');
   print(output, '  Nothing selected removes this add-on’s MCP entries.');
   print(output, '');
-  const selected = await checkboxPrompt({
+  let selected = await checkboxPrompt({
     message: colorText('🧭 Select destinations', 'cyan', output),
     choices,
     required: false,
@@ -298,12 +386,23 @@ export async function runSetup({
 
   if (!isBas && selected.length) {
     print(output, '');
-    print(output, formatStatus('SAP GUI landscapes do not contain ADT HTTP(S) endpoints. Confirm the ADT URL and authentication for each selected system.', 'step', output, 'Local SAP GUI'));
-    if (windowsSsoSetupAvailable(env)) print(output, '  Windows SSO is experimental and only applies to ADT systems configured for HTTP Integrated Authentication. Username/password remains the default.');
+    print(output, formatStatus('SAP GUI landscapes do not contain ADT HTTP(S) endpoints or a complete client catalog. Confirm the SAP client(s), ADT URL, and authentication for each selected system.', 'step', output, 'Local SAP GUI'));
+    print(output, '  Enter multiple clients as comma-separated 3-digit values, for example 100,200. Setup creates one isolated MCP server per system/client pair.');
+    if (windowsSsoSetupAvailable(env)) print(output, '  Windows SSO is experimental and only applies to ADT systems configured for HTTP Integrated Authentication (Negotiate/SPNEGO). It uses the current Windows logon session, including smart-card-backed Windows logon; the toolkit cannot prompt for or accept manual bearer/SAML tokens. Username/password remains the default.');
+    const selectedNameCounts = selected.reduce((counts, destination) => {
+      const key = String(destination.name).toLowerCase();
+      counts.set(key, (counts.get(key) || 0) + 1);
+      return counts;
+    }, new Map());
+    const expanded = [];
     for (const destination of selected) {
+      const duplicateSystemName = (selectedNameCounts.get(String(destination.name).toLowerCase()) || 0) > 1;
+      const discriminator = duplicateSystemName ? localSystemDiscriminator(destination) : '';
+      const promptLabel = discriminator ? `${destination.name} (${discriminator})` : destination.name;
+      const clients = await promptSapClients({ ...destination, name: promptLabel }, { input, output });
       const fallback = defaultAdtUrl(destination);
       const url = await textPrompt({
-        message: `ADT URL for ${destination.name}`,
+        message: `ADT URL for ${promptLabel}`,
         placeholder: fallback || 'https://host:44300',
         validate: value => {
           const candidate = value || fallback;
@@ -320,26 +419,84 @@ export async function runSetup({
         required: false
       }, { input, output });
       destination.url = url || fallback;
-      const authMode = await chooseLocalAuthMode(destination, { input, output, env });
-      destination.authentication = authMode === 'windows-sso' ? 'WindowsSSO' : 'Basic';
+      const parsedAdtUrl = new URL(destination.url);
+      if (parsedAdtUrl.protocol === 'https:' && isIP(parsedAdtUrl.hostname)) {
+        print(output, formatStatus('The ADT URL uses an IP address. Setup will inspect the SAP HTTPS certificate and can enable TLS self-healing automatically; certificate validation remains enabled.', 'warning', output, 'TLS self-heal'));
+        let discoveredNames = [];
+        try { discoveredNames = await discoverCertificateDnsNames(destination.url); }
+        catch { discoveredNames = []; }
+        if (discoveredNames.length) {
+          const preview = discoveredNames.slice(0, 5).join(', ');
+          const answer = await textPrompt({
+            message: `Use discovered certificate DNS name${discoveredNames.length === 1 ? '' : 's'} for ${promptLabel}: ${preview}${discoveredNames.length > 5 ? ', ...' : ''}? (y/Enter=yes, n=no)`,
+            placeholder: 'y',
+            required: false,
+            validate: value => /^(?:|y|yes|n|no)$/i.test(String(value || '').trim()) || 'Enter y or n.'
+          }, { input, output });
+          if (!/^n(?:o)?$/i.test(String(answer || '').trim())) {
+            destination.tlsServerNames = discoveredNames;
+            destination.tlsServerName = discoveredNames[0];
+          }
+        } else {
+          print(output, formatStatus('No DNS subjectAltName entries could be read from the SAP HTTPS certificate. TLS self-healing was not configured automatically.', 'warning', output, 'TLS self-heal'));
+        }
+      }
+      const authMode = await chooseLocalAuthMode({ ...destination, name: promptLabel }, { input, output, env });
+      destination.authentication = ['windows-sso', 'windows-credential-ui', 'windows-sso-basic-fallback'].includes(authMode) ? 'WindowsSSO' : 'Basic';
       destination.authMode = authMode;
-      if (authMode === 'windows-sso') {
-        destination.childEnv = { SAP_AUTH_MODE: 'windows-sso' };
-        destination.inputs = [];
-      } else {
-        const userInputId = `sap-ai-dev-${destination.serverName || destination.name}-user`.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
-        const passwordInputId = `sap-ai-dev-${destination.serverName || destination.name}-password`.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
-        destination.childEnv = {
-          SAP_AUTH_MODE: 'basic',
-          SAP_USER: `\${input:${userInputId}}`,
-          SAP_PASSWORD: `\${input:${passwordInputId}}`
-        };
-        destination.inputs = [
-          { id: userInputId, type: 'promptString', description: `SAP user for ${destination.name}` },
-          { id: passwordInputId, type: 'promptString', description: `SAP password for ${destination.name}`, password: true }
+      for (const client of clients) {
+        const name = localClientDestinationName(destination, client, { multipleClients: clients.length > 1, duplicateSystemName });
+        const localDestination = { ...destination, name, serverName: name, client };
+        const userInputId = `sap-ai-dev-${localDestination.serverName || localDestination.name}-user`.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+        const passwordInputId = `sap-ai-dev-${localDestination.serverName || localDestination.name}-password`.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+        const credentialInputs = [
+          { id: userInputId, type: 'promptString', description: `SAP user for ${localDestination.name}` },
+          { id: passwordInputId, type: 'promptString', description: `SAP password for ${localDestination.name}`, password: true }
         ];
+        if (authMode === 'windows-sso') {
+          localDestination.childEnv = { SAP_AUTH_MODE: 'windows-sso' };
+          localDestination.inputs = [];
+        } else if (authMode === 'windows-credential-ui') {
+          localDestination.childEnv = {
+            SAP_AUTH_MODE: 'windows-sso',
+            SAP_AI_DEV_TOOLKIT_WINDOWS_CREDENTIAL_UI: 'true'
+          };
+          localDestination.inputs = [];
+        } else if (authMode === 'windows-sso-basic-fallback') {
+          localDestination.childEnv = {
+            SAP_AUTH_MODE: 'windows-sso',
+            SAP_AUTH_FALLBACK_MODE: 'basic',
+            SAP_USER: `\${input:${userInputId}}`,
+            SAP_PASSWORD: `\${input:${passwordInputId}}`
+          };
+          localDestination.inputs = credentialInputs;
+        } else if (authMode === 'browser-saml') {
+          localDestination.childEnv = {
+            SAP_AUTH_MODE: 'browser-saml',
+            SAP_BROWSER_AUTH: 'true',
+            SAP_SAML_AUTH: 'true'
+          };
+          localDestination.inputs = [];
+        } else if (authMode === 'saml-password') {
+          localDestination.childEnv = {
+            SAP_AUTH_MODE: 'saml-password',
+            SAP_SAML_AUTH: 'true',
+            SAP_SAML_USER: `\${input:${userInputId}}`,
+            SAP_SAML_PASSWORD: `\${input:${passwordInputId}}`
+          };
+          localDestination.inputs = credentialInputs;
+        } else {
+          localDestination.childEnv = {
+            SAP_AUTH_MODE: 'basic',
+            SAP_USER: `\${input:${userInputId}}`,
+            SAP_PASSWORD: `\${input:${passwordInputId}}`
+          };
+          localDestination.inputs = credentialInputs;
+        }
+        expanded.push(localDestination);
       }
     }
+    selected = expanded;
   }
 
   let sapDevelopmentServers = [];

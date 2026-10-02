@@ -1,6 +1,11 @@
 import { platform, homedir } from 'node:os';
-import { join } from 'node:path';
+import { promisify } from 'node:util';
+import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { basename, dirname, extname, join } from 'node:path';
 import { readdir, readFile, stat } from 'node:fs/promises';
+
+const execFileAsync = promisify(execFile);
 
 function text(value) { return value == null ? '' : String(value).trim(); }
 function decodeXml(value) {
@@ -18,25 +23,88 @@ async function exists(path) {
 }
 
 function unique(values) {
-  return [...new Set(values.filter(Boolean))];
+  const seen = new Set();
+  return values.map(pathFromEnv).filter(Boolean).filter(value => {
+    const key = String(value).toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function pathFromEnv(value) {
+  const candidate = text(value);
+  if (!candidate) return '';
+  if (/^file:\/\//i.test(candidate)) {
+    try { return fileURLToPath(candidate); } catch { return candidate.replace(/^file:\/\/\/?/i, ''); }
+  }
+  return candidate;
+}
+
+const WINDOWS_LANDSCAPE_FILES = [
+  'SAPUILandscape.xml',
+  'SAPUILandscapeGlobal.xml',
+  'SAPGUILandscape.xml',
+  'SAPGUILandscapeGlobal.xml',
+  'SAPLogonTree.xml',
+  'SAPLogonTreeGlobal.xml',
+  'saplogon.ini'
+];
+
+const WINDOWS_EXPLICIT_PATH_ENV = [
+  'SAP_AI_DEV_SAP_GUI_LANDSCAPE',
+  'SAP_AI_DEV_SAP_GUI_CONFIG',
+  'SAPUILANDSCAPE',
+  'SAPGUI_LANDSCAPE',
+  'SAPLOGON_LSXML_FILE',
+  'SAPLOGON_INI_FILE'
+];
+
+function addWindowsSapGuiFiles(candidates, directory) {
+  if (!directory) return;
+  for (const name of WINDOWS_LANDSCAPE_FILES) candidates.push(join(directory, name));
+}
+
+function addSapGuiJavaFiles(candidates, directory) {
+  if (!directory) return;
+  candidates.push(join(directory, 'connections'));
+  addWindowsSapGuiFiles(candidates, directory);
 }
 
 export function sapGuiLandscapeCandidates(env = process.env) {
   const home = env.HOME || env.USERPROFILE || homedir();
-  const appData = env.APPDATA || (env.USERPROFILE ? join(env.USERPROFILE, 'AppData', 'Roaming') : '');
-  const candidates = [];
-  if (platform() === 'win32' || appData) {
+  const userProfile = env.USERPROFILE || home;
+  const appData = env.APPDATA || (userProfile ? join(userProfile, 'AppData', 'Roaming') : '');
+  const localAppData = env.LOCALAPPDATA || (userProfile ? join(userProfile, 'AppData', 'Local') : '');
+  const programData = env.PROGRAMDATA || (platform() === 'win32' ? 'C:\\ProgramData' : '');
+  const publicProfile = env.PUBLIC || (platform() === 'win32' ? 'C:\\Users\\Public' : '');
+  const windir = env.WINDIR || env.SystemRoot || (platform() === 'win32' ? 'C:\\Windows' : '');
+  const candidates = WINDOWS_EXPLICIT_PATH_ENV.map(name => env[name]);
+  if (platform() === 'win32' || appData || localAppData || programData) {
+    for (const base of [appData, localAppData, programData, publicProfile]) {
+      if (!base) continue;
+      addWindowsSapGuiFiles(candidates, join(base, 'SAP', 'Common'));
+      addWindowsSapGuiFiles(candidates, join(base, 'SAP'));
+    }
     candidates.push(
-      join(appData || '', 'SAP', 'Common', 'SAPUILandscape.xml'),
-      join(appData || '', 'SAP', 'Common', 'SAPUILandscapeGlobal.xml'),
-      join(appData || '', 'SAP', 'Common', 'saplogon.ini')
+      join(windir || '', 'saplogon.ini'),
+      join(windir || '', 'SAPLogon.ini'),
+      join(userProfile || '', 'saplogon.ini'),
+      join(userProfile || '', 'SAPLogon.ini')
     );
+    addSapGuiJavaFiles(candidates, join(userProfile || '', '.SAPGUI'));
+    addSapGuiJavaFiles(candidates, join(appData || '', 'SAPGUI'));
+    addSapGuiJavaFiles(candidates, join(localAppData || '', 'SAPGUI'));
+    if (env.ProgramFiles) addWindowsSapGuiFiles(candidates, join(env.ProgramFiles, 'SAP', 'FrontEnd', 'SAPgui'));
+    if (env['ProgramFiles(x86)']) addWindowsSapGuiFiles(candidates, join(env['ProgramFiles(x86)'], 'SAP', 'FrontEnd', 'SAPgui'));
   }
   candidates.push(
     join(home, 'Library', 'Preferences', 'SAP', 'SAPGUILandscape.xml'),
     join(home, 'Library', 'Preferences', 'SAP', 'SAPUILandscape.xml'),
     join(home, 'Library', 'Preferences', 'SAP', 'connections'),
-    join(home, '.SAPGUI', 'SAPGUILandscape.xml')
+    join(home, '.SAPGUI', 'SAPGUILandscape.xml'),
+    join(home, '.SAPGUI', 'SAPUILandscape.xml'),
+    join(home, '.SAPGUI', 'connections')
   );
   return unique(candidates);
 }
@@ -162,6 +230,113 @@ async function readGuiFile(path) {
   return bytes.toString('utf8').replace(/^\uFEFF/, '');
 }
 
+function sapGuiSearchRoots(env = process.env) {
+  const home = env.HOME || env.USERPROFILE || homedir();
+  const userProfile = env.USERPROFILE || home;
+  return unique([
+    env.APPDATA && join(env.APPDATA, 'SAP'),
+    env.APPDATA && join(env.APPDATA, 'SAPGUI'),
+    userProfile && join(userProfile, 'AppData', 'Roaming', 'SAP'),
+    userProfile && join(userProfile, 'AppData', 'Roaming', 'SAPGUI'),
+    env.LOCALAPPDATA && join(env.LOCALAPPDATA, 'SAP'),
+    env.LOCALAPPDATA && join(env.LOCALAPPDATA, 'SAPGUI'),
+    userProfile && join(userProfile, 'AppData', 'Local', 'SAP'),
+    userProfile && join(userProfile, 'AppData', 'Local', 'SAPGUI'),
+    env.PROGRAMDATA && join(env.PROGRAMDATA, 'SAP'),
+    env.PUBLIC && join(env.PUBLIC, 'SAP'),
+    userProfile && join(userProfile, '.SAPGUI'),
+    home && join(home, 'Library', 'Preferences', 'SAP'),
+    home && join(home, '.SAPGUI')
+  ]);
+}
+
+async function findSapGuiFilesUnder(root, { maxDepth = 4, maxEntries = 500 } = {}) {
+  const wanted = new Set(WINDOWS_LANDSCAPE_FILES.map(value => value.toLowerCase()).concat(['connections']));
+  const found = [];
+  let visited = 0;
+  async function walk(directory, depth) {
+    if (depth < 0 || visited >= maxEntries) return;
+    let entries;
+    try { entries = await readdir(directory, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (++visited > maxEntries) return;
+      const child = join(directory, entry.name);
+      if (entry.isFile() && wanted.has(basename(entry.name).toLowerCase())) found.push(child);
+      else if (entry.isDirectory()) {
+        if (basename(entry.name).toLowerCase() === 'connections') found.push(child);
+        await walk(child, depth - 1);
+      }
+    }
+  }
+  await walk(root, maxDepth);
+  return found;
+}
+
+const SAP_GUI_REGISTRY_ROOTS = [
+  'HKCU\\Software\\SAP\\SAPLogon',
+  'HKCU\\Software\\SAP\\SAPLogon\\Options',
+  'HKCU\\Software\\WOW6432Node\\SAP\\SAPLogon',
+  'HKCU\\Software\\WOW6432Node\\SAP\\SAPLogon\\Options',
+  'HKLM\\Software\\SAP\\SAPLogon',
+  'HKLM\\Software\\SAP\\SAPLogon\\Options',
+  'HKLM\\Software\\WOW6432Node\\SAP\\SAPLogon',
+  'HKLM\\Software\\WOW6432Node\\SAP\\SAPLogon\\Options'
+];
+
+function registryPathCandidates(value) {
+  const raw = pathFromEnv(value);
+  if (!raw) return [];
+  const lower = raw.toLowerCase();
+  if (/\.(?:xml|ini)$/i.test(lower)) return [raw];
+  if (/\\|\//.test(raw) && !extname(raw)) {
+    const result = [];
+    addWindowsSapGuiFiles(result, raw);
+    result.push(join(raw, 'connections'));
+    return result;
+  }
+  if (/\.(?:xml|ini)(?:\s|$)/i.test(lower)) return [raw.split(/\s+/)[0]];
+  return [];
+}
+
+async function windowsRegistrySapGuiCandidates(env = process.env) {
+  if (platform() !== 'win32') return [];
+  const candidates = [];
+  for (const root of SAP_GUI_REGISTRY_ROOTS) {
+    try {
+      const { stdout } = await execFileAsync('reg.exe', ['query', root, '/s'], { windowsHide: true, timeout: 2000, maxBuffer: 256 * 1024 });
+      for (const line of stdout.split(/\r?\n/)) {
+        const match = line.match(/^\s*\S+\s+REG_(?:SZ|EXPAND_SZ)\s+(.+?)\s*$/i);
+        if (!match) continue;
+        candidates.push(...registryPathCandidates(match[1].replace(/%([^%]+)%/g, (_, name) => env[name] || env[name.toUpperCase()] || `%${name}%`)));
+      }
+    } catch {
+      // Registry access can be blocked by policy or absent on non-standard installs.
+    }
+  }
+  return unique(candidates);
+}
+
+async function selfHealingSapGuiCandidates(env, candidates) {
+  const expanded = [...candidates, ...await windowsRegistrySapGuiCandidates(env)];
+  for (const root of sapGuiSearchRoots(env)) {
+    expanded.push(...await findSapGuiFilesUnder(root));
+  }
+  return unique(expanded);
+}
+
+function broadSapGuiSearchRoots(env = process.env) {
+  const home = env.HOME || env.USERPROFILE || homedir();
+  return unique([home, env.USERPROFILE, env.APPDATA, env.LOCALAPPDATA, env.PROGRAMDATA, env.PUBLIC]);
+}
+
+async function broadSelfHealingSapGuiCandidates(env) {
+  const expanded = [];
+  for (const root of broadSapGuiSearchRoots(env)) {
+    expanded.push(...await findSapGuiFilesUnder(root, { maxDepth: 6, maxEntries: 5000 }));
+  }
+  return unique(expanded);
+}
+
 async function parseConnectionsFile(path) {
   const content = await readGuiFile(path);
   if (content.includes('<')) return parseLandscapeXml(content, path);
@@ -172,9 +347,9 @@ async function parseConnectionsFile(path) {
   }).filter(Boolean);
 }
 
-export async function discoverSapGuiSystems({ env = process.env, paths = sapGuiLandscapeCandidates(env) } = {}) {
+async function parseSapGuiCandidatePaths(candidatePaths) {
   const systems = [];
-  for (const path of unique(paths)) {
+  for (const path of unique(candidatePaths)) {
     if (!path) continue;
     try {
       if (!await exists(path)) continue;
@@ -197,6 +372,13 @@ export async function discoverSapGuiSystems({ env = process.env, paths = sapGuiL
       // Ignore unreadable or unfamiliar SAP GUI files; discovery is best-effort.
     }
   }
+  return systems;
+}
+
+export async function discoverSapGuiSystems({ env = process.env, paths } = {}) {
+  const candidatePaths = paths ? unique(paths) : await selfHealingSapGuiCandidates(env, sapGuiLandscapeCandidates(env));
+  let systems = await parseSapGuiCandidatePaths(candidatePaths);
+  if (!systems.length && !paths) systems = await parseSapGuiCandidatePaths(await broadSelfHealingSapGuiCandidates(env));
   const seen = new Set();
   return systems.filter(system => {
     const key = `${system.name}\0${system.host}\0${system.systemId}\0${system.instance}\0${system.client}`.toLowerCase();

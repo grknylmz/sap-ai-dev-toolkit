@@ -99,9 +99,10 @@ function helperCommand(env) {
   const command = env.SAP_AI_DEV_TOOLKIT_NEGOTIATE_HELPER || env.SAP_AI_DEV_TOOLKIT_SSPI_HELPER;
   if (command) return { command, args: [] };
   if (process.platform !== 'win32') return null;
+  const interactiveCredentialUi = env.SAP_AI_DEV_TOOLKIT_WINDOWS_CREDENTIAL_UI === 'true' || env.SAP_WINDOWS_CREDENTIAL_UI === 'true';
   return {
     command: env.SystemRoot ? join(env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : 'powershell.exe',
-    args: ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', join(root, 'scripts', 'windows-negotiate-helper.ps1')]
+    args: ['-NoLogo', '-NoProfile', ...(interactiveCredentialUi ? [] : ['-NonInteractive']), '-ExecutionPolicy', 'Bypass', '-File', join(root, 'scripts', 'windows-negotiate-helper.ps1')]
   };
 }
 
@@ -122,7 +123,7 @@ function execHelper(helper, payload, execFileImpl = nodeExecFile, env = process.
       env: { ...process.env, ...env }
     }, (error, stdout) => {
       // execFile errors can contain helper stdout/stderr, including tokens.
-      if (error) return reject(safeError('Windows SSO helper failed; verify the helper and Windows Kerberos configuration.'));
+      if (error) return reject(safeError('Windows SSO helper failed; verify the ADT endpoint supports HTTP Negotiate/SPNEGO for the signed-in Windows identity (including smart-card-backed Windows logon) and that Kerberos/SPN configuration is correct. The toolkit cannot prompt for or accept manually pasted bearer/SAML tokens.'));
       const token = String(stdout || '').trim();
       if (!/^[A-Za-z0-9+/=_-]+$/.test(token)) return reject(safeError('Windows SSO helper returned an invalid Negotiate token'));
       if (tokenLooksLikeNtlm(token)) return reject(safeError('Windows SSO helper returned an NTLM token. ADT SSO requires Kerberos/SPNEGO; verify the backend SPN and Kerberos configuration, or rerun sap-ai-dev --setup and choose username/password.'));
@@ -135,9 +136,32 @@ function execHelper(helper, payload, execFileImpl = nodeExecFile, env = process.
 async function acquireNegotiateToken({ targetUrl, challenge, env, execFileImpl }) {
   const helper = helperCommand(env);
   if (!helper) {
-    throw safeError('Windows SSO requires an SSPI/Negotiate helper. Set SAP_AI_DEV_TOOLKIT_NEGOTIATE_HELPER to a trusted helper executable, or rerun sap-ai-dev --setup and choose username/password.');
+    throw safeError('Windows SSO requires an SSPI/Negotiate helper that uses the current Windows logon session (including smart-card-backed logon). Set SAP_AI_DEV_TOOLKIT_NEGOTIATE_HELPER to a trusted helper executable, or rerun sap-ai-dev --setup and choose username/password. Manual token entry is not supported.');
   }
   return execHelper(helper, { url: targetUrl, challenge, mechanism: 'Negotiate' }, execFileImpl, env);
+}
+
+function basicFallbackCredentials(env) {
+  const mode = String(env.SAP_AUTH_FALLBACK_MODE || env.SAP_AI_DEV_TOOLKIT_AUTH_FALLBACK_MODE || '').toLowerCase();
+  const enabled = mode === 'basic' || env.SAP_AI_DEV_TOOLKIT_SSO_BASIC_FALLBACK === 'true';
+  const user = String(env.SAP_USER || env.SAP_USERNAME || '').trim();
+  const password = String(env.SAP_PASSWORD || env.SAP_PASS || '');
+  if (!enabled || !user || !password) return null;
+  return { user, password };
+}
+
+function hasBasicChallenge(headers) {
+  const value = headers.get?.('www-authenticate') || '';
+  return /(?:^|,)\s*Basic\b/i.test(value);
+}
+
+async function retryWithBasicFallback({ req, target, headers, body, fetchImpl, env }) {
+  const credentials = basicFallbackCredentials(env);
+  if (!credentials) return null;
+  return forward(req, target, {
+    ...headers,
+    Authorization: `Basic ${Buffer.from(`${credentials.user}:${credentials.password}`).toString('base64')}`
+  }, body, fetchImpl);
 }
 
 async function forward(req, targetUrl, headers, body, fetchImpl) {
@@ -181,15 +205,24 @@ export async function createWindowsSsoAdtProxy({ destinationUrl, env = process.e
       let response = await forward(req, target, headers, body, fetchImpl);
       if (response.status === 401 && hasNegotiateChallenge(response.headers)) {
         const challenge = response.headers.get('www-authenticate') || '';
+        const cookies = mergeCookieHeader(headers.cookie || headers.Cookie, setCookies(response.headers));
         const cancel = response.body?.cancel?.();
         await cancel?.catch?.(() => {});
-        const token = await acquireNegotiateToken({ targetUrl: target.href, challenge, env, execFileImpl });
-        const retryHeaders = { ...headers, Authorization: `Negotiate ${token}` };
-        const cookies = mergeCookieHeader(headers.cookie || headers.Cookie, setCookies(response.headers));
-        delete retryHeaders.cookie;
-        delete retryHeaders.Cookie;
-        if (cookies) retryHeaders.Cookie = cookies;
-        response = await forward(req, target, retryHeaders, body, fetchImpl);
+        try {
+          const token = await acquireNegotiateToken({ targetUrl: target.href, challenge, env, execFileImpl });
+          const retryHeaders = { ...headers, Authorization: `Negotiate ${token}` };
+          delete retryHeaders.cookie;
+          delete retryHeaders.Cookie;
+          if (cookies) retryHeaders.Cookie = cookies;
+          response = await forward(req, target, retryHeaders, body, fetchImpl);
+        } catch (error) {
+          response = await retryWithBasicFallback({ req, target, headers: { ...headers, ...(cookies ? { Cookie: cookies } : {}) }, body, fetchImpl, env });
+          if (!response) throw error;
+        }
+      } else if (response.status === 401 && hasBasicChallenge(response.headers) && basicFallbackCredentials(env)) {
+        const cancel = response.body?.cancel?.();
+        await cancel?.catch?.(() => {});
+        response = await retryWithBasicFallback({ req, target, headers, body, fetchImpl, env }) || response;
       }
       writeFetchResponse(res, response, base, proxyOrigin);
     } catch (error) {

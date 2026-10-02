@@ -212,6 +212,7 @@ test('SAP GUI discovery handles candidates, INI files, XML decoding, duplicates,
   const appData = join(directory, 'AppData', 'Roaming');
   const candidates = sapGuiLandscapeCandidates({ HOME: directory, USERPROFILE: directory, APPDATA: appData });
   assert.ok(candidates.some(path => path.endsWith(join('SAP', 'Common', 'SAPUILandscape.xml'))));
+  assert.ok(candidates.some(path => path.endsWith(join('SAP', 'SAPUILandscape.xml'))));
   assert.ok(candidates.some(path => path.endsWith(join('SAP', 'Common', 'saplogon.ini'))));
   assert.ok(candidates.some(path => path.includes(join('Library', 'Preferences', 'SAP'))));
 
@@ -283,6 +284,42 @@ test('SAP GUI discovery ignores INI entries without servers', async () => {
   await writeFile(ini, `[Description]\nItem1=No Server\n[Database]\nItem1=NSV\n`);
   try {
     assert.deepEqual(await discoverSapGuiSystems({ paths: [ini] }), []);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('SAP GUI discovery self-heals by scanning standard SAP config roots', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-self-heal-'));
+  const nested = join(directory, 'AppData', 'Roaming', 'SAP', 'Odd', 'Nested');
+  await mkdir(nested, { recursive: true });
+  await writeFile(join(nested, 'SAPUILandscape.xml'), `<Landscape><Services>
+    <Service type="SAPGUI" name="Self Heal" server="heal.example.com" systemid="HL1" instancenumber="03" client="123" />
+  </Services></Landscape>`);
+  try {
+    const systems = await discoverSapGuiSystems({ env: { HOME: directory, USERPROFILE: directory } });
+    assert.equal(systems.length, 1);
+    assert.equal(systems[0].name, 'Self Heal');
+    assert.equal(systems[0].host, 'heal.example.com');
+    assert.equal(defaultAdtUrl(systems[0]), 'https://heal.example.com:44303');
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('SAP GUI discovery falls back to a broad profile scan when standard roots miss', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-broad-heal-'));
+  const odd = join(directory, 'CompanyProfile', 'RoamedConfig');
+  await mkdir(odd, { recursive: true });
+  await writeFile(join(odd, 'SAPUILandscape.xml'), `<Landscape><Services>
+    <Service type="SAPGUI" name="Broad Heal" server="broad.example.com" systemid="BRD" instancenumber="04" client="321" />
+  </Services></Landscape>`);
+  try {
+    const systems = await discoverSapGuiSystems({ env: { HOME: directory, USERPROFILE: directory } });
+    assert.equal(systems.length, 1);
+    assert.equal(systems[0].name, 'Broad Heal');
+    assert.equal(systems[0].host, 'broad.example.com');
+    assert.equal(defaultAdtUrl(systems[0]), 'https://broad.example.com:44304');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

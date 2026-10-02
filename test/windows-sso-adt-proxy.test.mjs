@@ -152,6 +152,74 @@ test('Windows SSO ADT proxy passes non-Negotiate 401 responses through without h
   assert.equal(helperCalled, false);
 });
 
+test('Windows SSO ADT proxy self-heals Basic challenges with configured fallback credentials', async t => {
+  const requests = [];
+  const target = createServer((request, response) => {
+    requests.push(request.headers.authorization);
+    if (request.headers.authorization !== `Basic ${Buffer.from('sap-user:sap-password').toString('base64')}`) {
+      response.writeHead(401, { 'www-authenticate': 'Basic realm="SAP"', 'content-type': 'text/plain' });
+      response.end('basic required');
+      return;
+    }
+    response.writeHead(200, { 'content-type': 'application/xml' });
+    response.end('<adt/>');
+  });
+  await listen(target);
+  t.after(() => close(target));
+
+  const proxy = await createWindowsSsoAdtProxy({
+    destinationUrl: `http://127.0.0.1:${target.address().port}`,
+    env: {
+      SAP_AI_DEV_TOOLKIT_ALLOW_SSO_PROXY_ON_NON_WINDOWS: 'true',
+      SAP_AUTH_FALLBACK_MODE: 'basic',
+      SAP_USER: 'sap-user',
+      SAP_PASSWORD: 'sap-password'
+    }
+  });
+  t.after(() => proxy.close());
+
+  const response = await fetch(`${proxy.url}/sap/bc/adt/discovery`);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), '<adt/>');
+  assert.deepEqual(requests, [undefined, `Basic ${Buffer.from('sap-user:sap-password').toString('base64')}`]);
+});
+
+test('Windows SSO ADT proxy self-heals failed Negotiate helpers with Basic fallback credentials', async t => {
+  const requests = [];
+  const target = createServer((request, response) => {
+    requests.push(request.headers.authorization);
+    if (!request.headers.authorization) {
+      response.writeHead(401, { 'www-authenticate': 'Negotiate, Basic realm="SAP"' });
+      response.end('auth required');
+      return;
+    }
+    response.writeHead(request.headers.authorization.startsWith('Basic ') ? 200 : 401, { 'content-type': 'text/plain' });
+    response.end(request.headers.authorization.startsWith('Basic ') ? 'ok' : 'rejected');
+  });
+  await listen(target);
+  t.after(() => close(target));
+
+  const proxy = await createWindowsSsoAdtProxy({
+    destinationUrl: `http://127.0.0.1:${target.address().port}`,
+    env: {
+      SAP_AI_DEV_TOOLKIT_ALLOW_SSO_PROXY_ON_NON_WINDOWS: 'true',
+      SAP_AI_DEV_TOOLKIT_NEGOTIATE_HELPER: '/trusted/helper',
+      SAP_AUTH_FALLBACK_MODE: 'basic',
+      SAP_USER: 'sap-user',
+      SAP_PASSWORD: 'sap-password'
+    },
+    execFileImpl: (_command, _args, _options, callback) => ({
+      stdin: { end() { setImmediate(() => callback(new Error('smartcard pin required'), '', 'pin required')); } }
+    })
+  });
+  t.after(() => proxy.close());
+
+  const response = await fetch(`${proxy.url}/sap/bc/adt/discovery`);
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), 'ok');
+  assert.deepEqual(requests, [undefined, `Basic ${Buffer.from('sap-user:sap-password').toString('base64')}`]);
+});
+
 test('Windows SSO ADT proxy rejects invalid helper output', async t => {
   const target = createServer((_request, response) => {
     response.writeHead(401, { 'www-authenticate': 'Negotiate' });
@@ -270,6 +338,8 @@ test('Windows SSO ADT proxy surfaces helper execution failures', async t => {
   assert.equal(response.status, 502);
   const message = await response.text();
   assert.match(message, /Windows SSO helper failed/);
+  assert.match(message, /smart-card-backed Windows logon/);
+  assert.match(message, /cannot prompt for or accept manually pasted bearer\/SAML tokens/);
   assert.doesNotMatch(message, /helper denied/);
 });
 
@@ -440,6 +510,160 @@ test('Windows SSO ADT proxy close is idempotent', async t => {
   });
   await proxy.close();
   await proxy.close();
+});
+
+test('Windows SSO ADT proxy default helper allows native credential UI when enabled', async t => {
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  t.after(() => Object.defineProperty(process, 'platform', { value: originalPlatform }));
+
+  const requests = [];
+  const target = createServer((request, response) => {
+    requests.push(request.headers.authorization);
+    if (!request.headers.authorization) {
+      response.writeHead(401, { 'www-authenticate': 'Negotiate' });
+      response.end('auth required');
+      return;
+    }
+    response.writeHead(200);
+    response.end('ok');
+  });
+  await listen(target);
+  t.after(() => close(target));
+
+  let observedArgs;
+  const proxy = await createWindowsSsoAdtProxy({
+    destinationUrl: `http://127.0.0.1:${target.address().port}`,
+    env: {
+      SystemRoot: 'C:\\Windows',
+      SAP_AI_DEV_TOOLKIT_WINDOWS_CREDENTIAL_UI: 'true'
+    },
+    execFileImpl: (_command, args, _options, callback) => {
+      observedArgs = args;
+      return { stdin: { end() { setImmediate(() => callback(null, 'helper-token\n', '')); } } };
+    }
+  });
+  t.after(() => proxy.close());
+
+  const response = await fetch(`${proxy.url}/sap/bc/adt/discovery`);
+  assert.equal(response.status, 200);
+  assert.equal(observedArgs.includes('-NonInteractive'), false);
+  assert.deepEqual(requests, [undefined, 'Negotiate helper-token']);
+});
+
+test('Windows SSO ADT proxy default helper remains non-interactive unless credential UI is enabled', async t => {
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, 'platform', { value: 'win32' });
+  t.after(() => Object.defineProperty(process, 'platform', { value: originalPlatform }));
+
+  const target = createServer((request, response) => {
+    if (!request.headers.authorization) {
+      response.writeHead(401, { 'www-authenticate': 'Negotiate' });
+      response.end('auth required');
+      return;
+    }
+    response.writeHead(200);
+    response.end('ok');
+  });
+  await listen(target);
+  t.after(() => close(target));
+
+  let observedArgs;
+  const proxy = await createWindowsSsoAdtProxy({
+    destinationUrl: `http://127.0.0.1:${target.address().port}`,
+    env: { SystemRoot: 'C:\\Windows' },
+    execFileImpl: (_command, args, _options, callback) => {
+      observedArgs = args;
+      return { stdin: { end() { setImmediate(() => callback(null, 'helper-token\n', '')); } } };
+    }
+  });
+  t.after(() => proxy.close());
+
+  const response = await fetch(`${proxy.url}/sap/bc/adt/discovery`);
+  assert.equal(response.status, 200);
+  assert.equal(observedArgs.includes('-NonInteractive'), true);
+});
+
+test('Windows SSO ADT proxy does not use Basic fallback without both username and password', async t => {
+  const requests = [];
+  const target = createServer((request, response) => {
+    requests.push(request.headers.authorization);
+    response.writeHead(401, { 'www-authenticate': 'Basic realm="SAP"', 'content-type': 'text/plain' });
+    response.end('basic required');
+  });
+  await listen(target);
+  t.after(() => close(target));
+
+  const proxy = await createWindowsSsoAdtProxy({
+    destinationUrl: `http://127.0.0.1:${target.address().port}`,
+    env: {
+      SAP_AI_DEV_TOOLKIT_ALLOW_SSO_PROXY_ON_NON_WINDOWS: 'true',
+      SAP_AUTH_FALLBACK_MODE: 'basic',
+      SAP_USER: 'sap-user'
+    }
+  });
+  t.after(() => proxy.close());
+
+  const response = await fetch(`${proxy.url}/sap/bc/adt/discovery`);
+  assert.equal(response.status, 401);
+  assert.deepEqual(requests, [undefined]);
+});
+
+test('Windows SSO ADT proxy Basic fallback also accepts branded mode and username/password aliases', async t => {
+  const requests = [];
+  const expected = `Basic ${Buffer.from('alias-user:alias-pass').toString('base64')}`;
+  const target = createServer((request, response) => {
+    requests.push(request.headers.authorization);
+    if (request.headers.authorization !== expected) {
+      response.writeHead(401, { 'www-authenticate': 'Basic realm="SAP"' });
+      response.end('basic required');
+      return;
+    }
+    response.writeHead(200);
+    response.end('ok');
+  });
+  await listen(target);
+  t.after(() => close(target));
+
+  const proxy = await createWindowsSsoAdtProxy({
+    destinationUrl: `http://127.0.0.1:${target.address().port}`,
+    env: {
+      SAP_AI_DEV_TOOLKIT_ALLOW_SSO_PROXY_ON_NON_WINDOWS: 'true',
+      SAP_AI_DEV_TOOLKIT_AUTH_FALLBACK_MODE: 'basic',
+      SAP_USERNAME: 'alias-user',
+      SAP_PASS: 'alias-pass'
+    }
+  });
+  t.after(() => proxy.close());
+
+  const response = await fetch(`${proxy.url}/sap/bc/adt/discovery`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(requests, [undefined, expected]);
+});
+
+test('Windows SSO ADT proxy ignores fallback credentials when fallback mode is disabled', async t => {
+  const requests = [];
+  const target = createServer((request, response) => {
+    requests.push(request.headers.authorization);
+    response.writeHead(401, { 'www-authenticate': 'Basic realm="SAP"' });
+    response.end('basic required');
+  });
+  await listen(target);
+  t.after(() => close(target));
+
+  const proxy = await createWindowsSsoAdtProxy({
+    destinationUrl: `http://127.0.0.1:${target.address().port}`,
+    env: {
+      SAP_AI_DEV_TOOLKIT_ALLOW_SSO_PROXY_ON_NON_WINDOWS: 'true',
+      SAP_USER: 'sap-user',
+      SAP_PASSWORD: 'sap-password'
+    }
+  });
+  t.after(() => proxy.close());
+
+  const response = await fetch(`${proxy.url}/sap/bc/adt/discovery`);
+  assert.equal(response.status, 401);
+  assert.deepEqual(requests, [undefined]);
 });
 
 test('Windows SSO ADT proxy rejects NTLM fallback tokens', async t => {
