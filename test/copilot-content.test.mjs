@@ -32,7 +32,9 @@ const expectedSkills = [
 ];
 
 async function readMarkdown(path) {
-  return readFile(path, 'utf8');
+  // Normalize CRLF so content assertions hold on Windows checkouts where
+  // git autocrlf converted the bundled agents and skills.
+  return (await readFile(path, 'utf8')).replaceAll('\r\n', '\n');
 }
 
 function parseFrontmatter(markdown, path) {

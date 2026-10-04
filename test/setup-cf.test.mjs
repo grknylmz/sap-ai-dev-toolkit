@@ -1,14 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { generatedServerName, installMcpConfig } from '../src/mcp-config.mjs';
 import { destinationTable } from '../scripts/postinstall.mjs';
 import { spawnWithPty } from './pty.mjs';
+import { pathEntry, writeFakeCli } from './fake-bin.mjs';
 
-const setupModule = fileURLToPath(new URL('../src/setup.mjs', import.meta.url));
+const setupModule = pathToFileURL(fileURLToPath(new URL('../src/setup.mjs', import.meta.url))).href;
 
 function cloudFoundryDestination({ name, serverName, instanceGuid, instanceName, keyName }) {
   return {
@@ -51,9 +52,24 @@ async function makeFixture(t, { version = 'cf version 8.18.0', space = 'space-on
   const configPath = join(directory, 'mcp.json');
   const callLog = join(directory, 'cf-calls.jsonl');
   const discoveryLog = join(directory, 'cf-discovery.json');
-  const cfPath = join(bin, 'cf');
-  await writeFile(cfPath, `#!/usr/bin/env node
-import { appendFileSync } from 'node:fs';
+  const env = {
+    ...process.env,
+    HOME: directory,
+    PATH: pathEntry(bin),
+    H2O_URL: 'http://h2o.example',
+    SAP_AI_DEV_TOOLKIT_MCP_CONFIG: configPath,
+    CF_CALL_LOG: callLog,
+    CF_DISCOVERY_LOG: discoveryLog,
+    TEST_CF_VERSION: version,
+    TEST_CF_SPACE: space,
+    TEST_CF_DELETE_MODE: deleteMode,
+    TEST_INSTALL_FAIL: 'false',
+    TEST_BAS_DESTINATIONS: JSON.stringify([]),
+    TEST_CF_RESULT: JSON.stringify({ destinations: [], createdKeys: [], warnings: [] }),
+    TEST_ONPREM_CSRF_RESULT: JSON.stringify({ httpStatus: 200, tokenReceived: true, cookieCount: 1 })
+  };
+  await writeFakeCli(bin, 'cf', `
+const { appendFileSync } = require('node:fs');
 const args = process.argv.slice(2);
 appendFileSync(process.env.CF_CALL_LOG, JSON.stringify(args) + '\\n');
 if (args[0] === 'version') process.stdout.write(process.env.TEST_CF_VERSION + '\\n');
@@ -67,8 +83,7 @@ else if (args[0] === 'target') {
   process.exitCode = 1;
 } else if (args[0] === 'delete-service-key') process.stdout.write('deleted\\n');
 else process.exitCode = 1;
-`);
-  await chmod(cfPath, 0o755);
+`, env);
   const harness = join(directory, 'setup-runner.mjs');
   await writeFile(harness, `import { writeFile } from 'node:fs/promises';
 import { runSetup } from ${JSON.stringify(setupModule)};
@@ -85,27 +100,11 @@ await runSetup({
   } : {})
 });
 `);
-  const env = {
-    ...process.env,
-    HOME: directory,
-    PATH: `${bin}:${process.env.PATH || ''}`,
-    H2O_URL: 'http://h2o.example',
-    SAP_AI_DEV_TOOLKIT_MCP_CONFIG: configPath,
-    CF_CALL_LOG: callLog,
-    CF_DISCOVERY_LOG: discoveryLog,
-    TEST_CF_VERSION: version,
-    TEST_CF_SPACE: space,
-    TEST_CF_DELETE_MODE: deleteMode,
-    TEST_INSTALL_FAIL: 'false',
-    TEST_BAS_DESTINATIONS: JSON.stringify([]),
-    TEST_CF_RESULT: JSON.stringify({ destinations: [], createdKeys: [], warnings: [] }),
-    TEST_ONPREM_CSRF_RESULT: JSON.stringify({ httpStatus: 200, tokenReceived: true, cookieCount: 1 })
-  };
   t.after(() => rm(directory, { recursive: true, force: true }));
   return { directory, configPath, callLog, discoveryLog, harness, env };
 }
 
-function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r', promptAnswers = [] } = {}) {
+function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r', selectionSequence = null, promptAnswers = [] } = {}) {
   return new Promise((resolve, reject) => {
     const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(fixture.harness)}`;
     const child = spawnWithPty(command, { env: fixture.env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -113,25 +112,45 @@ function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r', promp
     let stderr = '';
     let importSent = false;
     let selectionSent = false;
+    let selectionStepIndex = 0;
     let promptAnswerIndex = 0;
     const timeout = setTimeout(() => child.kill('SIGKILL'), 15000);
+    const send = (chunk, done = false) => {
+      // A short delay lets the target prompt finish rendering before the keys
+      // arrive; ConPTY re-renders in chunks and an immediate write can land
+      // before the field is listening.
+      setTimeout(() => {
+        if (done) child.stdin.end(chunk);
+        else child.stdin.write(chunk);
+      }, 400);
+    };
     child.stdout.on('data', chunk => {
       stdout += chunk.toString();
       if (!importSent && stdout.includes("Include destinations from the current CF space's Destination service?")) {
         importSent = true;
-        child.stdin.write(importAnswer);
+        send(importAnswer);
       }
-      if (!selectionSent && stdout.includes('Select destinations')) {
+      if (selectionSequence?.length) {
+        // Multi-key selection: send each key only after its confirmation text
+        // (e.g. the checked row) actually rendered. ConPTY re-emits screen
+        // state rather than raw bytes, so an erased render cannot be matched
+        // after the fact the way a raw Unix pty stream allows.
+        const step = selectionSequence[selectionStepIndex];
+        if (step && stdout.includes(step.when)) {
+          selectionStepIndex += 1;
+          const finished = selectionStepIndex === selectionSequence.length;
+          selectionSent = selectionSent || finished;
+          send(step.input, finished && !promptAnswers.length);
+        }
+      } else if (!selectionSent && stdout.includes('Select destinations')) {
         selectionSent = true;
-        if (promptAnswers.length) child.stdin.write(selection);
-        else child.stdin.end(selection);
+        send(selection, !promptAnswers.length);
       }
       if (selectionSent && promptAnswerIndex < promptAnswers.length) {
         const answer = promptAnswers[promptAnswerIndex];
         if (stdout.includes(answer.when)) {
           promptAnswerIndex++;
-          child.stdin.write(answer.value);
-          if (promptAnswerIndex === promptAnswers.length) child.stdin.end();
+          send(answer.value, promptAnswerIndex === promptAnswers.length);
         }
       }
     });
@@ -167,7 +186,15 @@ test('imports selected CF destinations, passes managed key references, and remov
     warnings: []
   });
 
-  const result = await runSetupInPty(fixture);
+  const result = await runSetupInPty(fixture, {
+    // Confirm only after the checked row rendered: on Windows, ConPTY erases
+    // the checkbox render on confirm, so a post-hoc /✓/ match would look at
+    // screen state that no longer exists in the output stream.
+    selectionSequence: [
+      { when: 'Select destinations', input: ' ' },
+      { when: '✓', input: '\r' }
+    ]
+  });
   assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
   assert.equal(result.importSent, true, result.stdout);
   assert.equal(result.selectionSent, true, result.stdout);

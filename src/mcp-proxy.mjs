@@ -198,6 +198,14 @@ export function childArguments(destination, env = process.env) {
   return args;
 }
 
+// Windows cannot exec a .js/.mjs file directly (no shebang support), so test
+// fixtures written in JavaScript are launched through the current Node binary.
+// The production VSP binary is a native executable and is unaffected.
+function spawnCommand(binary) {
+  if (/\.(?:mjs|cjs|js)$/i.test(binary)) return [process.execPath, binary];
+  return [binary];
+}
+
 class Child {
   constructor(binary, destination, options) {
     this.destination = destination;
@@ -208,7 +216,8 @@ class Child {
     this.exited = false;
     this.closing = false;
     this.requestTimeoutMs = options.requestTimeoutMs ?? 0;
-    this.process = (options.spawn || nodeSpawn)(binary, options.args || childArguments(destination, options.env), {
+    const [command, ...commandPrefixArgs] = spawnCommand(binary);
+    this.process = (options.spawn || nodeSpawn)(command, [...commandPrefixArgs, ...(options.args || childArguments(destination, options.env))], {
       env: childEnvironment(destination, options.env),
       stdio: ['pipe', 'pipe', 'pipe']
     });
@@ -346,8 +355,22 @@ class Child {
     if (this.exited) return;
     this.closing = true;
     this.notify('notifications/cancelled', { reason: 'proxy shutdown' });
-    this.process.kill('SIGTERM');
+    // Give well-behaved MCP children a graceful exit first: stdin EOF lets
+    // them finish and log their own shutdown. Windows cannot trap SIGTERM
+    // (Node maps it to TerminateProcess), so EOF is the only graceful path —
+    // wait briefly for it before escalating.
+    this.process.stdin?.end();
     let timeout;
+    try {
+      await Promise.race([
+        once(this.process, 'exit').catch(() => {}),
+        new Promise(resolve => { timeout = setTimeout(resolve, 750); })
+      ]);
+    } finally {
+      clearTimeout(timeout);
+    }
+    if (this.exited) return;
+    this.process.kill('SIGTERM');
     try {
       await Promise.race([
         once(this.process, 'exit').catch(() => {}),

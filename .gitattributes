@@ -1,0 +1,9 @@
+# Canonical line endings: LF everywhere so Windows checkouts match the
+# bundled agents/skills content the toolkit ships and parses.
+* text=auto eol=lf
+*.png binary
+*.exe binary
+*.icns binary
+*.ico binary
+*.tgz binary
+*.zip binary

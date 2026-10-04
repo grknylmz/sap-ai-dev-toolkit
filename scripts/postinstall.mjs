@@ -20,9 +20,16 @@ const runtimeEnv = withBrandedEnvironment(process.env);
 
 async function announce(message, tone = 'info') {
   const content = message.replace(/^sap-ai-dev-toolkit:\s*/, '');
+  // Windows cannot open CONOUT$ as a writable console stream from a
+  // piped npm script (libuv normalizes the device name, and the resulting
+  // handle drops writes), so output goes through stderr unconditionally.
+  if (process.platform === 'win32') {
+    console.error(formatStatus(content, tone, process.stderr));
+    return;
+  }
   let terminal;
   try {
-    terminal = await open(process.platform === 'win32' ? 'CONOUT$' : '/dev/tty', 'w');
+    terminal = await open('/dev/tty', 'w');
     await terminal.write(`${formatStatus(content, tone, true)}\n`);
   } catch {
     console.error(formatStatus(content, tone, process.stderr));
@@ -32,12 +39,17 @@ async function announce(message, tone = 'info') {
 }
 
 function openControllingTerminal() {
-  const inputPath = process.platform === 'win32' ? 'CONIN$' : '/dev/tty';
-  const outputPath = process.platform === 'win32' ? 'CONOUT$' : '/dev/tty';
-  const inputFd = openSync(inputPath, 'r');
+  if (process.platform === 'win32') {
+    // fs cannot open CONIN$/CONOUT$ (libuv path normalization rejects the
+    // device names), so there is no controlling-terminal recovery on
+    // Windows: npm-script installs run non-interactively and the printed
+    // guidance points at `sap-ai-dev --setup` in a real terminal.
+    throw new Error('controlling terminal recovery is unavailable on Windows');
+  }
+  const inputFd = openSync('/dev/tty', 'r');
   let outputFd;
   try {
-    outputFd = openSync(outputPath, 'w');
+    outputFd = openSync('/dev/tty', 'w');
     return { input: new TTYReadStream(inputFd), output: new TTYWriteStream(outputFd) };
   } catch (error) {
     closeSync(inputFd);

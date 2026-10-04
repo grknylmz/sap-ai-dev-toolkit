@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { normalizeDestination, destinationUrl, discoverDestinations, fetchDestinationList, redact, sanitizeChildEnv, slugifyDestination } from '../src/bas-discovery.mjs';
 import { defaultAdtUrl, discoverSapGuiSystems, sapGuiLandscapeCandidates } from '../src/local-sap-gui.mjs';
+import { isolatedWindowsEnv } from './fake-bin.mjs';
 
 test('normalizes destination metadata case-insensitively', () => {
   const destination = normalizeDestination({
@@ -297,7 +298,7 @@ test('SAP GUI discovery self-heals by scanning standard SAP config roots', async
     <Service type="SAPGUI" name="Self Heal" server="heal.example.com" systemid="HL1" instancenumber="03" client="123" />
   </Services></Landscape>`);
   try {
-    const systems = await discoverSapGuiSystems({ env: { HOME: directory, USERPROFILE: directory } });
+    const systems = await discoverSapGuiSystems({ env: isolatedWindowsEnv(directory) });
     assert.equal(systems.length, 1);
     assert.equal(systems[0].name, 'Self Heal');
     assert.equal(systems[0].host, 'heal.example.com');
@@ -315,7 +316,7 @@ test('SAP GUI discovery falls back to a broad profile scan when standard roots m
     <Service type="SAPGUI" name="Broad Heal" server="broad.example.com" systemid="BRD" instancenumber="04" client="321" />
   </Services></Landscape>`);
   try {
-    const systems = await discoverSapGuiSystems({ env: { HOME: directory, USERPROFILE: directory } });
+    const systems = await discoverSapGuiSystems({ env: isolatedWindowsEnv(directory) });
     assert.equal(systems.length, 1);
     assert.equal(systems[0].name, 'Broad Heal');
     assert.equal(systems[0].host, 'broad.example.com');

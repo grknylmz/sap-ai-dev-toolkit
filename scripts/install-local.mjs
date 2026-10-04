@@ -61,7 +61,11 @@ async function resolveGlobalBinaryPath() {
 async function verify() {
   const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   const prefix = await resolveGlobalBinaryPath();
-  const expected = resolvePath(prefix, 'lib', 'node_modules', pkg.name);
+  // npm's global layout differs per platform: Unix nests modules under
+  // <prefix>/lib/node_modules, Windows puts them directly under <prefix>.
+  const expected = process.platform === 'win32'
+    ? resolvePath(prefix, 'node_modules', pkg.name)
+    : resolvePath(prefix, 'lib', 'node_modules', pkg.name);
   const serverCommand = process.platform === 'win32'
     ? join(prefix, 'sap-ai-dev.cmd')
     : join(prefix, 'bin', 'sap-ai-dev');

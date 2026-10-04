@@ -467,7 +467,9 @@ test('stdin EOF shuts down every child process and forwards child logs', async t
   assert.ok(output.some(message => message.method === 'notifications/message' && message.params?.data === 'fixture log notification'));
   const entries = (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
   assert.equal(entries.filter(entry => entry.event === 'initialize').length, 2);
-  assert.deepEqual([...new Set(entries.filter(entry => entry.event === 'term').map(entry => entry.destination))].sort(), ['alpha', 'beta']);
+  // Unix children log 'term' (trapped SIGTERM); Windows cannot trap signals,
+  // so stdin EOF ('end') is the graceful-shutdown evidence there.
+  assert.deepEqual([...new Set(entries.filter(entry => entry.event === 'term' || entry.event === 'end').map(entry => entry.destination))].sort(), ['alpha', 'beta']);
 });
 
 async function driveUntil(output, predicate, timeoutMs = 5000) {

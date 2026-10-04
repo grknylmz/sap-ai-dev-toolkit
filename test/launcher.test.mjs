@@ -7,6 +7,7 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { isolatedWindowsEnv, isWindows, pathEntry, writeFakeCli } from './fake-bin.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnWithPty } from './pty.mjs';
@@ -28,7 +29,8 @@ function runLauncher(args, env) {
 }
 function runLauncherTty(env, input, args = ['--setup']) {
   return new Promise((resolve, reject) => {
-    const command = `${process.execPath} ${launcher} ${args.join(' ')}`;
+    // Quoted paths: the Windows node install lives under "C:\Program Files".
+    const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(launcher)} ${args.join(' ')}`;
     const child = spawnWithPty(command, { env, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
@@ -47,9 +49,15 @@ function runLauncherTty(env, input, args = ['--setup']) {
   });
 }
 
+// On Windows the local setup flow asks for the authentication mode after the
+// ADT URL prompt (Windows SSO is offered there); Unix never shows that prompt.
+function windowsAuthStep(label, options = {}) {
+  return { when: `Authentication for ${label}`, input: '\r', ...options };
+}
+
 function runLauncherTtyScripted(env, steps, args = ['--setup']) {
   return new Promise((resolve, reject) => {
-    const command = `${process.execPath} ${launcher} ${args.join(' ')}`;
+    const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(launcher)} ${args.join(' ')}`;
     const child = spawnWithPty(command, { env, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
@@ -60,8 +68,13 @@ function runLauncherTtyScripted(env, steps, args = ['--setup']) {
       for (const [index, step] of steps.entries()) {
         if (!sent.has(index) && stdout.includes(step.when)) {
           sent.add(index);
-          child.stdin.write(step.input);
-          if (sent.size === steps.length && step.end !== false) child.stdin.end();
+          // A short delay lets the target prompt finish rendering before the
+          // keys arrive; ConPTY re-renders in chunks and an immediate write
+          // can land before the field is listening.
+          setTimeout(() => {
+            child.stdin.write(step.input);
+            if (sent.size === steps.length && step.end !== false) child.stdin.end();
+          }, 400);
         }
       }
     });
@@ -105,9 +118,12 @@ test('help exits before BAS destination discovery', async t => {
   assert.equal(requests, 0);
 });
 
-test('doctor reports missing BAS configuration as redacted JSON', async () => {
+test('doctor reports missing BAS configuration as redacted JSON', async t => {
+  const scratch = await mkdtemp(join(tmpdir(), 'bas-doctor-missing-'));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
   const result = await runLauncher(['--doctor', '--json'], {
     ...process.env,
+    ...isolatedWindowsEnv(scratch),
     H2O_URL: '',
     SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: '',
     BAS_VSP_DESTINATION_SOURCE: ''
@@ -395,9 +411,7 @@ test('setup subprocess writes one isolated MCP entry per selected destination', 
   const directory = await mkdtemp(join(tmpdir(), 'bas-launcher-setup-'));
   const bin = join(directory, 'bin');
   await mkdir(bin);
-  const cfCli = join(bin, 'cf');
-  await writeFile(cfCli, '#!/bin/sh\nexit 1\n');
-  await chmod(cfCli, 0o755);
+  await writeFakeCli(bin, 'cf', 'process.exitCode = 1;');
   const config = join(directory, 'mcp.json');
   await writeFile(config, JSON.stringify({ inputs: [], servers: {
     unrelated: { type: 'stdio', command: 'other' },
@@ -421,7 +435,7 @@ test('setup subprocess writes one isolated MCP entry per selected destination', 
     response.end();
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH || ''}`, H2O_URL: `http://127.0.0.1:${server.address().port}`, SAP_AI_DEV_TOOLKIT_SKIP_PROBE: 'true', SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config };
+  const env = { ...process.env, PATH: pathEntry(bin), H2O_URL: `http://127.0.0.1:${server.address().port}`, SAP_AI_DEV_TOOLKIT_SKIP_PROBE: 'true', SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config };
   try {
     const first = await runLauncherTty(env, 'a\r', ['--setup', '--npx']);
     assert.equal(first.code, 0, `${first.stdout}\n${first.stderr}`);
@@ -451,6 +465,7 @@ test('interactive local no-arg launcher starts setup instead of VSP', async () =
   const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-noarg-'));
   const env = {
     ...process.env,
+    ...isolatedWindowsEnv(directory),
     HOME: directory,
     APPDATA: join(directory, 'AppData', 'Roaming'),
     SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(directory, 'mcp.json')
@@ -479,6 +494,7 @@ test('local setup discovers SAP GUI systems, prompts for ADT URL, and writes log
   try {
     const result = await runLauncherTtyScripted({
       ...process.env,
+      ...isolatedWindowsEnv(directory),
       HOME: directory,
       USERPROFILE: directory,
       APPDATA: appData,
@@ -487,10 +503,11 @@ test('local setup discovers SAP GUI systems, prompts for ADT URL, and writes log
     }, [
       { when: 'Select destinations', input: ' \r', end: false },
       { when: 'SAP client(s) for Local ABAP', input: '\r', end: false },
-      { when: 'ADT URL for Local ABAP', input: '\r' }
+      { when: 'ADT URL for Local ABAP', input: '\r', end: false },
+      ...(isWindows ? [windowsAuthStep('Local ABAP')] : [])
     ], ['--setup', '--npx']);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
-    assert.equal(result.sent, 3);
+    assert.equal(result.sent, isWindows ? 4 : 3);
     const current = JSON.parse(await readFile(config, 'utf8'));
     assert.deepEqual(Object.keys(current.servers).sort(), ['a4h-100', 'unrelated']);
     assert.equal(current.servers['a4h-100'].env.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE, 'sap-gui-local');
@@ -517,6 +534,7 @@ test('local setup creates separate MCP entries for multiple entered SAP clients'
   try {
     const result = await runLauncherTtyScripted({
       ...process.env,
+      ...isolatedWindowsEnv(directory),
       HOME: directory,
       USERPROFILE: directory,
       APPDATA: appData,
@@ -525,10 +543,11 @@ test('local setup creates separate MCP entries for multiple entered SAP clients'
     }, [
       { when: 'Select destinations', input: ' \r', end: false },
       { when: 'SAP client(s) for Multi ABAP', input: ' 100, 200,100 \r', end: false },
-      { when: 'ADT URL for Multi ABAP', input: '\r' }
+      { when: 'ADT URL for Multi ABAP', input: '\r', end: false },
+      ...(isWindows ? [windowsAuthStep('Multi ABAP')] : [])
     ], ['--setup', '--npx']);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
-    assert.equal(result.sent, 3);
+    assert.equal(result.sent, isWindows ? 4 : 3);
     const current = JSON.parse(await readFile(config, 'utf8'));
     assert.deepEqual(Object.keys(current.servers).sort(), ['a4h-100', 'a4h-200']);
     assert.equal(current.servers['a4h-100'].env.SAP_CLIENT, '100');
@@ -557,6 +576,7 @@ test('local setup disambiguates duplicate SAP GUI system names before writing MC
   try {
     const result = await runLauncherTtyScripted({
       ...process.env,
+      ...isolatedWindowsEnv(directory),
       HOME: directory,
       USERPROFILE: directory,
       APPDATA: appData,
@@ -566,11 +586,13 @@ test('local setup disambiguates duplicate SAP GUI system names before writing MC
       { when: 'Select destinations', input: 'a\r', end: false },
       { when: 'SAP client(s) for Duplicate ABAP (A4H one.example.com 00)', input: '\r', end: false },
       { when: 'ADT URL for Duplicate ABAP (A4H one.example.com 00)', input: '\r', end: false },
+      ...(isWindows ? [windowsAuthStep('Duplicate ABAP (A4H one.example.com 00)', { end: false })] : []),
       { when: 'SAP client(s) for Duplicate ABAP (B4H two.example.com 01)', input: '\r', end: false },
-      { when: 'ADT URL for Duplicate ABAP (B4H two.example.com 01)', input: '\r' }
+      { when: 'ADT URL for Duplicate ABAP (B4H two.example.com 01)', input: '\r', end: false },
+      ...(isWindows ? [windowsAuthStep('Duplicate ABAP (B4H two.example.com 01)')] : [])
     ], ['--setup', '--npx']);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
-    assert.equal(result.sent, 5);
+    assert.equal(result.sent, isWindows ? 7 : 5);
     const current = JSON.parse(await readFile(config, 'utf8'));
     assert.deepEqual(Object.keys(current.servers).sort(), [
       'a4h-100',
@@ -598,6 +620,7 @@ test('local setup auto-discovers TLS certificate DNS names when ADT URL uses an 
     const adtUrl = `https://127.0.0.1:${certificateServer.address().port}`;
     const result = await runLauncherTtyScripted({
       ...process.env,
+      ...isolatedWindowsEnv(directory),
       HOME: directory,
       USERPROFILE: directory,
       APPDATA: appData,
@@ -607,10 +630,11 @@ test('local setup auto-discovers TLS certificate DNS names when ADT URL uses an 
       { when: 'Select destinations', input: ' \r', end: false },
       { when: 'SAP client(s) for IP ABAP', input: '\r', end: false },
       { when: 'ADT URL for IP ABAP', input: `${adtUrl}\r`, end: false },
-      { when: 'Use discovered certificate DNS name', input: '\r' }
+      { when: 'Use discovered certificate DNS name', input: '\r', end: false },
+      ...(isWindows ? [windowsAuthStep('IP ABAP')] : [])
     ], ['--setup', '--npx']);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
-    assert.equal(result.sent, 4);
+    assert.equal(result.sent, isWindows ? 5 : 4);
     assert.match(result.stdout, /TLS self-heal/);
     const current = JSON.parse(await readFile(config, 'utf8'));
     assert.equal(current.servers['ip1-001'].env.SAP_URL, adtUrl);
@@ -634,6 +658,7 @@ test('local setup can write Windows SSO auth mode without login inputs', async (
   try {
     const result = await runLauncherTtyScripted({
       ...process.env,
+      ...isolatedWindowsEnv(directory),
       HOME: directory,
       USERPROFILE: directory,
       APPDATA: appData,
@@ -671,6 +696,7 @@ test('local setup writes browser SAML, SAML password, and Windows credential UI 
     try {
       const result = await runLauncherTtyScripted({
         ...process.env,
+        ...isolatedWindowsEnv(directory),
         HOME: directory,
         USERPROFILE: directory,
         APPDATA: appData,
@@ -715,8 +741,10 @@ test('local setup writes browser SAML, SAML password, and Windows credential UI 
   });
 });
 
-test('non-BAS list mode reports the required discovery boundary', async () => {
-  const result = await runLauncher(['--list-destinations', '--json'], { ...process.env, H2O_URL: '' });
+test('non-BAS list mode reports the required discovery boundary', async t => {
+  const scratch = await mkdtemp(join(tmpdir(), 'bas-list-boundary-'));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const result = await runLauncher(['--list-destinations', '--json'], { ...process.env, ...isolatedWindowsEnv(scratch), H2O_URL: '' });
   assert.equal(result.code, 1);
   assert.match(result.stderr, /H2O_URL is required/);
 });

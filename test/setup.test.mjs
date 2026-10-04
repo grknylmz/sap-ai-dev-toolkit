@@ -11,6 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { installMcpConfig } from '../src/mcp-config.mjs';
 import { parseSapClientList, runSetup } from '../src/setup.mjs';
 import { spawnWithPty } from './pty.mjs';
+import { isolatedWindowsEnv, isWindows, pathEntry, writeFakeCli } from './fake-bin.mjs';
 
 const destinations = [
   { name: 'alpha-system', client: '100', authentication: 'Basic', probe: { status: 'available', available: true } },
@@ -30,8 +31,12 @@ function outputStream() {
 
 function runSetupVisibilityInPty(fixture, env, keys = '\r') {
   return new Promise((resolve, reject) => {
-    const command = `stty cols 48 rows 12; ${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)}`;
-    const child = spawnWithPty(command, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    // stty shrinks the pty so layout wrapping is asserted on Unix; the Windows
+    // pty adapter takes the same size through spawn options instead.
+    const command = isWindows
+      ? `${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)}`
+      : `stty cols 48 rows 12; ${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)}`;
+    const child = spawnWithPty(command, { env, stdio: ['pipe', 'pipe', 'pipe'], cols: 48, rows: 12 });
     let stdout = '';
     let stderr = '';
     let selectionSent = false;
@@ -69,7 +74,12 @@ test('parseSapClientList handles defaults, whitespace, duplicates, and invalid c
 
 function runPostinstallInPty(env, keys, assetsAnswer = '\r') {
   return new Promise((resolve, reject) => {
-    const command = `stty cols 100 rows 30; ${JSON.stringify(process.execPath)} scripts/postinstall.mjs </dev/null | cat`;
+    // Unix redirects stdin from /dev/null so postinstall's controlling-
+    // terminal recovery (/dev/tty) is what drives the prompts. Windows has
+    // no controlling-terminal recovery, so the pty stays on stdin directly.
+    const command = isWindows
+      ? `${JSON.stringify(process.execPath)} scripts\\postinstall.mjs`
+      : `stty cols 100 rows 30; ${JSON.stringify(process.execPath)} scripts/postinstall.mjs </dev/null | cat`;
     const child = spawnWithPty(command, { env, stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
@@ -215,7 +225,12 @@ test('setup checkbox remains visible in a narrow live TTY without spinner artifa
   const fixture = join(directory, 'visibility-fixture.mjs');
   const bin = join(directory, 'bin');
   await mkdir(bin);
-  await writeFile(join(bin, 'cf'), '#!/bin/sh\nexit 1\n', { mode: 0o755 });
+  const fixtureEnv = {
+    ...process.env,
+    H2O_URL: 'http://h2o.example',
+    PATH: pathEntry(bin)
+  };
+  await writeFakeCli(bin, 'cf', 'process.exitCode = 1;', fixtureEnv);
   await writeFile(fixture, `
 import { runSetup } from ${JSON.stringify(pathToFileURL(join(process.cwd(), 'src/setup.mjs')).href)};
 const destinations = [
@@ -223,17 +238,16 @@ const destinations = [
   { name: 'VeryLongDestinationNameForWrapping', client: '200', authentication: 'Basic', probe: { status: 'available', available: true } }
 ];
 await runSetup({
-  env: { ...process.env, H2O_URL: 'http://h2o.example', PATH: ${JSON.stringify(`${bin}:${process.env.PATH || ''}`)} },
+  env: process.env,
   discover: async () => destinations,
   install: async selected => ({ path: process.env.SAP_AI_DEV_TOOLKIT_MCP_CONFIG, servers: Object.fromEntries(selected.map(destination => [destination.name, { env: { SAP_AI_DEV_TOOLKIT_DESTINATION: destination.name } }])) })
 });
 `);
   try {
     const env = {
-      ...process.env,
+      ...fixtureEnv,
       SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(directory, 'mcp.json'),
-      FORCE_COLOR: '1',
-      PATH: `${bin}:${process.env.PATH || ''}`
+      FORCE_COLOR: '1'
     };
     delete env.NO_COLOR;
     const result = await runSetupVisibilityInPty(fixture, env, '\r');
@@ -291,9 +305,8 @@ test('global postinstall completes BAS selection before default Copilot asset in
   const config = join(directory, 'mcp.json');
   const bin = join(directory, 'bin');
   await mkdir(bin);
-  const cfCli = join(bin, 'cf');
-  await writeFile(cfCli, '#!/bin/sh\nexit 1\n');
-  await chmod(cfCli, 0o755);
+  const postinstallEnv = { ...process.env, PATH: pathEntry(bin) };
+  await writeFakeCli(bin, 'cf', 'process.exitCode = 1;', postinstallEnv);
   const server = createServer((request, response) => {
     if (request.url === '/api/listDestinations') {
       response.writeHead(200, { 'content-type': 'application/json' });
@@ -309,9 +322,8 @@ test('global postinstall completes BAS selection before default Copilot asset in
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const env = {
-    ...process.env,
+    ...postinstallEnv,
     HOME: directory,
-    PATH: `${bin}:${process.env.PATH || ''}`,
     BAS_VSP_BINARY: '/bin/true',
     SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config,
     SAP_AI_DEV_TOOLKIT_SKIP_PROBE: 'true',
@@ -337,7 +349,9 @@ test('global postinstall completes BAS selection before default Copilot asset in
   assert.match(declineLogs, /The bundled agents and skills can be installed for several AI coding harnesses/);
   assert.match(declineLogs, /Space = select or deselect · a = toggle all · Enter = confirm/);
   assert.match(declineLogs, /🤖 sap-ai-dev-toolkit/);
-  assert.match(declineLogs, /\u001b\[1;35m/);
+  // Magenta header: terminals receive either one combined SGR sequence or
+  // separate color+bold sequences depending on the platform writer.
+  assert.match(declineLogs, /\u001b\[1;35m|\u001b\[35m\u001b\[1m/);
   assert.match(declineLogs, /GitHub Copilot \(skills \+ agents\)/);
   assert.match(declineLogs, /Gemini CLI \(skills\)/);
   assert.match(declineLogs, /Bundled agents and skills were skipped\. Your files were not changed/);
@@ -525,6 +539,7 @@ test('postinstall harness selection honors the environment override in a live TT
   const directory = await mkdtemp(join(tmpdir(), 'bas-postinstall-harness-pty-'));
   const env = {
     ...process.env,
+    ...isolatedWindowsEnv(directory),
     HOME: directory,
     SAP_AI_DEV_TOOLKIT_BINARY: '/bin/true',
     SAP_AI_DEV_TOOLKIT_HARNESSES: 'gemini-cli',
@@ -550,6 +565,7 @@ test('postinstall harness selection skips without changes when interrupted', asy
   const directory = await mkdtemp(join(tmpdir(), 'bas-postinstall-harness-interrupt-'));
   const env = {
     ...process.env,
+    ...isolatedWindowsEnv(directory),
     HOME: directory,
     SAP_AI_DEV_TOOLKIT_BINARY: '/bin/true',
     FORCE_COLOR: '1'
@@ -569,8 +585,21 @@ test('postinstall harness selection skips without changes when interrupted', asy
 
 test('postinstall runs when invoked through a symlinked install path', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sap-ai-postinstall-symlink-'));
-  const alias = join(directory, 'postinstall.mjs');
-  await symlink(join(process.cwd(), 'scripts', 'postinstall.mjs'), alias);
+  let alias;
+  try {
+    alias = join(directory, 'postinstall.mjs');
+    await symlink(join(process.cwd(), 'scripts', 'postinstall.mjs'), alias);
+  } catch (error) {
+    if (error.code !== 'EPERM' && error.code !== 'EACCES') throw error;
+    // File symlinks on Windows need Developer Mode or admin rights. A
+    // directory junction requires no privileges and preserves the property
+    // under test: postinstall starts from an install path outside the repo
+    // and must still resolve its entry point through the link.
+    const linkRoot = join(directory, 'install');
+    await mkdir(linkRoot, { recursive: true });
+    await symlink(join(process.cwd(), 'scripts'), join(linkRoot, 'scripts'), 'junction');
+    alias = join(linkRoot, 'scripts', 'postinstall.mjs');
+  }
   const env = {
     ...process.env,
     HOME: directory,
@@ -581,7 +610,10 @@ test('postinstall runs when invoked through a symlinked install path', async () 
   delete env.NPM_CONFIG_IGNORE_SCRIPTS;
   try {
     const result = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [alias], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      // detached drops the controlling console/terminal so postinstall takes
+      // its documented non-interactive path instead of waiting on a prompt
+      // this test never answers.
+      const child = spawn(process.execPath, [alias], { env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
       let stdout = '';
       let stderr = '';
       child.stdout.on('data', chunk => { stdout += chunk; });

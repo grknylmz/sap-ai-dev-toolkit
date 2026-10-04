@@ -300,6 +300,10 @@ function registryPathCandidates(value) {
 
 async function windowsRegistrySapGuiCandidates(env = process.env) {
   if (platform() !== 'win32') return [];
+  // Escape hatch for locked-down machines and for tests that must not see
+  // the real registry's landscape paths.
+  const disabled = String(env.SAP_AI_DEV_TOOLKIT_DISABLE_SAP_GUI_REGISTRY || '').toLowerCase() === 'true';
+  if (disabled) return [];
   const candidates = [];
   for (const root of SAP_GUI_REGISTRY_ROOTS) {
     try {

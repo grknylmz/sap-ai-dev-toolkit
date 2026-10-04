@@ -105,7 +105,10 @@ async function runDoctor(destinations) {
       const upstreamCount = tools.filter(tool => !localSegments.has(isUpstreamTool(tool))).length;
       checks.push(doctorRow(destination.name, 'MCP tools/list', upstreamCount ? 'passed' : 'failed', `${upstreamCount} VSP tools and ${tools.length} total MCP tools returned; chat-picker binding is host-managed`));
       const systemInfo = tools.find(tool => tool.name === 'get_system_info' || tool.name === `${toolPrefix}get_system_info`);
-      if (!systemInfo) {
+      const needsAdtUrl = destination.probe?.status === 'needs-adt-url';
+      if (needsAdtUrl) {
+        checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', 'No ADT URL is configured for this SAP GUI system; run sap-ai-dev --setup to add one.'));
+      } else if (!systemInfo) {
         checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', 'GetSystemInfo is not exposed by this VSP mode.'));
       } else {
         const inspected = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: systemInfo.name, arguments: {} } });
@@ -316,10 +319,18 @@ async function main() {
       return;
     }
     const binary = await binaryOrError();
-    const child = spawn(binary, process.argv.slice(2), { env: runtimeEnv, stdio: 'inherit' });
+    // Windows cannot exec a .js/.mjs file directly; route JavaScript entries
+    // (test fixtures) through the current Node binary like MCPProxy does.
+    const spawnTarget = /\.(?:mjs|cjs|js)$/i.test(binary)
+      ? { command: process.execPath, prefixArgs: [binary] }
+      : { command: binary, prefixArgs: [] };
+    const child = spawn(spawnTarget.command, [...spawnTarget.prefixArgs, ...process.argv.slice(2)], { env: runtimeEnv, stdio: 'inherit' });
     process.once('SIGINT', () => child.kill('SIGINT'));
     process.once('SIGTERM', () => child.kill('SIGTERM'));
-    const [code, signal] = await new Promise(resolve => child.once('exit', (exitCode, exitSignal) => resolve([exitCode, exitSignal])));
+    const [code, signal] = await new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('exit', (exitCode, exitSignal) => resolve([exitCode, exitSignal]));
+    });
     if (signal) process.kill(process.pid, signal);
     process.exitCode = code ?? 1;
     return;

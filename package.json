@@ -22,8 +22,8 @@
   "scripts": {
     "postinstall": "node scripts/postinstall.mjs",
     "install:local": "node scripts/install-local.mjs",
-    "test": "node --test test/*.test.mjs",
-    "test:live:s4h": "SAP_AI_DEV_LIVE_S4H=1 node --test test/live-s4h.test.mjs",
+    "test": "node --test --test-force-exit test/*.test.mjs",
+    "test:live:s4h": "node scripts/run-live-s4h.mjs",
     "test:visibility": "node --test test/setup.test.mjs test/terminal-ui.test.mjs",
     "test:mutation": "node scripts/mutation-terminal-ui.mjs",
     "publish:npm": "node scripts/publish-npm.mjs",
@@ -55,5 +55,8 @@
   ],
   "publishConfig": {
     "access": "public"
+  },
+  "devDependencies": {
+    "@lydell/node-pty": "^1.2.0-beta.15"
   }
 }

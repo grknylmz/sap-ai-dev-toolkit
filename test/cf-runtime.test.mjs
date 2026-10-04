@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { pathEntry, writeFakeCli } from './fake-bin.mjs';
 
 const launcher = fileURLToPath(new URL('../src/launcher.mjs', import.meta.url));
 const fakeVsp = fileURLToPath(new URL('./fixtures/fake-vsp.mjs', import.meta.url));
@@ -35,8 +36,19 @@ function runLauncher(env, args = [], messages = []) {
 }
 
 async function fakeCfExecutable(directory, origin, callLog, { connectivityProxyPort = 0, connectivityTokenUrl = `${origin}/connectivity/oauth/token` } = {}) {
-  const path = join(directory, 'cf');
-  const source = `#!/usr/bin/env node
+  const cfEnv = {
+    PATH: pathEntry(directory),
+    CF_TEST_ORIGIN: origin,
+    CF_TEST_SPACE_GUID: SPACE_GUID,
+    CF_TEST_INSTANCE_GUID: INSTANCE_GUID,
+    CF_TEST_INSTANCE_NAME: INSTANCE_NAME,
+    CF_TEST_CONNECTIVITY_GUID: 'runtime-connectivity-guid',
+    CF_TEST_CONNECTIVITY_NAME: 'runtime-connectivity-service',
+    CF_TEST_CONNECTIVITY_PROXY_PORT: String(connectivityProxyPort),
+    CF_TEST_CONNECTIVITY_TOKEN_URL: connectivityTokenUrl,
+    CF_CALL_LOG: callLog
+  };
+  await writeFakeCli(directory, 'cf', `
 const fs = require('node:fs');
 const args = process.argv.slice(2);
 if (process.env.CF_CALL_LOG) fs.appendFileSync(process.env.CF_CALL_LOG, JSON.stringify(args) + '\\n');
@@ -66,21 +78,8 @@ else if (args[0] === 'service-key' && args[1] === '--json' && args[2] === connec
 }
 else if (args[0] === 'service-key' && args[1] === '--json') process.stdout.write(JSON.stringify({ credentials: { uri: origin, url: origin + '/uaa', clientid: 'destination-client', clientsecret: 'destination-key-secret' } }));
 else process.exitCode = 2;
-`;
-  await writeFile(path, source, { mode: 0o755 });
-  await chmod(path, 0o755);
-  return {
-    PATH: `${directory}:${process.env.PATH}`,
-    CF_TEST_ORIGIN: origin,
-    CF_TEST_SPACE_GUID: SPACE_GUID,
-    CF_TEST_INSTANCE_GUID: INSTANCE_GUID,
-    CF_TEST_INSTANCE_NAME: INSTANCE_NAME,
-    CF_TEST_CONNECTIVITY_GUID: 'runtime-connectivity-guid',
-    CF_TEST_CONNECTIVITY_NAME: 'runtime-connectivity-service',
-    CF_TEST_CONNECTIVITY_PROXY_PORT: String(connectivityProxyPort),
-    CF_TEST_CONNECTIVITY_TOKEN_URL: connectivityTokenUrl,
-    CF_CALL_LOG: callLog
-  };
+`, cfEnv);
+  return cfEnv;
 }
 
 function destinationServiceServer({ destinationName = 'cf-basic', client = '321' } = {}) {

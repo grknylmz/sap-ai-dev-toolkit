@@ -485,15 +485,26 @@ test('Windows SSO ADT proxy requires explicit helper for Negotiate challenges', 
   await listen(target);
   t.after(() => close(target));
 
+  const env = { SAP_AI_DEV_TOOLKIT_ALLOW_SSO_PROXY_ON_NON_WINDOWS: 'true' };
+  if (process.platform === 'win32') {
+    // On Windows a default PowerShell SSPI helper always exists, so the
+    // no-helper branch is unreachable. Point the helper at a missing binary
+    // to verify the same contract: a Negotiate challenge without a usable
+    // helper fails safely with actionable guidance.
+    env.SAP_AI_DEV_TOOLKIT_NEGOTIATE_HELPER = 'C:\\definitely-not-a-real-helper.exe';
+  }
   const proxy = await createWindowsSsoAdtProxy({
     destinationUrl: `http://127.0.0.1:${target.address().port}`,
-    env: { SAP_AI_DEV_TOOLKIT_ALLOW_SSO_PROXY_ON_NON_WINDOWS: 'true' }
+    env
   });
   t.after(() => proxy.close());
 
   const response = await fetch(`${proxy.url}/sap/bc/adt/discovery`);
   assert.equal(response.status, 502);
-  assert.match(await response.text(), /requires an SSPI\/Negotiate helper/);
+  const text = await response.text();
+  assert.match(text, process.platform === 'win32'
+    ? /Windows SSO helper failed/
+    : /requires an SSPI\/Negotiate helper/);
 });
 
 test('Windows SSO ADT proxy close is idempotent', async t => {

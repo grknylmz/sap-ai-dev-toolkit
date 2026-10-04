@@ -5,7 +5,9 @@ export const HARNESS_ENV_VAR = 'SAP_AI_DEV_TOOLKIT_HARNESSES';
 export const DEFAULT_HARNESS_IDS = ['github-copilot', 'claude-code'];
 export const NON_INTERACTIVE_HARNESS_IDS = ['github-copilot'];
 
-const FRONTMATTER_PATTERN = /^---\n([\s\S]*?)\n---\n/;
+// \r? keeps frontmatter parsing working on Windows checkouts where git's
+// autocrlf converted the bundled agents and skills to CRLF line endings.
+const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---\r?\n/;
 
 function splitFrontmatter(source) {
   const match = FRONTMATTER_PATTERN.exec(String(source));
