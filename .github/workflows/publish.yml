@@ -1,0 +1,67 @@
+name: Publish npm package
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - package.json
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Test and publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 20.x
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - name: Detect package version change
+        id: version
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$(node --input-type=module -e "import fs from 'node:fs'; console.log(JSON.parse(fs.readFileSync('package.json', 'utf8')).version)")"
+          if [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
+            previous=""
+          else
+            previous="$(git show "${BEFORE_SHA}:package.json" | node --input-type=module -e "let input = ''; process.stdin.on('data', chunk => input += chunk).on('end', () => console.log(JSON.parse(input).version))")"
+          fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "previous=$previous" >> "$GITHUB_OUTPUT"
+          if [[ "$current" == "$previous" ]]; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Report unchanged package version
+        if: steps.version.outputs.changed != 'true'
+        run: echo "package.json changed without a version change; skipping npm publish"
+      - name: Install dependencies
+        if: steps.version.outputs.changed == 'true'
+        run: npm ci --ignore-scripts
+      - name: Run test suite
+        if: steps.version.outputs.changed == 'true'
+        run: npm test
+      - name: Publish package
+        if: steps.version.outputs.changed == 'true'
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUBLISH_TOKEN }}
