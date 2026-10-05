@@ -6,6 +6,13 @@ on:
       - main
     paths:
       - package.json
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Publish the current package.json version even without a detected version change
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -35,11 +42,17 @@ jobs:
         id: version
         env:
           BEFORE_SHA: ${{ github.event.before }}
+          EVENT_NAME: ${{ github.event_name }}
+          FORCE_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.force || false }}
         shell: bash
         run: |
           set -euo pipefail
           current="$(node --input-type=module -e "import fs from 'node:fs'; console.log(JSON.parse(fs.readFileSync('package.json', 'utf8')).version)")"
-          if [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
+          if [[ "$FORCE_PUBLISH" == "true" ]]; then
+            previous="forced"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            previous="$(git show "HEAD^:package.json" | node --input-type=module -e "let input = ''; process.stdin.on('data', chunk => input += chunk).on('end', () => console.log(JSON.parse(input).version))")"
+          elif [[ "$BEFORE_SHA" =~ ^0+$ ]]; then
             previous=""
           else
             previous="$(git show "${BEFORE_SHA}:package.json" | node --input-type=module -e "let input = ''; process.stdin.on('data', chunk => input += chunk).on('end', () => console.log(JSON.parse(input).version))")"

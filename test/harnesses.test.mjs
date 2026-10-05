@@ -63,7 +63,7 @@ test('harness roots resolve to the documented user-level directories', () => {
   assert.equal(harnessRoot(harnessById('codex'), { home }), join(home, '.agents'));
   assert.equal(harnessRoot(harnessById('cursor'), { home }), join(home, '.cursor'));
   assert.equal(harnessRoot(harnessById('gemini-cli'), { home }), join(home, '.gemini'));
-  assert.equal(harnessRoot(harnessById('opencode'), { home }), join(home, '.config', 'opencode'));
+  assert.equal(harnessRoot(harnessById('opencode'), { home, env: {} }), join(home, '.config', 'opencode'));
   assert.equal(harnessRoot(harnessById('opencode'), { home, env: { XDG_CONFIG_HOME: join('/', 'xdg') } }), join('/', 'xdg', 'opencode'));
   assert.equal(harnessRoot(harnessById('opencode'), { home, env: { XDG_CONFIG_HOME: '   ' } }), join(home, '.config', 'opencode'));
   assert.equal(harnessRoot(harnessById('pi-coding-agent'), { home }), join(home, '.pi', 'agent'));
