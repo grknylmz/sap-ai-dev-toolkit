@@ -1,21 +1,45 @@
 diff --git a/cmd/vsp/main.go b/cmd/vsp/main.go
+index 5007935..b2bc6be 100755
 --- a/cmd/vsp/main.go
 +++ b/cmd/vsp/main.go
-@@ -102,1 +102,2 @@
+@@ -100,6 +100,7 @@ func init() {
+ 	rootCmd.Flags().StringVar(&cfg.BaseURL, "service", "", "SAP system URL (alias for --url)")
+ 
  	// Authentication flags
 +	rootCmd.Flags().BoolVar(&cfg.ProxyAuth, "proxy-auth", false, "Use BAS destination proxy authentication; do not send local credentials")
-@@ -172,1 +172,2 @@
+ 	rootCmd.Flags().StringVarP(&cfg.Username, "user", "u", "", "SAP username")
+ 	rootCmd.Flags().StringVarP(&cfg.Password, "password", "p", "", "SAP password")
+ 	rootCmd.Flags().StringVar(&cfg.Password, "pass", "", "SAP password (alias for --password)")
+@@ -170,6 +171,7 @@ func init() {
+ 	rootCmd.PersistentFlags().BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose output to stderr")
+ 
  	// Bind flags to viper for environment variable support
 +	viper.BindPFlag("proxy-auth", rootCmd.Flags().Lookup("proxy-auth"))
-@@ -235,1 +235,4 @@
+ 	viper.BindPFlag("url", rootCmd.Flags().Lookup("url"))
+ 	viper.BindPFlag("user", rootCmd.Flags().Lookup("user"))
+ 	viper.BindPFlag("password", rootCmd.Flags().Lookup("password"))
+@@ -233,6 +235,9 @@ func runServer(cmd *cobra.Command, args []string) error {
+ 	}
+ 
  	// Browser-based SSO authentication (must run before processCookieAuth)
 +	if err := validateProxyAuth(cmd); err != nil {
 +		return err
 +	}
-@@ -348,1 +348,2 @@
+ 	if err := processBrowserAuth(cmd); err != nil {
+ 		return err
+ 	}
+@@ -346,6 +351,7 @@ func runServer(cmd *cobra.Command, args []string) error {
+ }
+ 
  func resolveConfig(cmd *cobra.Command) {
 +	cfg.ProxyAuth = cfg.ProxyAuth || viper.GetBool("PROXY_AUTH")
-@@ -533,1 +533,19 @@
+ 	// Check if cookie auth is explicitly requested via CLI flags OR env vars
+ 	// If so, we should NOT load user/password from env/.env to avoid conflicts
+ 	// Cookie auth takes precedence over basic auth since it's more explicit
+@@ -530,6 +536,24 @@ func validateConfig() error {
+ 	return nil
+ }
+ 
 +func validateProxyAuth(cmd *cobra.Command) error {
 +	if !cfg.ProxyAuth {
 +		return nil
@@ -35,146 +59,68 @@ diff --git a/cmd/vsp/main.go b/cmd/vsp/main.go
 +	return nil
 +}
  func processBrowserAuth(cmd *cobra.Command) error {
-@@ -601,1 +601,4 @@
+ 	browserAuth, _ := cmd.Flags().GetBool("browser-auth")
+ 	if !browserAuth && !viper.GetBool("BROWSER_AUTH") {
+@@ -599,6 +623,9 @@ func ssoRequested(cmd *cobra.Command) bool {
+ // days will outlive any session it starts with, and the point of the exercise
+ // is that nobody has to notice when it does.
  func processSSOAuth(cmd *cobra.Command) error {
 +	if cfg.ProxyAuth {
 +		return nil
 +	}
-@@ -659,1 +659,4 @@
+ 	if !ssoRequested(cmd) {
+ 		return nil
+ 	}
+@@ -657,6 +684,9 @@ func processSSOAuth(cmd *cobra.Command) error {
+ }
+ 
  func processSAMLAuth(cmd *cobra.Command) error {
 +	if cfg.ProxyAuth {
 +		return nil
 +	}
-@@ -754,1 +754,4 @@
+ 	samlAuth, _ := cmd.Flags().GetBool("saml-auth")
+ 	if !samlAuth && !viper.GetBool("SAML_AUTH") {
+ 		return nil
+@@ -752,6 +782,9 @@ func processSAMLAuth(cmd *cobra.Command) error {
+ }
+ 
  func processCookieAuth(cmd *cobra.Command) error {
 +	if cfg.ProxyAuth {
 +		return nil
 +	}
+ 	cookieFile, _ := cmd.Flags().GetString("cookie-file")
+ 	cookieString, _ := cmd.Flags().GetString("cookie-string")
+ 
 diff --git a/internal/mcp/server.go b/internal/mcp/server.go
+index 9337857..11fc940 100644
 --- a/internal/mcp/server.go
 +++ b/internal/mcp/server.go
-@@ -71,2 +71,5 @@
+@@ -69,6 +69,9 @@ type Config struct {
+ 	InsecureSkipVerify bool
+ 
  	// Cookie authentication (alternative to basic auth)
 +	// ProxyAuth delegates identity to a BAS destination proxy. Local credentials are rejected.
 +	ProxyAuth bool
 +
  	Cookies map[string]string
-@@ -154,1 +154,4 @@
+ 
+ 	// Build names the binary, as "v2.52.0 (commit abc1234, built ...)".
+@@ -151,6 +154,9 @@ func NewServer(cfg *Config) *Server {
+ 	if cfg.InsecureSkipVerify {
+ 		opts = append(opts, adt.WithInsecureSkipVerify())
+ 	}
 +	if cfg.ProxyAuth {
 +		opts = append(opts, adt.WithProxyContextIDGuard())
 +	}
  	if len(cfg.Cookies) > 0 {
-diff --git a/pkg/adt/client.go b/pkg/adt/client.go
---- a/pkg/adt/client.go
-+++ b/pkg/adt/client.go
-@@ -1586 +1586 @@
--		Accept: "application/xml",
-+		Accept: "application/atom+xml;type=feed",
-@@ -1592,27 +1592,27 @@
--	type componentXML struct {
--		Name        string `xml:"name,attr"`
--		Release     string `xml:"release,attr"`
--		SupportPack string `xml:"supportPack,attr"`
--		Description string `xml:"description,attr"`
--	}
--	type componentsXML struct {
--		XMLName    xml.Name       `xml:"components"`
--		Components []componentXML `xml:"component"`
--	}
--
--	var comps componentsXML
--	if err := xml.Unmarshal(resp.Body, &comps); err != nil {
--		return nil, fmt.Errorf("parsing components: %w", err)
--	}
--
--	result := make([]InstalledComponent, len(comps.Components))
--	for i, c := range comps.Components {
--		result[i] = InstalledComponent{
--			Name:        c.Name,
--			Release:     c.Release,
--			SupportPack: c.SupportPack,
--			Description: c.Description,
--		}
--	}
--
--	return result, nil
-+	type componentEntry struct {
-+		ID    string `xml:"id"`
-+		Title string `xml:"title"`
-+	}
-+	type componentsFeed struct {
-+		Entries []componentEntry `xml:"entry"`
-+	}
-+	var feed componentsFeed
-+	if err := xml.Unmarshal(resp.Body, &feed); err != nil {
-+		return nil, fmt.Errorf("parsing components: %w", err)
-+	}
-+
-+	result := make([]InstalledComponent, 0, len(feed.Entries))
-+	for i, entry := range feed.Entries {
-+		fields := strings.SplitN(entry.Title, ";", 4)
-+		name := strings.TrimSpace(entry.ID)
-+		if name == "" || len(fields) != 4 {
-+			return nil, fmt.Errorf("parsing components: malformed feed entry %d", i+1)
-+		}
-+		result = append(result, InstalledComponent{
-+			Name:        name,
-+			Release:     strings.TrimSpace(fields[0]),
-+			SupportPack: strings.TrimSpace(fields[2]),
-+			Description: strings.TrimSpace(fields[3]),
-+		})
-+	}
-+	return result, nil
-diff --git a/pkg/adt/client_components_test.go b/pkg/adt/client_components_test.go
-new file mode 100644
---- /dev/null
-+++ b/pkg/adt/client_components_test.go
-@@ -0,0 +1,40 @@
-+package adt
-+
-+import (
-+	"context"
-+	"io"
-+	"net/http"
-+	"net/http/httptest"
-+	"testing"
-+)
-+
-+func TestGetInstalledComponentsUsesADTFeed(t *testing.T) {
-+	const accept = "application/atom+xml;type=feed"
-+	const response = `<atom:feed xmlns:atom="http://www.w3.org/2005/Atom"><atom:entry><atom:id>SAP_BASIS</atom:id><atom:title>758;SAPK-75802INSAPBASIS;0002;SAP Basis &gt; 2022; patch</atom:title></atom:entry></atom:feed>`
-+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-+		if r.URL.Path != "/sap/bc/adt/system/components" {
-+			t.Errorf("unexpected request path: %s", r.URL.Path)
-+			w.WriteHeader(http.StatusNotFound)
-+			return
-+		}
-+		if got := r.Header.Get("Accept"); got != accept {
-+			t.Errorf("Accept = %q, want %q", got, accept)
-+			w.WriteHeader(http.StatusNotAcceptable)
-+			return
-+		}
-+		w.Header().Set("Content-Type", accept)
-+		_, _ = io.WriteString(w, response)
-+	}))
-+	defer server.Close()
-+
-+	components, err := NewClient(server.URL, "user", "pass").GetInstalledComponents(context.Background())
-+	if err != nil {
-+		t.Fatalf("GetInstalledComponents returned an error: %v", err)
-+	}
-+	if len(components) != 1 {
-+		t.Fatalf("got %d components, want 1", len(components))
-+	}
-+	if got := components[0]; got.Name != "SAP_BASIS" || got.Release != "758" || got.SupportPack != "0002" || got.Description != "SAP Basis > 2022; patch" {
-+		t.Errorf("got component %#v", got)
-+	}
-+}
+ 		opts = append(opts, adt.WithCookies(cfg.Cookies))
+ 	}
 diff --git a/internal/mcp/server_test.go b/internal/mcp/server_test.go
+index 7740e56..b4c2faf 100755
 --- a/internal/mcp/server_test.go
 +++ b/internal/mcp/server_test.go
 @@ -159,3 +159,112 @@ func TestDebuggerGetVariablesSchemaIncludesItems(t *testing.T) {
- 		t.Fatalf("expected variableIDs.items.type to be 'string', got %v", items["type"])
+ 		t.Fatalf("expected variable_ids.items.type to be 'string', got %v", items["type"])
  	}
  }
 +
@@ -287,6 +233,7 @@ diff --git a/internal/mcp/server_test.go b/internal/mcp/server_test.go
 +	}
 +}
 diff --git a/internal/mcp/tools_register.go b/internal/mcp/tools_register.go
+index dd433d6..5553b7f 100644
 --- a/internal/mcp/tools_register.go
 +++ b/internal/mcp/tools_register.go
 @@ -837,6 +837,19 @@ func (s *Server) registerDevTools(shouldRegister func(string) bool) {
@@ -309,7 +256,117 @@ diff --git a/internal/mcp/tools_register.go b/internal/mcp/tools_register.go
  			),
  		), s.handleActivateMultiple)
  	}
+diff --git a/pkg/adt/client.go b/pkg/adt/client.go
+index 979e908..c7e9501 100755
+--- a/pkg/adt/client.go
++++ b/pkg/adt/client.go
+@@ -1583,38 +1583,38 @@ type InstalledComponent struct {
+ func (c *Client) GetInstalledComponents(ctx context.Context) ([]InstalledComponent, error) {
+ 	resp, err := c.transport.Request(ctx, "/sap/bc/adt/system/components", &RequestOptions{
+ 		Method: http.MethodGet,
+-		Accept: "application/xml",
++		Accept: "application/atom+xml;type=feed",
+ 	})
+ 	if err != nil {
+ 		return nil, fmt.Errorf("getting installed components: %w", err)
+ 	}
+ 
+-	type componentXML struct {
+-		Name        string `xml:"name,attr"`
+-		Release     string `xml:"release,attr"`
+-		SupportPack string `xml:"supportPack,attr"`
+-		Description string `xml:"description,attr"`
++	type componentEntry struct {
++		ID    string `xml:"id"`
++		Title string `xml:"title"`
+ 	}
+-	type componentsXML struct {
+-		XMLName    xml.Name       `xml:"components"`
+-		Components []componentXML `xml:"component"`
++	type componentsFeed struct {
++		Entries []componentEntry `xml:"entry"`
+ 	}
+-
+-	var comps componentsXML
+-	if err := xml.Unmarshal(resp.Body, &comps); err != nil {
++	var feed componentsFeed
++	if err := xml.Unmarshal(resp.Body, &feed); err != nil {
+ 		return nil, fmt.Errorf("parsing components: %w", err)
+ 	}
+ 
+-	result := make([]InstalledComponent, len(comps.Components))
+-	for i, c := range comps.Components {
+-		result[i] = InstalledComponent{
+-			Name:        c.Name,
+-			Release:     c.Release,
+-			SupportPack: c.SupportPack,
+-			Description: c.Description,
++	result := make([]InstalledComponent, 0, len(feed.Entries))
++	for i, entry := range feed.Entries {
++		fields := strings.SplitN(entry.Title, ";", 4)
++		name := strings.TrimSpace(entry.ID)
++		if name == "" || len(fields) != 4 {
++			return nil, fmt.Errorf("parsing components: malformed feed entry %d", i+1)
+ 		}
++		result = append(result, InstalledComponent{
++			Name:        name,
++			Release:     strings.TrimSpace(fields[0]),
++			SupportPack: strings.TrimSpace(fields[2]),
++			Description: strings.TrimSpace(fields[3]),
++		})
+ 	}
+-
+ 	return result, nil
+ }
+ 
+diff --git a/pkg/adt/client_components_test.go b/pkg/adt/client_components_test.go
+new file mode 100644
+index 0000000..1ed3c2b
+--- /dev/null
++++ b/pkg/adt/client_components_test.go
+@@ -0,0 +1,40 @@
++package adt
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++)
++
++func TestGetInstalledComponentsUsesADTFeed(t *testing.T) {
++	const accept = "application/atom+xml;type=feed"
++	const response = `<atom:feed xmlns:atom="http://www.w3.org/2005/Atom"><atom:entry><atom:id>SAP_BASIS</atom:id><atom:title>758;SAPK-75802INSAPBASIS;0002;SAP Basis &gt; 2022; patch</atom:title></atom:entry></atom:feed>`
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path != "/sap/bc/adt/system/components" {
++			t.Errorf("unexpected request path: %s", r.URL.Path)
++			w.WriteHeader(http.StatusNotFound)
++			return
++		}
++		if got := r.Header.Get("Accept"); got != accept {
++			t.Errorf("Accept = %q, want %q", got, accept)
++			w.WriteHeader(http.StatusNotAcceptable)
++			return
++		}
++		w.Header().Set("Content-Type", accept)
++		_, _ = io.WriteString(w, response)
++	}))
++	defer server.Close()
++
++	components, err := NewClient(server.URL, "user", "pass").GetInstalledComponents(context.Background())
++	if err != nil {
++		t.Fatalf("GetInstalledComponents returned an error: %v", err)
++	}
++	if len(components) != 1 {
++		t.Fatalf("got %d components, want 1", len(components))
++	}
++	if got := components[0]; got.Name != "SAP_BASIS" || got.Release != "758" || got.SupportPack != "0002" || got.Description != "SAP Basis > 2022; patch" {
++		t.Errorf("got component %#v", got)
++	}
++}
 diff --git a/pkg/adt/http.go b/pkg/adt/http.go
+index 0b4d9f1..3473536 100755
 --- a/pkg/adt/http.go
 +++ b/pkg/adt/http.go
 @@ -499,6 +499,7 @@ func (t *Transport) fetchCSRFTokenFor(ctx context.Context, stateful bool) error
@@ -375,9 +432,10 @@ diff --git a/pkg/adt/http.go b/pkg/adt/http.go
  	}
 diff --git a/pkg/adt/http_csrf_discovery_test.go b/pkg/adt/http_csrf_discovery_test.go
 new file mode 100644
+index 0000000..80741da
 --- /dev/null
 +++ b/pkg/adt/http_csrf_discovery_test.go
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,56 @@
 +package adt
 +
 +import (
@@ -433,3 +491,4 @@ new file mode 100644
 +		t.Fatalf("expected both endpoint failures, got %v", err)
 +	}
 +}
++
