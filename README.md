@@ -857,7 +857,7 @@ NPM_PUBLISH_TOKEN=npm_...
 - To publish a patch bump, run `npm run publish:npm -- --patch`; it updates `package.json` and `package-lock.json` before publishing. If publishing fails after the bump, retry without `--patch`.
 - npm's `prepublishOnly` hook builds the pinned VSP binaries for all platforms (including the Go toolchain if missing) and refuses to ship a tarball whose `dist/checksums.txt` does not list all five assets; it guards `npm run publish:npm` and a plain `npm publish` alike. Pass `--skip-build` to republish an already-built `dist/` without rebuilding.
 - Preview the package without publishing, changing its version, or building with `npm run publish:npm -- --dry-run`.
-- GitHub Actions runs the test suite on pushes to `main` and pull requests. A push to `main` that changes the `package.json` version runs the same checks, builds the VSP binaries, and publishes that version to npm.
+- GitHub Actions runs the test suite on pushes to `main` and pull requests. A push to `main` that changes the `package.json` version runs the same checks, builds the VSP binaries, publishes that version to npm, and creates a `v<version>` GitHub release with generated notes.
 - The publish workflow uses the `NPM_PUBLISH_TOKEN` GitHub repository secret. Verify it with `gh secret list`; the token value is never stored in the repository.
 
 The token is not printed or stored in the repository.
