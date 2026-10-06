@@ -215,14 +215,20 @@ test('does not overwrite an unrelated server with the destination name', async (
 });
 
 
-test('does not overwrite malformed MCP JSON', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-config-'));
+test('self-heals malformed MCP JSON with a backup instead of failing setup', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-config-heal-'));
   const path = join(directory, 'mcp.json');
   const original = '{ malformed';
   await writeFile(path, original);
   try {
-    await assert.rejects(() => installMcpConfig([], { env: { H2O_URL: 'http://h2o.example' }, path }), /invalid JSON/);
-    assert.equal(await readFile(path, 'utf8'), original);
+    const result = await installMcpConfig([], { env: { H2O_URL: 'http://h2o.example' }, path });
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0], /backed up/);
+    const backups = (await readdir(directory)).filter(name => name.endsWith('.bak'));
+    assert.equal(backups.length, 1);
+    assert.equal(await readFile(join(directory, backups[0]), 'utf8'), original);
+    const healed = JSON.parse(await readFile(path, 'utf8'));
+    assert.deepEqual(healed.servers, {});
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

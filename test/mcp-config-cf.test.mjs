@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildMcpEntries, buildSapDevelopmentMcpEntries, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, generatedServerName, installMcpConfig, readMcpConfig, repairManagedMcpConfig, resolveMcpConfigPath } from '../src/mcp-config.mjs';
+import { backupPathCandidates, buildMcpEntries, buildSapDevelopmentMcpEntries, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, decodeJsonFileBuffer, generatedServerName, installMcpConfig, loosenJsonText, readMcpConfig, repairManagedMcpConfig, resolveMcpConfigPath, writeConfigBackup } from '../src/mcp-config.mjs';
 
 const bas = {
   source: 'bas', name: 'shared', serverName: 'shared', url: 'http://shared.dest',
@@ -797,3 +797,266 @@ test('doctor repair keeps the legacy entry when a user-owned server holds the sl
   assert.deepEqual(config, initial);
 });
 
+
+test('decodeJsonFileBuffer tolerates BOM and UTF-16 encodings written by Windows tools', () => {
+  const json = '{"servers":{"memory":{"command":"npx"}}}';
+  const utf8Bom = Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(json, 'utf8')]);
+  assert.equal(decodeJsonFileBuffer(utf8Bom), json);
+  const utf16Le = Buffer.concat([Buffer.from([0xFF, 0xFE]), Buffer.from(json, 'utf16le')]);
+  assert.equal(decodeJsonFileBuffer(utf16Le), json);
+  const utf16Be = Buffer.concat([Buffer.from([0xFE, 0xFF]), Buffer.from(json, 'utf16le').swap16()]);
+  assert.equal(decodeJsonFileBuffer(utf16Be), json);
+  assert.equal(decodeJsonFileBuffer(Buffer.from(json, 'utf8')), json);
+  assert.equal(JSON.parse(decodeJsonFileBuffer(utf8Bom)).servers.memory.command, 'npx');
+});
+
+test('setup reads mcp.json written with a UTF-8 BOM and preserves unrelated servers', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-mcp-bom-'));
+  const path = join(directory, 'mcp.json');
+  const memory = { command: 'npx', args: ['-y', '@modelcontextprotocol/server-memory'] };
+  // PowerShell `>` / Notepad "UTF-8 with BOM" form; JSON.parse alone rejects
+  // the leading U+FEFF ("Unexpected token ''").
+  await writeFile(path, Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(JSON.stringify({ servers: { memory } }, null, 2))]));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const local = {
+    source: 'sap-gui-local', name: 'Dev ABAP', serverName: 'Dev ABAP',
+    url: 'https://abap.example.com:44300', client: '200', systemId: 'A4H'
+  };
+  const result = await installMcpConfig([local], { env: { PATH: directory }, path });
+  assert.deepEqual(result.warnings, []);
+  const config = await readMcpConfig(path);
+  assert.deepEqual(config.servers.memory, memory);
+  assert.ok(config.servers['a4h-200']);
+  const written = await readFile(path);
+  assert.equal(written[0], 0x7B, 'the rewritten config must be UTF-8 without a BOM');
+});
+
+test('setup reads mcp.json written as UTF-16 LE (PowerShell redirection)', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-mcp-utf16-'));
+  const path = join(directory, 'mcp.json');
+  await writeFile(path, Buffer.concat([Buffer.from([0xFF, 0xFE]), Buffer.from(JSON.stringify({ servers: { memory: { command: 'npx' } } }), 'utf16le')]));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  await installMcpConfig([], { env: { PATH: directory }, path });
+  const config = await readMcpConfig(path);
+  assert.equal(config.servers.memory.command, 'npx');
+  assert.equal((await readFile(path))[0], 0x7B, 'the rewritten config must be UTF-8');
+});
+
+test('setup self-heals an unreadable mcp.json by backing it up and starting fresh', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-mcp-heal-'));
+  const path = join(directory, 'mcp.json');
+  const broken = Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from('{"servers": ')]);
+  await writeFile(path, broken);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const local = {
+    source: 'sap-gui-local', name: 'Dev ABAP', serverName: 'Dev ABAP',
+    url: 'https://abap.example.com:44300', client: '200', systemId: 'A4H'
+  };
+  const result = await installMcpConfig([local], { env: { PATH: directory }, path });
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0], /backed up to .*\.bak/);
+  const files = (await readdir(directory)).filter(name => name.endsWith('.bak'));
+  assert.equal(files.length, 1);
+  assert.deepEqual(await readFile(join(directory, files[0])), broken, 'the backup must preserve the original bytes');
+  const config = await readMcpConfig(path);
+  assert.deepEqual(Object.keys(config.servers), ['a4h-200']);
+});
+
+test('doctor repair tolerates a UTF-8 BOM in mcp.json', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-doctor-bom-'));
+  const path = join(directory, 'mcp.json');
+  const entry = buildMcpEntries([bas], { H2O_URL: 'http://old-h2o.example' }).shared;
+  await writeFile(path, Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(JSON.stringify({ servers: { shared: entry } }))]));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const result = await repairManagedMcpConfig([bas], { env: { H2O_URL: 'http://current-h2o.example' }, path, discoveryComplete: true });
+  assert.equal(result.changed, true);
+  assert.equal(result.repaired, 1);
+  const healed = await readFile(path);
+  assert.equal(healed[0], 0x7B, 'repair rewrites the config as UTF-8 without a BOM');
+});
+
+test('loosenJsonText strips JSONC comments and trailing commas without touching string contents', () => {
+  const jsonc = [
+    '{',
+    '  // line comment with "quotes" and : colons',
+    '  "name": "http://example.com", /* block, */ "items": [1, 2,],',
+    '  "tricky": "a \\" /* not a comment */ b",',
+    '  "empty": { /* nothing */ },',
+    '  "comma": "x,y}",',
+    '  /* multi',
+    '     line */',
+    '}',
+  ].join('\n');
+  assert.deepEqual(JSON.parse(loosenJsonText(jsonc)), {
+    name: 'http://example.com',
+    items: [1, 2],
+    tricky: 'a " /* not a comment */ b',
+    empty: {},
+    comma: 'x,y}'
+  });
+  assert.equal(loosenJsonText('{"a":1}'), '{"a":1}', 'already-strict text passes through unchanged');
+  assert.throws(() => JSON.parse(loosenJsonText('{"a": "unterminated')), 'unrecoverable text still fails strict parsing');
+});
+
+test('setup treats a blank or BOM-only mcp.json as a clean slate without backups', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-mcp-blank-'));
+  const path = join(directory, 'mcp.json');
+  await writeFile(path, Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from('  \n\t ')]));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const result = await installMcpConfig([], { env: { PATH: directory }, path });
+  assert.deepEqual(result.warnings, []);
+  assert.deepEqual((await readdir(directory)).filter(name => name.endsWith('.bak')), []);
+  assert.deepEqual((await readMcpConfig(path)).servers, {});
+});
+
+test('setup recovers mcp.json with VS Code style comments instead of resetting it', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-mcp-jsonc-'));
+  const path = join(directory, 'mcp.json');
+  const original = [
+    '{',
+    '  // my servers',
+    '  "servers": {',
+    '    "memory": { "command": "npx", },',
+    '  },',
+    '}',
+  ].join('\n');
+  await writeFile(path, original);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const local = {
+    source: 'sap-gui-local', name: 'Dev ABAP', serverName: 'Dev ABAP',
+    url: 'https://abap.example.com:44300', client: '200', systemId: 'A4H'
+  };
+  const result = await installMcpConfig([local], { env: { PATH: directory }, path });
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0], /comments.*backed up|backed up.*comments/);
+  const backups = (await readdir(directory)).filter(name => name.endsWith('.bak'));
+  assert.equal(backups.length, 1);
+  assert.match(backups[0], /\.healed-.*\.bak$/);
+  assert.equal(await readFile(join(directory, backups[0]), 'utf8'), original, 'the backup preserves the commented original');
+  const config = JSON.parse(await readFile(path, 'utf8'), 'strict parse must now succeed');
+  assert.ok(config.servers.memory);
+  assert.ok(config.servers['a4h-200']);
+});
+
+test('setup repairs only broken fields and keeps unrelated config keys', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-mcp-fields-'));
+  const path = join(directory, 'mcp.json');
+  await writeFile(path, JSON.stringify({ servers: null, inputs: 'broken', userFlag: true }));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const local = {
+    source: 'sap-gui-local', name: 'Dev ABAP', serverName: 'Dev ABAP',
+    url: 'https://abap.example.com:44300', client: '200', systemId: 'A4H'
+  };
+  const result = await installMcpConfig([local], { env: { PATH: directory }, path });
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0], /"servers"/);
+  assert.match(result.warnings[0], /"inputs"/);
+  const backups = (await readdir(directory)).filter(name => name.endsWith('.bak'));
+  assert.equal(backups.length, 1);
+  assert.match(backups[0], /\.repaired-.*\.bak$/);
+  const config = await readMcpConfig(path);
+  assert.equal(config.userFlag, true, 'unrelated top-level keys survive field repair');
+  assert.deepEqual(Object.keys(config.servers), ['a4h-200']);
+  assert.equal(config.inputs, undefined, 'a non-array inputs value is removed');
+});
+
+test('setup replaces a structurally invalid mcp.json and keeps an invalid backup', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-mcp-shape-'));
+  const path = join(directory, 'mcp.json');
+  await writeFile(path, '["not", "a", "config"]');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const result = await installMcpConfig([], { env: { PATH: directory }, path });
+  assert.equal(result.warnings.length, 1);
+  const backups = (await readdir(directory)).filter(name => name.endsWith('.bak'));
+  assert.equal(backups.length, 1);
+  assert.match(backups[0], /\.invalid-.*\.bak$/);
+  assert.deepEqual((await readMcpConfig(path)).servers, {});
+});
+
+test('strict readers still reject JSONC and shape errors', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-mcp-strict-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const jsoncPath = join(directory, 'mcp.json');
+  await writeFile(jsoncPath, '{ "servers": {} // comment\n }');
+  await assert.rejects(() => readMcpConfig(jsoncPath), /invalid JSON/);
+  const shapePath = join(directory, 'shape.json');
+  await writeFile(shapePath, JSON.stringify({ servers: null }));
+  await assert.rejects(() => readMcpConfig(shapePath), /non-object servers/);
+  // inputs-only damage stays tolerated by strict readers (previous behavior)
+  const inputsPath = join(directory, 'inputs.json');
+  await writeFile(inputsPath, JSON.stringify({ servers: {}, inputs: 'weird' }));
+  assert.equal((await readMcpConfig(inputsPath)).inputs, 'weird');
+});
+
+test('backups never overwrite an existing backup', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-mcp-backup-'));
+  const path = join(directory, 'mcp.json');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const now = new Date('2025-01-02T03:04:05.678Z');
+  const [first, second, third] = backupPathCandidates(path, 'invalid', now);
+  await writeFile(first, 'first backup');
+  assert.equal(await writeConfigBackup(path, Buffer.from('second'), { kind: 'invalid', now }), second);
+  await writeFile(second, 'occupied');
+  assert.equal(await writeConfigBackup(path, Buffer.from('third'), { kind: 'invalid', now }), third);
+  assert.equal(await readFile(first, 'utf8'), 'first backup');
+  assert.equal(await readFile(second, 'utf8'), 'occupied');
+});
+
+test('a torn read from a concurrent editor save is retried before healing', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-mcp-torn-'));
+  const path = join(directory, 'mcp.json');
+  const full = Buffer.from(JSON.stringify({ servers: { memory: { command: 'npx' } } }));
+  const torn = full.subarray(0, full.indexOf('npx'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let reads = 0;
+  const readFileImpl = async readPath => {
+    reads += 1;
+    assert.equal(readPath, path);
+    return reads === 1 ? torn : full;
+  };
+
+  const config = await readMcpConfig(path, { readFileImpl, retryDelayMs: 1 });
+  assert.equal(reads, 2, 'the torn first read must trigger exactly one re-read');
+  assert.equal(config.servers.memory.command, 'npx');
+  assert.deepEqual((await readdir(directory)).filter(name => name.endsWith('.bak')), [], 'no backup must be created for a transient torn read');
+});
+
+test('a symlinked mcp.json is healed in place and its backup lands next to the real file', async t => {
+  if (process.platform === 'win32') return t.skip('creating symlinks on Windows needs elevated privileges');
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-mcp-symlink-'));
+  const realDirectory = join(directory, 'real');
+  const linkDirectory = join(directory, 'link');
+  await mkdir(realDirectory, { recursive: true });
+  await mkdir(linkDirectory, { recursive: true });
+  const realPath = join(realDirectory, 'mcp.json');
+  const linkPath = join(linkDirectory, 'mcp.json');
+  await writeFile(realPath, JSON.stringify({ servers: { memory: { command: 'npx' } } }));
+  await symlink(realPath, linkPath);
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const local = {
+    source: 'sap-gui-local', name: 'Dev ABAP', serverName: 'Dev ABAP',
+    url: 'https://abap.example.com:44300', client: '200', systemId: 'A4H'
+  };
+
+  const result = await installMcpConfig([local], { env: { PATH: directory }, path: linkPath });
+  assert.deepEqual(result.warnings, []);
+  assert.equal((await lstat(linkPath)).isSymbolicLink(), true, 'the symlink must survive the atomic rewrite');
+  assert.deepEqual((await readdir(linkDirectory)).filter(name => name !== 'mcp.json'), [], 'no temp or backup files beside the link');
+  const config = JSON.parse(await readFile(realPath, 'utf8'));
+  assert.deepEqual(Object.keys(config.servers).sort(), ['a4h-200', 'memory']);
+
+  await writeFile(realPath, '{ broken');
+  const healed = await installMcpConfig([local], { env: { PATH: directory }, path: linkPath });
+  assert.equal(healed.warnings.length, 1);
+  assert.match(healed.warnings[0], /real.*\.bak/);
+  assert.equal((await lstat(linkPath)).isSymbolicLink(), true);
+  assert.ok((await readdir(realDirectory)).some(name => name.endsWith('.bak')), 'the backup must sit next to the real file');
+});

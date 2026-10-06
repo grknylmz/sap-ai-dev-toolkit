@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { harnessById, harnessRoot } from './harnesses.mjs';
+import { decodeJsonFileBuffer } from './mcp-config.mjs';
 
 const MANAGED_ENV = 'SAP_AI_DEV_TOOLKIT_MANAGED';
 
@@ -24,13 +25,15 @@ function mcpServersPath(harness, { home = process.env.HOME || homedir(), env = p
 async function readJsonConfig(path) {
   let raw;
   try {
-    raw = await readFile(path, 'utf8');
+    raw = await readFile(path);
   } catch (error) {
     if (error.code === 'ENOENT') return {};
     throw error;
   }
   try {
-    const parsed = JSON.parse(raw);
+    // decodeJsonFileBuffer tolerates the UTF-8 BOM / UTF-16 encodings that
+    // Windows tools commonly write (see mcp-config.mjs).
+    const parsed = JSON.parse(decodeJsonFileBuffer(raw));
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('top-level value is not an object');
     return parsed;
   } catch (error) {

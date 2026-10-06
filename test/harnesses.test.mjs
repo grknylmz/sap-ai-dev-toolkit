@@ -388,3 +388,20 @@ test('installMcpServersForHarnesses refuses to overwrite user-owned MCP entries'
   assert.equal(result.failures.length, 1);
   assert.match(result.failures[0].error.message, /already exists and is not managed/);
 });
+
+test('installMcpServersForHarnesses reads a BOM-prefixed harness mcp.json on Windows-style files', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-harness-mcp-bom-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const home = join(directory, 'home');
+  await mkdir(join(home, '.cursor'), { recursive: true });
+  await writeFile(join(home, '.cursor', 'mcp.json'), Buffer.concat([
+    Buffer.from([0xEF, 0xBB, 0xBF]),
+    Buffer.from(JSON.stringify({ mcpServers: { mine: { command: 'node', args: ['mine.js'] } } }))
+  ]));
+
+  const result = await installMcpServersForHarnesses(['cursor'], { demo: { type: 'stdio', command: 'sap-ai-dev' } }, { home });
+  assert.deepEqual(result.failures, []);
+  const cursor = JSON.parse(await readFile(join(home, '.cursor', 'mcp.json'), 'utf8'));
+  assert.deepEqual(Object.keys(cursor.mcpServers).sort(), ['demo', 'mine']);
+  assert.equal((await readFile(join(home, '.cursor', 'mcp.json')))[0], 0x7B, 'rewrite drops the BOM');
+});

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { homedir, platform } from 'node:os';
 import { basename, delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -77,6 +78,26 @@ async function exists(path) {
     if (error?.code === 'ENOENT') return false;
     throw error;
   }
+}
+
+// Windows tools (PowerShell `>` redirection and Set-Content, Notepad "UTF-8
+// with BOM", several editors) write mcp.json with a byte-order mark or even
+// UTF-16. JSON.parse rejects a leading BOM (rendering invisibly as
+// "Unexpected token ''"), so decode defensively before parsing.
+export function decodeJsonFileBuffer(buffer) {
+  if (!Buffer.isBuffer(buffer)) return String(buffer ?? '').replace(/^﻿/, '');
+  if (buffer.length >= 2) {
+    if (buffer[0] === 0xFF && buffer[1] === 0xFE) return buffer.subarray(2).toString('utf16le');
+    if (buffer[0] === 0xFE && buffer[1] === 0xFF) {
+      let body = buffer.subarray(2);
+      if (body.length % 2) body = body.subarray(0, body.length - 1);
+      return Buffer.from(body).swap16().toString('utf16le');
+    }
+  }
+  const utf8 = (buffer.length >= 3 && buffer[0] === 0xEF && buffer[1] === 0xBB && buffer[2] === 0xBF)
+    ? buffer.subarray(3).toString('utf8')
+    : buffer.toString('utf8');
+  return utf8.replace(/^\uFEFF/, '');
 }
 
 export async function resolveMcpServerCommand(env = process.env) {
@@ -336,36 +357,186 @@ export function collectCloudFoundryKeyReferencesFromAllEntries(config) {
   return collectCloudFoundryKeyReferences(config, false);
 }
 
-async function readConfig(path) {
-  let raw;
+function freshConfig() {
+  return { servers: {}, inputs: [] };
+}
+
+// VS Code parses mcp.json as JSONC: // and /* */ comments plus trailing
+// commas are accepted there but rejected by strict JSON.parse. Strip them in
+// one string-aware pass (string literals are copied verbatim, so "//", "/*",
+// and "," inside values survive) so self-healing can recover hand-written
+// content instead of resetting the file.
+export function loosenJsonText(text) {
+  let out = '';
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const ch = text[i];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < n && text[j] !== '"') j += text[j] === '\\' ? 2 : 1;
+      out += text.slice(i, Math.min(j + 1, n));
+      i = Math.min(j + 1, n);
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '/') {
+      i += 2;
+      while (i < n && text[i] !== '\n' && text[i] !== '\r') i += 1;
+      continue;
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      i += 2;
+      while (i < n && !(text[i] === '*' && text[i + 1] === '/')) i += 1;
+      i = Math.min(i + 2, n);
+      continue;
+    }
+    if (ch === ',') {
+      // A trailing comma is dropped only when nothing but whitespace and
+      // comments separate it from a closing bracket.
+      let k = i + 1;
+      while (k < n) {
+        const lookahead = text[k];
+        if (lookahead === ' ' || lookahead === '\t' || lookahead === '\n' || lookahead === '\r') { k += 1; continue; }
+        if (lookahead === '/' && text[k + 1] === '/') { k += 2; while (k < n && text[k] !== '\n' && text[k] !== '\r') k += 1; continue; }
+        if (lookahead === '/' && text[k + 1] === '*') { k += 2; while (k < n && !(text[k] === '*' && text[k + 1] === '/')) k += 1; k = Math.min(k + 2, n); continue; }
+        break;
+      }
+      if (text[k] === '}' || text[k] === ']') { i += 1; continue; }
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+export function backupPathCandidates(path, kind, now = new Date()) {
+  const stamp = new Date(now).toISOString().replace(/[:.]/g, '-');
+  return ['', '-2', '-3', '-4', '-5'].map(suffix => `${path}.${kind}-${stamp}${suffix}.bak`);
+}
+
+// Backups use exclusive creation (wx) so a repeated setup can never clobber
+// an earlier backup; identical timestamps walk a numeric suffix instead.
+// Failing to write the backup is fatal on purpose: healing must never risk
+// losing the only copy of the original file.
+export async function writeConfigBackup(path, buffer, { kind, now } = {}) {
+  let lastError;
+  for (const candidate of backupPathCandidates(path, kind, now)) {
+    try {
+      await writeFile(candidate, buffer, { flag: 'wx', mode: 0o600 });
+      return candidate;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') {
+        throw new Error(`Could not back up ${path} before healing (${error.message}); the original file was left untouched.`);
+      }
+      lastError = error;
+    }
+  }
+  throw new Error(`Could not back up ${path}: no unique backup name was available (${lastError?.message}).`);
+}
+
+function shapeFailures(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    return [{ field: null, message: 'must contain a top-level JSON object' }];
+  }
+  const failures = [];
+  if (config.servers !== undefined && (!config.servers || typeof config.servers !== 'object' || Array.isArray(config.servers))) {
+    failures.push({ field: 'servers', message: 'has a non-object servers value' });
+  }
+  if (config.inputs !== undefined && config.inputs !== null && !Array.isArray(config.inputs)) {
+    failures.push({ field: 'inputs', message: 'has a non-array inputs value' });
+  }
+  return failures;
+}
+
+// Healing ladder (install/setup only; strict readers such as --doctor keep
+// rejecting): BOM/UTF-16 decode -> torn-write re-read -> JSONC recovery ->
+// field-level repair -> full reset. Every lossy step backs up the original
+// first; a backup failure aborts rather than risking data loss.
+async function readConfig(path, options = {}) {
+  const { recoverInvalid = false, warnings, retryDelayMs = 250, readFileImpl = readFile } = options;
+  let buffer;
   try {
-    raw = await readFile(path, 'utf8');
+    buffer = await readFileImpl(path);
   } catch (error) {
-    if (error?.code === 'ENOENT') return { servers: {}, inputs: [] };
+    if (error?.code === 'ENOENT') return freshConfig();
     throw new Error(`MCP config ${path} could not be read: ${error.message}`);
   }
-  let config;
-  try {
-    config = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(`MCP config ${path} contains invalid JSON: ${error.message}`);
+  let text = decodeJsonFileBuffer(buffer);
+  if (!text.trim()) return freshConfig();
+  const tryParse = candidate => {
+    try { return { config: JSON.parse(candidate) }; } catch (error) { return { error }; }
+  };
+  let parsed = tryParse(text);
+  if (parsed.error && retryDelayMs > 0) {
+    // A torn read — setup racing an editor's non-atomic save — looks exactly
+    // like corruption; re-read once before healing so a transient state is
+    // never backed up and replaced.
+    await sleep(retryDelayMs);
+    const second = await readFileImpl(path).catch(() => null);
+    if (second && !second.equals(buffer)) {
+      buffer = second;
+      text = decodeJsonFileBuffer(second);
+      if (!text.trim()) return freshConfig();
+      parsed = tryParse(text);
+    }
   }
-  if (!config || typeof config !== 'object' || Array.isArray(config)) {
-    throw new Error(`MCP config ${path} must contain a top-level JSON object`);
+  let loosened = false;
+  if (parsed.error && recoverInvalid) {
+    const recovered = tryParse(loosenJsonText(text));
+    if (!recovered.error) {
+      parsed = recovered;
+      loosened = true;
+    }
   }
-  if (config.servers !== undefined && (!config.servers || typeof config.servers !== 'object' || Array.isArray(config.servers))) {
-    throw new Error(`MCP config ${path} has a non-object servers value`);
+  const failures = parsed.error ? [{ field: null, message: `contains invalid JSON: ${parsed.error.message}` }] : shapeFailures(parsed.config);
+  if (failures.some(failure => failure.field === null)) {
+    const detail = failures[0].message;
+    if (!recoverInvalid) throw new Error(`MCP config ${path} ${detail}`);
+    return recoverConfig(path, buffer, warnings, {
+      kind: 'invalid',
+      notes: [`was not usable as JSON (${detail.replace(/^contains invalid JSON: /, '')}) and was replaced with a fresh config`],
+      config: freshConfig()
+    });
   }
-  return { ...config, servers: config.servers || {} };
+  const blocking = failures.find(failure => failure.field !== 'inputs');
+  if (!recoverInvalid) {
+    if (blocking) throw new Error(`MCP config ${path} ${blocking.message}`);
+    return { ...parsed.config, servers: parsed.config.servers || {} };
+  }
+  const notes = [];
+  if (loosened) notes.push('contained comments or trailing commas (accepted by VS Code, not strict JSON)');
+  const healed = { ...parsed.config };
+  for (const failure of failures) {
+    if (failure.field === 'servers') { healed.servers = {}; notes.push('had a non-object "servers" value, which was reset'); }
+    if (failure.field === 'inputs') { delete healed.inputs; notes.push('had a non-array "inputs" value, which was removed'); }
+  }
+  if (!notes.length) return { ...parsed.config, servers: parsed.config.servers || {} };
+  return recoverConfig(path, buffer, warnings, {
+    kind: loosened ? 'healed' : 'repaired',
+    notes,
+    config: { ...healed, servers: healed.servers || {} }
+  });
+}
+
+async function recoverConfig(path, buffer, warnings, { kind, notes, config }) {
+  // Back up beside the real file (following symlinks) so a linked mcp.json
+  // keeps its link and the backup sits next to the actual target.
+  const backupBase = await realpath(path).catch(() => path);
+  const backup = await writeConfigBackup(backupBase, buffer, { kind });
+  warnings?.push(`The existing MCP config ${notes.join(' and ')}; the original was backed up to ${backup}.`);
+  return config;
 }
 
 async function writeConfig(path, config) {
-  const directory = dirname(path);
+  // Follow symlinks so a linked mcp.json (dotfiles managers) keeps its link
+  // while the real target is replaced atomically.
+  const target = await realpath(path).catch(() => path);
+  const directory = dirname(target);
   await mkdir(directory, { recursive: true });
-  const temporary = join(directory, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
+  const temporary = join(directory, `.${basename(target)}.${process.pid}.${randomUUID()}.tmp`);
   try {
     await writeFile(temporary, `${JSON.stringify(config, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-    await rename(temporary, path);
+    await rename(temporary, target);
   } catch (error) {
     await rm(temporary, { force: true }).catch(() => {});
     throw new Error(`MCP config ${path} could not be written: ${error.message}`);
@@ -380,7 +551,11 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
   }
   const env = options.env || process.env;
   const path = options.path || await resolveMcpConfigPath(env);
-  const config = await readConfig(path);
+  const installWarnings = [];
+  // recoverInvalid: BOM/encoding damage, VS Code JSONC comments, torn writes
+  // racing an editor save, and corrupt configs are healed (with a backup)
+  // instead of failing the whole setup (self-healing).
+  const config = await readConfig(path, { recoverInvalid: true, warnings: installWarnings });
   const selfVersion = await runningPackageVersion();
   const companionVersions = selfVersion ? { 'sap-ai-dev-toolkit': selfVersion, 'hana-cloud-inspector': selfVersion } : {};
   const generated = {
@@ -434,7 +609,7 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
     config.inputs = [...existingInputs, ...generatedInputs.values()];
   }
   await writeConfig(path, config);
-  return { path, servers: generated };
+  return { path, servers: generated, warnings: installWarnings };
 }
 
 export async function repairManagedMcpConfig(discoveredDestinations, { env = process.env, path, discoveryComplete = false, packageVersion } = {}) {
@@ -499,6 +674,6 @@ export async function repairManagedMcpConfig(discoveredDestinations, { env = pro
   return { path: configPath, changed: true, repaired, managedEntries };
 }
 
-export async function readMcpConfig(path) {
-  return readConfig(path);
+export async function readMcpConfig(path, options = {}) {
+  return readConfig(path, options);
 }

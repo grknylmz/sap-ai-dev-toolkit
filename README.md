@@ -41,15 +41,17 @@ SAP AI Dev Toolkit connects your AI coding assistant to the SAP development tool
 
 ## ⚡ Quick start
 
-```sh
-npm install --global sap-ai-dev-toolkit
-sap-ai-dev --setup
-```
-
-Or run the whole toolkit once with npx — no global install, nothing left behind except the generated MCP configuration:
+The default installation is a single npx command — no global install, nothing left behind except the generated MCP configuration:
 
 ```sh
 npx --yes --ignore-scripts sap-ai-dev-toolkit --setup
+```
+
+Prefer a persistent global install instead?
+
+```sh
+npm install --global sap-ai-dev-toolkit
+sap-ai-dev --setup
 ```
 
 To also add optional full-stack SAP companion MCP servers for Fiori, UI5, CAP, and browser validation, run:
@@ -248,17 +250,23 @@ Once the destination server is enabled in your chat's tools picker, ask for outc
 
 ## 📦 Installation
 
-Install globally from SAP Business Application Studio or from a local workstation with SAP GUI installed, then run setup explicitly for your environment:
+The default installation is a single npx command that runs the guided setup directly through npm — no global install required. It works in SAP Business Application Studio and on local workstations alike:
+
+```sh
+npx --yes --ignore-scripts sap-ai-dev-toolkit --setup
+```
+
+Prefer a persistent global install? Install globally from SAP Business Application Studio or from a local workstation with SAP GUI installed, then run setup explicitly for your environment:
 
 | Environment / device | What to run | What setup does |
 | --- | --- | --- |
-| **SAP Business Application Studio dev space** | `npm install --global sap-ai-dev-toolkit`<br>`sap-ai-dev --setup` | Discovers BAS destinations, optionally imports Cloud Foundry Destination service records, and writes VS Code/BAS MCP entries. |
-| **Windows workstation with SAP GUI** | `npm install --global sap-ai-dev-toolkit`<br>`sap-ai-dev --setup` | Discovers SAP GUI landscape entries, asks for SAP client(s) and ADT URL, then writes local VS Code MCP entries. Windows SSO can be selected if the ADT endpoint supports Negotiate/SPNEGO. |
-| **macOS workstation with SAP GUI** | `npm install --global sap-ai-dev-toolkit`<br>`sap-ai-dev --setup` | Discovers SAP GUI landscape entries, asks for SAP client(s) and ADT URL, then writes local VS Code MCP entries with secure login prompts. |
+| **Any environment (default — no global install)** | `npx --yes --ignore-scripts sap-ai-dev-toolkit --setup` | Runs the guided setup through npm and writes generated entries that launch the pinned package through `npx` (`cmd /c npx` on Windows). Add `--npx` to force the npx launcher even when a global `sap-ai-dev` command exists. |
+| **SAP Business Application Studio dev space (global install)** | `npm install --global sap-ai-dev-toolkit`<br>`sap-ai-dev --setup` | Discovers BAS destinations, optionally imports Cloud Foundry Destination service records, and writes VS Code/BAS MCP entries. |
+| **Windows workstation with SAP GUI (global install)** | `npm install --global sap-ai-dev-toolkit`<br>`sap-ai-dev --setup` | Discovers SAP GUI landscape entries, asks for SAP client(s) and ADT URL, then writes local VS Code MCP entries. Windows SSO can be selected if the ADT endpoint supports Negotiate/SPNEGO. |
+| **macOS workstation with SAP GUI (global install)** | `npm install --global sap-ai-dev-toolkit`<br>`sap-ai-dev --setup` | Discovers SAP GUI landscape entries, asks for SAP client(s) and ADT URL, then writes local VS Code MCP entries with secure login prompts. |
 | **Any local interactive terminal, already installed** | `sap-ai-dev --setup` | Re-runs the wizard to add, update, or remove generated MCP entries. Plain `sap-ai-dev` with no arguments also starts local setup when no BAS environment is detected. |
 | **npm install hook did not show a wizard** | `sap-ai-dev --setup` | This is expected on some npm/Windows combinations because lifecycle scripts may run without an interactive console. The explicit setup command is the reliable path. |
 | **Force npm to show install-time script output** | `npm install --global --foreground-scripts sap-ai-dev-toolkit` | Optional troubleshooting mode if you specifically want to see postinstall output during installation. Still run `sap-ai-dev --setup` afterwards if no destinations were configured. |
-| **No global install / temporary setup** | `npx --yes --ignore-scripts sap-ai-dev-toolkit --setup` | Runs the guided setup through npm and writes generated entries that launch the pinned package through `npx` (`cmd /c npx` on Windows). Add `--npx` to force the npx launcher even when a global `sap-ai-dev` command exists. |
 
 ### 🪟 Windows notes
 
@@ -267,6 +275,7 @@ Everything works natively on Windows — PowerShell, cmd, and Windows Terminal a
 - `npm install --global sap-ai-dev-toolkit` puts three commands on `PATH`: `sap-ai-dev`, its alias `sap-ai-dev-toolkit`, and `sap-ai-hana`. If `sap-ai-dev` is reported as unknown, npm's global bin directory is missing from `PATH` (run `npm prefix -g` to find it) or the install did not complete — `npx --yes --ignore-scripts sap-ai-dev-toolkit --setup` works without any global install.
 - The pinned VSP runtime ships inside the package as a native `vsp-win32-x64.exe`; no Go toolchain, WSL, or extra downloads are required.
 - MCP entries that launch through npm are written as `cmd /c npx ...` on Windows — the form VS Code, Claude Code, and Cursor can spawn there. Entries written on Linux/macOS use plain `npx`.
+- Setup reads `mcp.json` even when Windows tools saved it with a UTF-8/UTF-16 BOM (PowerShell `>`/`Set-Content`, Notepad "UTF-8 with BOM") and rewrites it as plain UTF-8. If the existing file cannot be used as-is, setup self-heals before falling back to a reset: VS Code-style comments and trailing commas (JSONC) are recovered in place, torn reads from a concurrent editor save are re-read once, and broken `servers`/`inputs` fields are repaired individually. Every lossy change first backs up the original next to the real file as `mcp.json.healed|repaired|invalid-<timestamp>.bak` (exclusive create, so reruns never overwrite an earlier backup; symlinked configs keep their link). `sap-ai-dev --doctor` stays strict and reports such files instead of rewriting them — run `sap-ai-dev --setup` to heal.
 - Local SAP GUI discovery reads the Windows landscape files and registry, and setup can write an experimental Windows SSO (`Negotiate`/SPNEGO) entry; see the “Local machine SAP GUI support” section below.
 
 If you previously installed the old package, remove it first because the legacy `bas-vsp-mcp` command is no longer shipped:
@@ -847,6 +856,8 @@ Next, check that the backend answers at `/sap/bc/adt`.
 Runtime diagnostics take the stderr lane. In the MCP server's Output view, check per-destination ADT probe status, VSP child stderr, and failed tool-call details; stdout is reserved for MCP protocol messages.
 
 If `GetSystemInfo` or `RunQuery` reports a CSRF-token fetch failure, VSP tries `/sap/bc/adt/core/discovery` first and falls back to `/sap/bc/adt/discovery` when the core endpoint returns HTTP 404 or 5xx without a token. If both endpoints fail, the error includes their HTTP statuses; check BAS destination routing and the SAP ADT service. `GetInstalledComponents` is a separate GET request and a failure there is not evidence of a CSRF problem.
+
+**`MCP config ... contains invalid JSON`** usually means one of three things, all healed automatically by setup: the file starts with a byte-order mark (Windows PowerShell `>` redirection, `Set-Content`, or Notepad's "UTF-8 with BOM" mode — invisible in editors and terminals), it contains comments or trailing commas (VS Code reads `mcp.json` as JSONC), or setup raced an editor save and read a torn file (retried once before healing). Unrecoverable content is backed up as `mcp.json.<kind>-<timestamp>.bak` and replaced; the backup path is printed in the setup warning. On older versions, re-save the file as UTF-8 without BOM (VS Code: "Change File Encoding → Save with Encoding → UTF-8") and rerun `sap-ai-dev --setup`.
 
 If automatic Go or VSP provisioning fails, check network access and the package's supported platform. You can install Go manually or set `GO_BINARY` as an explicit fallback. A trusted prebuilt VSP can be supplied with `SAP_AI_DEV_TOOLKIT_BINARY`.
 

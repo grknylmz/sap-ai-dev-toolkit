@@ -531,6 +531,7 @@ export async function runSetup({
     const configuredCount = selected.length + sapDevelopmentServers.length;
     print(output, formatStatus(`Configured ${configuredCount} MCP server${configuredCount === 1 ? '' : 's'}${location}.`, 'success', output, isBas ? 'BAS setup' : 'Local setup'));
     printConnectionInstructions(output, result);
+    warnings.push(...(Array.isArray(result?.warnings) ? result.warnings.filter(message => typeof message === 'string') : []));
     let cleanupWarnings = [];
     const finalPath = result?.path || configPath;
     if (isBas) {
