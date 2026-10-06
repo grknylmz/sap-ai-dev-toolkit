@@ -8,7 +8,7 @@ import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { installMcpConfig } from '../src/mcp-config.mjs';
+import { installMcpConfig, npxMcpLauncher } from '../src/mcp-config.mjs';
 import { parseSapClientList, runSetup } from '../src/setup.mjs';
 import { spawnWithPty } from './pty.mjs';
 import { isolatedWindowsEnv, isWindows, pathEntry, writeFakeCli } from './fake-bin.mjs';
@@ -178,7 +178,15 @@ test('reconciles generated entries while preserving unrelated MCP config', async
     assert.equal(generated.length, 2);
     assert.deepEqual(generated.map(([, entry]) => entry.env.SAP_AI_DEV_TOOLKIT_DESTINATION), ['alpha-system', 'beta-system']);
     assert.deepEqual(generated.map(([, entry]) => entry.env.H2O_URL), ['http://new-h2o', 'http://new-h2o']);
-    assert.deepEqual(generated.map(([, entry]) => entry.command), ['sap-ai-dev', 'sap-ai-dev']);
+    // No sap-ai-dev launcher is on PATH here (pure npx scenario), so the
+    // generated entries pin the package through npx instead of writing a
+    // command no MCP host could spawn; Windows routes through cmd /c.
+    const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+    const npxLauncher = npxMcpLauncher();
+    assert.deepEqual(generated.map(([, entry]) => [entry.command, entry.args]), generated.map(() => [
+      npxLauncher.command,
+      [...npxLauncher.prefixArgs, '--yes', '--ignore-scripts', `--package=sap-ai-dev-toolkit@${version}`, 'sap-ai-dev']
+    ]));
     assert.deepEqual(generated.map(([, entry]) => entry.env.SAP_ALLOW_TRANSPORTABLE_EDITS), ['true', 'true']);
     assert.equal(new Set(generated.map(([name]) => name)).size, 2);
 

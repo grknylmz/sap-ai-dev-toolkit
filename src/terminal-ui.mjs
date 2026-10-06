@@ -401,3 +401,43 @@ export async function textPrompt({ message, secret = false, required = true, pla
     }
   });
 }
+
+// Animated progress line for long-running steps (destination discovery,
+// ADT probes, VSP binary provisioning). TTY outputs get spinner frames on an
+// unref'd timer that starts after a short delay, so steps that finish quickly
+// never flash anything. Non-TTY outputs (pipes, MCP hosts, --json callers,
+// CI) stay completely silent so machine consumers never see progress noise.
+// Returns stop(); on a TTY, stop() clears the line so it never pollutes
+// scrollback. stop.update(message) retargets the label while running (for
+// example per destination during --doctor).
+export function startProgress(initialMessage, { output = process.stdout, env = process.env, label = 'sap-ai-dev-toolkit' } = {}) {
+  const noop = Object.assign(() => {}, { update: () => {} });
+  if (!output || typeof output.write !== 'function') return noop;
+  const animationDisabled = env.TERM === 'dumb' || env.CI || env.SAP_AI_DEV_TOOLKIT_DISABLE_SCAN_ANIMATION === 'true';
+  if (!output.isTTY || !Number.isFinite(output.columns) || animationDisabled) return noop;
+  let message = String(initialMessage);
+  let index = 0;
+  let active = false;
+  let interval;
+  const render = () => {
+    active = true;
+    index += 1;
+    const columns = Math.max(20, output.columns || 80);
+    const dots = `.${'.'.repeat(index % 3)}${' '.repeat(2 - index % 3)}`;
+    const line = `${label}: ${message} ${dots}`.slice(0, Math.max(1, columns - 1));
+    output.write(`\r\u001b[2K${line}`);
+  };
+  const delay = setTimeout(() => {
+    render();
+    interval = setInterval(render, 120);
+    if (typeof interval.unref === 'function') interval.unref();
+  }, 150);
+  if (typeof delay.unref === 'function') delay.unref();
+  const stop = () => {
+    clearTimeout(delay);
+    if (interval) clearInterval(interval);
+    if (active) output.write('\r\u001b[2K');
+  };
+  stop.update = next => { message = String(next); };
+  return stop;
+}

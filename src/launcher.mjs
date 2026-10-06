@@ -7,13 +7,14 @@ import { discoverDestinations, remediation, slugifyDestination, statusRows } fro
 import { discoverSapGuiSystems } from './local-sap-gui.mjs';
 import { findBinary } from './binary.mjs';
 import { MCPProxy } from './mcp-proxy.mjs';
-import { installMcpConfig, repairManagedMcpConfig } from './mcp-config.mjs';
+import { installMcpConfig, npxMcpLauncher, repairManagedMcpConfig } from './mcp-config.mjs';
 import { runSetup } from './setup.mjs';
 import { resolveConfiguredCloudFoundryDestination } from './cf-destination.mjs';
 import { createWindowsSsoAdtProxy } from './windows-sso-adt-proxy.mjs';
 import { createTlsServerNameAdtProxy } from './tls-adt-proxy.mjs';
 import { withBrandedEnvironment } from './branding.mjs';
 import { redactText } from './redact.mjs';
+import { startProgress } from './terminal-ui.mjs';
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const runtimeEnv = withBrandedEnvironment(process.env);
@@ -53,7 +54,9 @@ function doctorRow(name, stage, status, detail) {
 
 async function runDoctor(destinations) {
   const checks = [];
+  const stopProgress = startProgress(destinations.length === 1 ? `Checking ${destinations[0]?.name || 'destination'}` : `Checking ${destinations.length} destinations`, { output: process.stderr, label: 'Doctor' });
   if (!destinations.length) {
+    stopProgress();
     return { ok: false, destinations: 0, checks: [doctorRow('-', 'destination discovery', 'failed', 'No destinations were found. Check H2O_URL or the configured Cloud Foundry destination.')] };
   }
   let binary;
@@ -76,6 +79,7 @@ async function runDoctor(destinations) {
     checks.push(doctorRow('-', 'MCP config repair', 'failed', redactText(error.message || error).slice(0, 300)));
   }
   for (const destination of destinations) {
+    stopProgress.update(`Checking ${destination.name}: ADT probe, VSP startup, tools/list`);
     const probe = destination.probe;
     const probeStatus = !probe || probe.status === 'skipped' ? 'skipped' : (probe.available === true ? 'passed' : 'failed');
     checks.push(doctorRow(destination.name, 'ADT probe', probeStatus, probe?.status || 'No BAS ADT probe was supplied; GetSystemInfo will check the route.'));
@@ -126,6 +130,7 @@ async function runDoctor(destinations) {
     }
   }
   const required = checks.filter(check => check.status !== 'skipped');
+  stopProgress();
   return { ok: required.every(check => check.status === 'passed'), destinations: destinations.length, checks };
 }
 
@@ -253,11 +258,17 @@ async function main() {
   if (doctor) {
     let report;
     try {
-      const destinations = runtimeEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'cloud-foundry'
-        ? [await resolveConfiguredCloudFoundryDestination({ env: runtimeEnv })]
-        : (runtimeEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'sap-gui-local'
-          ? [await configuredLocalSapGuiDestination(runtimeEnv)]
-          : await discoverForCommand());
+      const stopDiscoveryProgress = startProgress('Discovering SAP destinations', { output: process.stderr, env: runtimeEnv, label: 'Doctor' });
+      let destinations;
+      try {
+        destinations = runtimeEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'cloud-foundry'
+          ? [await resolveConfiguredCloudFoundryDestination({ env: runtimeEnv })]
+          : (runtimeEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'sap-gui-local'
+            ? [await configuredLocalSapGuiDestination(runtimeEnv)]
+            : await discoverForCommand());
+      } finally {
+        stopDiscoveryProgress();
+      }
       report = await runDoctor(destinations);
     } catch (error) {
       report = { ok: false, destinations: 0, checks: [doctorRow('-', 'destination discovery', 'failed', redactText(error.message || error).slice(0, 300))] };
@@ -272,17 +283,26 @@ async function main() {
       includeSapDevelopmentToolsPrompt: hasFlag('--tools') || hasFlag('--companion-tools')
     };
     if (hasFlag('--npx')) {
+      // Windows has no npx.exe, so generated entries there launch through
+      // `cmd /c npx`; other platforms use npx directly.
+      const launcher = npxMcpLauncher();
       setupOptions.install = (selected, options) => installMcpConfig(selected, {
         ...options,
-        command: 'npx',
-        args: ['--yes', '--ignore-scripts', `--package=sap-ai-dev-toolkit@${pkg.version}`, 'sap-ai-dev']
+        command: launcher.command,
+        args: [...launcher.prefixArgs, '--yes', '--ignore-scripts', `--package=sap-ai-dev-toolkit@${pkg.version}`, 'sap-ai-dev']
       });
     }
     await runSetup(setupOptions);
     return;
   }
   if (check || list) {
-    const destinations = await discoverForCommand();
+    const stopProgress = startProgress('Discovering SAP destinations and probing ADT endpoints', { output: process.stderr, env: runtimeEnv });
+    let destinations;
+    try {
+      destinations = await discoverForCommand();
+    } finally {
+      stopProgress();
+    }
     const statuses = statusRows(destinations);
     if (list && hasFlag('--json')) json(statuses);
     else for (const row of statuses) console.error(`${row.name}: client=${row.client} authentication=${row.authentication} probe=${row.probe}`);
@@ -319,11 +339,15 @@ async function main() {
       return;
     }
     const binary = await binaryOrError();
-    // Windows cannot exec a .js/.mjs file directly; route JavaScript entries
+    // Windows cannot exec .js/.mjs files directly; route JavaScript entries
     // (test fixtures) through the current Node binary like MCPProxy does.
+    // Windows .cmd/.bat shims (e.g. a SAP_AI_DEV_TOOLKIT_BINARY override)
+    // must go through cmd /c; Node refuses to spawn batch files directly.
     const spawnTarget = /\.(?:mjs|cjs|js)$/i.test(binary)
       ? { command: process.execPath, prefixArgs: [binary] }
-      : { command: binary, prefixArgs: [] };
+      : (/\.(?:cmd|bat)$/i.test(binary)
+        ? { command: 'cmd', prefixArgs: ['/c', binary] }
+        : { command: binary, prefixArgs: [] });
     const child = spawn(spawnTarget.command, [...spawnTarget.prefixArgs, ...process.argv.slice(2)], { env: runtimeEnv, stdio: 'inherit' });
     process.once('SIGINT', () => child.kill('SIGINT'));
     process.once('SIGTERM', () => child.kill('SIGTERM'));
@@ -336,7 +360,13 @@ async function main() {
     return;
   }
 
-  const discovered = await discoverDestinations({ env: runtimeEnv });
+  const stopProgress = startProgress('Discovering BAS destinations and probing ADT endpoints', { output: process.stderr, env: runtimeEnv });
+  let discovered;
+  try {
+    discovered = await discoverDestinations({ env: runtimeEnv });
+  } finally {
+    stopProgress();
+  }
   for (const destination of discovered) logLine(probeDiagnostic(destination));
   const destinations = discovered;
   if (!destinations.length) {

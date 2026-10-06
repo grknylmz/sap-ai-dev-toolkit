@@ -200,9 +200,12 @@ export function childArguments(destination, env = process.env) {
 
 // Windows cannot exec a .js/.mjs file directly (no shebang support), so test
 // fixtures written in JavaScript are launched through the current Node binary.
-// The production VSP binary is a native executable and is unaffected.
+// The production VSP binary is a native executable and is unaffected; a
+// Windows .cmd/.bat override needs cmd /c because Node refuses to spawn
+// batch files directly (EINVAL since the CVE-2024-27980 hardening).
 function spawnCommand(binary) {
   if (/\.(?:mjs|cjs|js)$/i.test(binary)) return [process.execPath, binary];
+  if (/\.(?:cmd|bat)$/i.test(binary) && process.platform === 'win32') return ['cmd', '/c', binary];
   return [binary];
 }
 

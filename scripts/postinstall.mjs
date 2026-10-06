@@ -9,7 +9,7 @@ import { installMcpServersForHarnesses } from '../src/harness-mcp-config.mjs';
 import { DEFAULT_HARNESS_IDS, HARNESSES, HARNESS_ENV_VAR, NON_INTERACTIVE_HARNESS_IDS, envHarnessSelection, harnessRoot } from '../src/harnesses.mjs';
 import { ReadStream as TTYReadStream, WriteStream as TTYWriteStream } from 'node:tty';
 import { homedir } from 'node:os';
-import { checkboxPrompt, colorText, formatStatus } from '../src/terminal-ui.mjs';
+import { checkboxPrompt, colorText, formatStatus, startProgress } from '../src/terminal-ui.mjs';
 import { brandedEnvValue, withBrandedEnvironment } from '../src/branding.mjs';
 import { generatedServerName } from '../src/mcp-config.mjs';
 import { redactText } from '../src/redact.mjs';
@@ -232,7 +232,7 @@ async function announceSetup(result) {
     return;
   }
   if (result?.reason === 'non-tty') {
-    await announce('Destination selection was skipped because npm did not provide an interactive terminal.\nMCP config was not changed.\nRun sap-ai-dev --setup from an interactive BAS terminal, or run npx --yes --ignore-scripts --package=sap-ai-dev-toolkit sap-ai-dev --setup --npx.', 'warning');
+    await announce('Destination selection was skipped because npm did not provide an interactive terminal.\nMCP config was not changed.\nRun sap-ai-dev --setup from an interactive terminal, or run npx --yes --ignore-scripts sap-ai-dev-toolkit --setup from any terminal.', 'warning');
     return;
   }
   if (result?.reason === 'no-destinations') {
@@ -304,11 +304,15 @@ async function main() {
     if (brandedEnvValue(runtimeEnv, 'BINARY')) {
       await announce('Using the SAP_AI_DEV_TOOLKIT_BINARY override.', 'info');
     } else {
-      await announce('Preparing the pinned VSP runtime for this platform.', 'progress');
+      // The bundled binary resolves in milliseconds; the animation only
+      // appears when provisioning actually takes time (download fallback).
+      const stopBinaryProgress = startProgress('Preparing the pinned VSP runtime for this platform', { output: process.stderr, env: runtimeEnv });
       try {
         await installBinary(pkg, { env: runtimeEnv });
+        stopBinaryProgress();
         await announce('Pinned VSP binary installed and ready.', 'success');
       } catch (error) {
+        stopBinaryProgress();
         throw new Error(`VSP binary provisioning failed: ${error.message}`);
       }
     }

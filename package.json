@@ -1,6 +1,6 @@
 {
   "name": "sap-ai-dev-toolkit",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "SAP AI development toolkit for BAS, ABAP, RAP, CAP, HANA Cloud, Fiori, UI5, and MCP",
   "author": "Gurkan Yilmaz",
   "type": "module",
@@ -17,6 +17,7 @@
   },
   "bin": {
     "sap-ai-dev": "src/launcher.mjs",
+    "sap-ai-dev-toolkit": "src/launcher.mjs",
     "sap-ai-hana": "src/hana-inspector.mjs"
   },
   "scripts": {

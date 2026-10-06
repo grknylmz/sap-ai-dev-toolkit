@@ -2,7 +2,7 @@ import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { platform } from 'node:os';
 import { isIP } from 'node:net';
-import { checkboxPrompt, colorText, formatStatus, selectPrompt, textPrompt } from './terminal-ui.mjs';
+import { checkboxPrompt, colorText, formatStatus, selectPrompt, startProgress, textPrompt } from './terminal-ui.mjs';
 import { discoverDestinations, remediation } from './bas-discovery.mjs';
 import { defaultAdtUrl, discoverSapGuiSystems } from './local-sap-gui.mjs';
 import { discoverCloudFoundryDestinations, getCloudFoundryTarget, deleteManagedCloudFoundryServiceKeys, findOrphanedCloudFoundryServiceKeys } from './cf-destination.mjs';
@@ -237,15 +237,21 @@ export async function runSetup({
     return { skipped: true, reason: 'non-tty' };
   }
   print(output, '');
-  print(output, formatStatus(isBas ? 'Contacting BAS to discover destinations; this may take a moment.' : 'Looking for local SAP GUI system configuration.', 'progress', output, 'Setup'));
+  if (!isBas) print(output, formatStatus('Looking for local SAP GUI system configuration.', 'progress', output, 'Setup'));
 
   let destinations = [];
   if (isBas) {
     let basDestinations;
+    // BAS discovery probes every destination's ADT endpoint (up to a 5s
+    // timeout each); the animated progress line keeps the terminal visibly
+    // alive from the first moment instead of looking stuck.
+    const stopDiscoveryProgress = startProgress('Contacting BAS to discover destinations', { output, env, label: 'Setup' });
     try {
       basDestinations = await discover({ env: { ...env, SAP_AI_DEV_TOOLKIT_DESTINATION: '' } });
     } catch (error) {
       throw new Error(`BAS discovery failed: ${error.message}`);
+    } finally {
+      stopDiscoveryProgress();
     }
     destinations = basDestinations.map(safeBasDestination);
   } else {

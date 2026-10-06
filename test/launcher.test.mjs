@@ -10,6 +10,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises
 import { isolatedWindowsEnv, isWindows, pathEntry, writeFakeCli } from './fake-bin.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { npxMcpLauncher } from '../src/mcp-config.mjs';
 import { spawnWithPty } from './pty.mjs';
 
 const launcher = fileURLToPath(new URL('../src/launcher.mjs', import.meta.url));
@@ -99,6 +100,14 @@ async function startCertificateServer(directory) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   return server;
 }
+
+test('package bin exposes the package-name executable for npx', async () => {
+  const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  // `npx sap-ai-dev-toolkit` resolves the executable by package name when a
+  // package ships several bins; without this alias npx aborts with
+  // "could not determine executable to run".
+  assert.equal(packageJson.bin['sap-ai-dev-toolkit'], packageJson.bin['sap-ai-dev']);
+});
 
 test('help exits before BAS destination discovery', async t => {
   let requests = 0;
@@ -445,10 +454,11 @@ test('setup subprocess writes one isolated MCP entry per selected destination', 
     assert.equal(current.servers['alpha-system'].env.BAS_VSP_DESTINATION, undefined);
     assert.equal(generated.every(([, entry]) => entry.env.H2O_URL === env.H2O_URL), true);
     const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
-    assert.deepEqual(generated.map(([, entry]) => [entry.command, entry.args]), [
-      ['npx', ['--yes', '--ignore-scripts', `--package=sap-ai-dev-toolkit@${packageJson.version}`, 'sap-ai-dev']],
-      ['npx', ['--yes', '--ignore-scripts', `--package=sap-ai-dev-toolkit@${packageJson.version}`, 'sap-ai-dev']]
-    ]);
+    const npxLauncher = npxMcpLauncher();
+    assert.deepEqual(generated.map(([, entry]) => [entry.command, entry.args]), generated.map(() => [
+      npxLauncher.command,
+      [...npxLauncher.prefixArgs, '--yes', '--ignore-scripts', `--package=sap-ai-dev-toolkit@${packageJson.version}`, 'sap-ai-dev']
+    ]));
     const second = await runLauncherTty(env, '\r', ['--setup', '--npx']);
     assert.equal(second.code, 0, `${second.stdout}\\n${second.stderr}`);
     current = JSON.parse(await readFile(config, 'utf8'));

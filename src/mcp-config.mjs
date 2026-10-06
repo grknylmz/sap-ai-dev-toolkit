@@ -98,6 +98,44 @@ export async function resolveMcpServerCommand(env = process.env) {
   return 'sap-ai-dev';
 }
 
+// Windows ships npx as npx.cmd, not npx.exe: MCP hosts spawn the configured
+// command directly without shell PATH resolution, so npx-launched servers
+// must route through `cmd /c npx` there (the form VS Code, Claude Code, and
+// Cursor document for Windows). Other platforms run npx directly.
+export function npxMcpLauncher(platform = process.platform) {
+  return platform === 'win32'
+    ? { command: 'cmd', prefixArgs: ['/c', 'npx'] }
+    : { command: 'npx', prefixArgs: [] };
+}
+
+// Normalizes the argument list of npx-launched entries, whether written as
+// `npx ...` or the Windows `cmd /c npx ...` form; returns null when the entry
+// is not npx-launched.
+function npxLaunchArgs(entry) {
+  const args = Array.isArray(entry?.args) ? entry.args.map(String) : [];
+  if (entry?.command === 'npx') return args;
+  const commandName = typeof entry?.command === 'string'
+    ? entry.command.slice(Math.max(entry.command.lastIndexOf('/'), entry.command.lastIndexOf('\\')) + 1)
+    : '';
+  if (/^cmd(?:\.exe)?$/i.test(commandName) && args[0]?.toLowerCase() === '/c' && /^npx(?:\.cmd)?$/i.test(args[1] || '')) {
+    return args.slice(2);
+  }
+  return null;
+}
+
+// Resolves how generated destination entries launch the toolkit: the global
+// sap-ai-dev command when it is on PATH, otherwise the pinned package
+// through npx (routed through cmd /c on Windows) so entries written by a
+// pure `npx sap-ai-dev-toolkit --setup` run still start on every host.
+async function resolveLauncherInstallCommand(env) {
+  const resolved = await resolveMcpServerCommand(env);
+  if (resolved !== 'sap-ai-dev') return { command: resolved, args: null };
+  const { command, prefixArgs } = npxMcpLauncher();
+  const selfVersion = await runningPackageVersion();
+  const packageSpec = selfVersion ? `sap-ai-dev-toolkit@${selfVersion}` : 'sap-ai-dev-toolkit';
+  return { command, args: [...prefixArgs, '--yes', '--ignore-scripts', `--package=${packageSpec}`, 'sap-ai-dev'] };
+}
+
 export async function resolveMcpConfigPath(env = process.env) {
   const configuredPath = [env.SAP_AI_DEV_MCP_CONFIG, brandedEnvValue(env, 'MCP_CONFIG')]
     .find(value => typeof value === 'string' && value.length > 0);
@@ -138,16 +176,17 @@ export function generatedDestinationServerName(destination) {
   return generatedServerName(destination?.source === 'cloud-foundry' ? destination.serverName : destination?.name);
 }
 
-export function buildSapDevelopmentMcpEntries(serverIds = SAP_DEVELOPMENT_MCP_SERVERS.map(server => server.id), { packageVersions = {}, packageManager = 'npx' } = {}) {
+export function buildSapDevelopmentMcpEntries(serverIds = SAP_DEVELOPMENT_MCP_SERVERS.map(server => server.id), { packageVersions = {}, packageManager = 'npx', platform = process.platform } = {}) {
   const selected = new Set(serverIds);
   const entries = Object.create(null);
+  const launcher = packageManager === 'npx' ? npxMcpLauncher(platform) : { command: packageManager, prefixArgs: [] };
   for (const server of SAP_DEVELOPMENT_MCP_SERVERS) {
     if (!selected.has(server.id)) continue;
     const packageSpec = packageVersions[server.id] || packageVersions[server.packageName] || server.packageName;
     entries[server.id] = {
       type: 'stdio',
-      command: packageManager,
-      args: ['--yes', ...(server.ignoreScripts ? ['--ignore-scripts'] : []), `--package=${packageSpec}`, server.bin],
+      command: launcher.command,
+      args: [...launcher.prefixArgs, '--yes', ...(server.ignoreScripts ? ['--ignore-scripts'] : []), `--package=${packageSpec}`, server.bin],
       BAS_EXT: 'true',
       BAS_EXT_KIND: COMPANION_SERVER_KIND,
       displayName: server.name,
@@ -232,16 +271,14 @@ function isPackageLauncher(entry) {
   const legacyCommand = legacyCommands.has(entry?.command) || legacyCommands.has(commandName);
   const currentPackages = [/^--package=sap-ai-dev-toolkit(?:@[^/]+)?$/];
   const legacyPackages = [/^--package=bas-mcp-addon(?:@[^/]+)?$/];
-  const hasPackage = patterns => Array.isArray(entry?.args)
-    && entry.args.some(argument => typeof argument === 'string' && patterns.some(pattern => pattern.test(argument)));
-  const currentNpxLauncher = entry?.command === 'npx'
-    && Array.isArray(entry.args)
-    && entry.args.some(argument => currentCommands.has(argument))
-    && hasPackage(currentPackages);
-  const legacyNpxLauncher = entry?.command === 'npx'
-    && Array.isArray(entry.args)
-    && entry.args.some(argument => legacyCommands.has(argument))
-    && hasPackage(legacyPackages);
+  const hasPackage = (arguments_, patterns) => arguments_.some(argument => patterns.some(pattern => pattern.test(argument)));
+  const npxArgs = npxLaunchArgs(entry);
+  const currentNpxLauncher = npxArgs !== null
+    && npxArgs.some(argument => currentCommands.has(argument))
+    && hasPackage(npxArgs, currentPackages);
+  const legacyNpxLauncher = npxArgs !== null
+    && npxArgs.some(argument => legacyCommands.has(argument))
+    && hasPackage(npxArgs, legacyPackages);
   // Current launchers are treated as managed only when tagged by this add-on.
   // Some early bas-mcp-addon entries were not tagged with BAS_EXT, though, and
   // leaving them behind keeps advertising the old full VSP surface (~159 tools).
@@ -264,10 +301,10 @@ function isManagedBasDestinationEntry(entry) {
     ? entry.command.slice(Math.max(entry.command.lastIndexOf('/'), entry.command.lastIndexOf('\\')) + 1).replace(/\.(?:cmd|exe)$/i, '')
     : '';
   const currentCommand = currentCommands.has(entry?.command) || currentCommands.has(commandName);
-  const currentNpxLauncher = entry?.command === 'npx'
-    && Array.isArray(entry.args)
-    && entry.args.some(argument => currentCommands.has(argument))
-    && entry.args.some(argument => typeof argument === 'string' && /^--package=sap-ai-dev-toolkit(?:@[^/]+)?$/.test(argument));
+  const npxArgs = npxLaunchArgs(entry);
+  const currentNpxLauncher = npxArgs !== null
+    && npxArgs.some(argument => currentCommands.has(argument))
+    && npxArgs.some(argument => /^--package=sap-ai-dev-toolkit(?:@[^/]+)?$/.test(argument));
   return entry?.BAS_EXT === 'true'
     && (currentCommand || currentNpxLauncher)
     && typeof destinationValue(entry?.env) === 'string'
@@ -356,12 +393,18 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
       if (input?.id) generatedInputs.set(input.id, input);
     }
   }
-  const launcherCommand = options.command || (destinations.length ? await resolveMcpServerCommand(env) : null);
+  let launcherCommand = options.command || null;
+  let launcherArgs = options.command ? options.args : null;
+  if (!launcherCommand && destinations.length) {
+    const resolved = await resolveLauncherInstallCommand(env);
+    launcherCommand = resolved.command;
+    launcherArgs = resolved.args;
+  }
   if (launcherCommand) {
     for (const entry of Object.values(generated)) {
       if (isCompanionServer(entry)) continue;
       entry.command = launcherCommand;
-      if (options.command && options.args?.length) entry.args = [...options.args];
+      if (launcherArgs?.length) entry.args = [...launcherArgs];
     }
   }
   const servers = Object.create(null);
@@ -406,7 +449,7 @@ export async function repairManagedMcpConfig(discoveredDestinations, { env = pro
   const config = await readConfig(configPath);
   const managedEntries = Object.values(config.servers).filter(isManagedBasDestinationEntry).length;
   if (!basDestinations.size) return { path: configPath, changed: false, repaired: 0, managedEntries };
-  const localCommand = await resolveMcpServerCommand(env);
+  const localLauncher = await resolveLauncherInstallCommand(env);
   let repaired = 0;
   for (const [serverName, entry] of Object.entries(config.servers)) {
     if (!isManagedBasDestinationEntry(entry)) continue;
@@ -430,14 +473,16 @@ export async function repairManagedMcpConfig(discoveredDestinations, { env = pro
     delete nextEnvironment.BAS_VSP_DESTINATION;
     delete nextEnvironment.BAS_VSP_DESTINATION_SOURCE;
     const nextEntry = { ...entry, type: 'stdio', env: nextEnvironment, BAS_EXT: 'true' };
-    if (entry.command === 'npx') {
+    if (npxLaunchArgs(entry) !== null) {
       if (packageVersion && Array.isArray(entry.args)) {
         nextEntry.args = entry.args.map(argument => typeof argument === 'string' && /^--package=sap-ai-dev-toolkit(?:@[^/]+)?$/.test(argument)
           ? `--package=sap-ai-dev-toolkit@${packageVersion}`
           : argument);
       }
     } else {
-      nextEntry.command = localCommand;
+      nextEntry.command = localLauncher.command;
+      if (localLauncher.args) nextEntry.args = [...localLauncher.args];
+      else delete nextEntry.args;
     }
     if (expectedName === serverName) {
       if (JSON.stringify(nextEntry) === JSON.stringify(entry)) continue;

@@ -521,6 +521,52 @@ test('builds SAP development companion MCP entries', () => {
   assert.throws(() => buildSapDevelopmentMcpEntries(['missing-tool']), /Unknown SAP development MCP server id/);
 });
 
+test('builds Windows companion MCP entries that MCP hosts can spawn', () => {
+  // Windows has no npx.exe; hosts spawn commands directly without shell PATH
+  // resolution, so npx-launched entries must route through cmd /c there.
+  const entries = buildSapDevelopmentMcpEntries(['sap-fiori-tools', 'hana-cloud-inspector'], { platform: 'win32' });
+  assert.equal(entries['sap-fiori-tools'].command, 'cmd');
+  assert.deepEqual(entries['sap-fiori-tools'].args, ['/c', 'npx', '--yes', '--package=@sap-ux/fiori-mcp-server', 'fiori-mcp']);
+  assert.equal(entries['hana-cloud-inspector'].command, 'cmd');
+  assert.deepEqual(entries['hana-cloud-inspector'].args, ['/c', 'npx', '--yes', '--ignore-scripts', '--package=sap-ai-dev-toolkit', 'sap-ai-hana']);
+});
+
+test('Windows cmd /c npx destination entries stay managed and repairable', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-win-npx-'));
+  const path = join(directory, 'mcp.json');
+  const env = { H2O_URL: 'http://h2o.example' };
+  try {
+    await writeFile(path, JSON.stringify({ servers: {
+      unrelated: { type: 'stdio', command: 'other' },
+      shared: {
+        type: 'stdio',
+        command: 'cmd',
+        args: ['/c', 'npx', '--yes', '--ignore-scripts', '--package=sap-ai-dev-toolkit@0.1.0', 'sap-ai-dev'],
+        env: { SAP_AI_DEV_TOOLKIT_DESTINATION: 'shared', H2O_URL: 'http://old-h2o.example' },
+        BAS_EXT: 'true'
+      }
+    } }));
+    const destination = { ...bas, serverName: 'shared', url: 'http://shared.dest' };
+    // Re-running setup recognizes the cmd /c npx entry as managed and
+    // replaces it instead of failing with "already exists".
+    await installMcpConfig([destination], {
+      env, path, command: 'cmd',
+      args: ['/c', 'npx', '--yes', '--ignore-scripts', '--package=sap-ai-dev-toolkit@0.2.0', 'sap-ai-dev']
+    });
+    let current = await readMcpConfig(path);
+    assert.deepEqual(current.servers.shared.args, ['/c', 'npx', '--yes', '--ignore-scripts', '--package=sap-ai-dev-toolkit@0.2.0', 'sap-ai-dev']);
+    assert.deepEqual(current.servers.unrelated, { type: 'stdio', command: 'other' });
+    // Doctor repair re-pins the package version inside the cmd /c npx form.
+    const repair = await repairManagedMcpConfig([destination], { env, path, discoveryComplete: true, packageVersion: '0.3.0' });
+    assert.equal(repair.repaired, 1);
+    current = await readMcpConfig(path);
+    assert.equal(current.servers.shared.command, 'cmd');
+    assert.deepEqual(current.servers.shared.args, ['/c', 'npx', '--yes', '--ignore-scripts', '--package=sap-ai-dev-toolkit@0.3.0', 'sap-ai-dev']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('configures the HANA inspector without persisting credentials', () => {
   const entry = buildSapDevelopmentMcpEntries(['hana-cloud-inspector'])['hana-cloud-inspector'];
   assert.equal(entry.command, 'npx');
@@ -613,6 +659,7 @@ test('wizard replaces legacy launcher entries with the branded command and envir
   const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-migration-'));
   const path = join(directory, 'mcp.json');
   t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(join(directory, 'sap-ai-dev'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   await writeFile(path, JSON.stringify({
     servers: {
       shared: {
@@ -625,10 +672,10 @@ test('wizard replaces legacy launcher entries with the branded command and envir
     }
   }));
 
-  await installMcpConfig([bas], { env: { H2O_URL: 'http://h2o.example', BAS_VSP_MCP_CONFIG: path } });
+  await installMcpConfig([bas], { env: { PATH: directory, H2O_URL: 'http://h2o.example', BAS_VSP_MCP_CONFIG: path } });
   const migrated = await readMcpConfig(path);
   assert.deepEqual(Object.keys(migrated.servers).sort(), ['shared', 'userServer']);
-  assert.equal(migrated.servers.shared.command, 'sap-ai-dev');
+  assert.equal(migrated.servers.shared.command, join(directory, 'sap-ai-dev'));
   assert.equal(migrated.servers.shared.env.SAP_AI_DEV_TOOLKIT_DESTINATION, 'shared');
   assert.equal(migrated.servers.shared.env.BAS_VSP_DESTINATION, undefined);
   assert.equal(migrated.servers.userServer.command, 'custom-server');
@@ -658,6 +705,7 @@ test('setup removes untagged legacy bas-mcp-addon launchers that expose the full
   const directory = await mkdtemp(join(tmpdir(), 'sap-ai-toolkit-untagged-legacy-'));
   const path = join(directory, 'mcp.json');
   t.after(() => rm(directory, { recursive: true, force: true }));
+  await writeFile(join(directory, 'sap-ai-dev'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
   await writeFile(path, JSON.stringify({
     servers: {
       shared: {
@@ -675,10 +723,10 @@ test('setup removes untagged legacy bas-mcp-addon launchers that expose the full
     }
   }));
 
-  await installMcpConfig([bas], { env: { H2O_URL: 'http://h2o.example' }, path });
+  await installMcpConfig([bas], { env: { PATH: directory, H2O_URL: 'http://h2o.example' }, path });
   const migrated = await readMcpConfig(path);
   assert.deepEqual(Object.keys(migrated.servers).sort(), ['shared', 'userServer']);
-  assert.equal(migrated.servers.shared.command, 'sap-ai-dev');
+  assert.equal(migrated.servers.shared.command, join(directory, 'sap-ai-dev'));
   assert.equal(migrated.servers.shared.env.SAP_AI_DEV_TOOLKIT_DESTINATION, 'shared');
 });
 

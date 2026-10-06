@@ -1,12 +1,51 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PassThrough, Writable } from 'node:stream';
-import { checkboxPrompt, colorText, formatStatus, promptOutput, quietSpinnerTheme, selectPrompt } from '../src/terminal-ui.mjs';
+import { checkboxPrompt, colorText, formatStatus, promptOutput, quietSpinnerTheme, selectPrompt, startProgress } from '../src/terminal-ui.mjs';
 
 test('progress status uses a stable single-column glyph instead of a wide emoji', () => {
   const rendered = formatStatus('Loading destinations', 'progress', false, 'Setup');
   assert.equal(rendered, '… Setup Loading destinations');
   assert.doesNotMatch(rendered, /⏳/u);
+});
+
+test('startProgress animates a single rewritten line on a TTY and clears it when stopped', async () => {
+  const output = new PassThrough();
+  output.isTTY = true;
+  output.columns = 80;
+  const chunks = [];
+  output.on('data', chunk => chunks.push(chunk));
+  const stop = startProgress('Contacting BAS to discover destinations', { output, env: { TERM: 'xterm-256color' }, label: 'Setup' });
+  await new Promise(resolve => setTimeout(resolve, 450));
+  stop();
+  stop.update('late update is harmless');
+  const text = chunks.join('');
+  // Every frame rewrites the same line instead of scrolling the terminal.
+  const frames = text.split('\r');
+  assert.ok(frames.length >= 3, `expected animated frames, got: ${JSON.stringify(text)}`);
+  for (const frame of frames.slice(1, -1)) {
+    assert.match(frame.replace(/^\u001b\[2K/, ''), /^Setup: Contacting BAS to discover destinations \.{1,3} {0,2}$/);
+  }
+  // The spinner erases itself when stopped, leaving scrollback clean.
+  assert.equal(text.endsWith('\r\u001b[2K'), true);
+});
+
+test('startProgress stays silent for non-TTY output and when animation is disabled', () => {
+  const cases = [
+    { output: new PassThrough(), env: { TERM: 'xterm-256color' } },
+    ...[{ TERM: 'dumb' }, { CI: 'true' }, { SAP_AI_DEV_TOOLKIT_DISABLE_SCAN_ANIMATION: 'true' }].map(env => ({
+      output: Object.assign(new PassThrough(), { isTTY: true, columns: 80 }),
+      env: { TERM: 'xterm-256color', ...env }
+    }))
+  ];
+  // Pipes, MCP hosts, --json callers, CI, dumb terminals, and the explicit
+  // opt-out must never see progress output.
+  for (const { output, env } of cases) {
+    const stop = startProgress('Probing ADT endpoints', { output, env });
+    stop();
+    stop.update('next');
+    assert.equal(output.read(), null, JSON.stringify(env));
+  }
 });
 
 test('prompt output proxy preserves TTY sizing and color capabilities for Inquirer rendering', async () => {

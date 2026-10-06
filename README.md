@@ -46,6 +46,12 @@ npm install --global sap-ai-dev-toolkit
 sap-ai-dev --setup
 ```
 
+Or run the whole toolkit once with npx — no global install, nothing left behind except the generated MCP configuration:
+
+```sh
+npx --yes --ignore-scripts sap-ai-dev-toolkit --setup
+```
+
 To also add optional full-stack SAP companion MCP servers for Fiori, UI5, CAP, and browser validation, run:
 
 ```sh
@@ -252,7 +258,16 @@ Install globally from SAP Business Application Studio or from a local workstatio
 | **Any local interactive terminal, already installed** | `sap-ai-dev --setup` | Re-runs the wizard to add, update, or remove generated MCP entries. Plain `sap-ai-dev` with no arguments also starts local setup when no BAS environment is detected. |
 | **npm install hook did not show a wizard** | `sap-ai-dev --setup` | This is expected on some npm/Windows combinations because lifecycle scripts may run without an interactive console. The explicit setup command is the reliable path. |
 | **Force npm to show install-time script output** | `npm install --global --foreground-scripts sap-ai-dev-toolkit` | Optional troubleshooting mode if you specifically want to see postinstall output during installation. Still run `sap-ai-dev --setup` afterwards if no destinations were configured. |
-| **No global install / temporary setup** | `npx --yes --ignore-scripts --package=sap-ai-dev-toolkit sap-ai-dev --setup --npx` | Runs the guided setup through npm and writes generated entries that launch the pinned package through `npx`. |
+| **No global install / temporary setup** | `npx --yes --ignore-scripts sap-ai-dev-toolkit --setup` | Runs the guided setup through npm and writes generated entries that launch the pinned package through `npx` (`cmd /c npx` on Windows). Add `--npx` to force the npx launcher even when a global `sap-ai-dev` command exists. |
+
+### 🪟 Windows notes
+
+Everything works natively on Windows — PowerShell, cmd, and Windows Terminal are all supported:
+
+- `npm install --global sap-ai-dev-toolkit` puts three commands on `PATH`: `sap-ai-dev`, its alias `sap-ai-dev-toolkit`, and `sap-ai-hana`. If `sap-ai-dev` is reported as unknown, npm's global bin directory is missing from `PATH` (run `npm prefix -g` to find it) or the install did not complete — `npx --yes --ignore-scripts sap-ai-dev-toolkit --setup` works without any global install.
+- The pinned VSP runtime ships inside the package as a native `vsp-win32-x64.exe`; no Go toolchain, WSL, or extra downloads are required.
+- MCP entries that launch through npm are written as `cmd /c npx ...` on Windows — the form VS Code, Claude Code, and Cursor can spawn there. Entries written on Linux/macOS use plain `npx`.
+- Local SAP GUI discovery reads the Windows landscape files and registry, and setup can write an experimental Windows SSO (`Negotiate`/SPNEGO) entry; see the “Local machine SAP GUI support” section below.
 
 If you previously installed the old package, remove it first because the legacy `bas-vsp-mcp` command is no longer shipped:
 
@@ -312,9 +327,9 @@ The same postinstall offers the bundled agents and skills for several AI coding 
 
 Some current npm versions also require install hooks to be approved. If npm reports that `sap-ai-dev-toolkit`'s `postinstall` was blocked, allow it during a fresh install with `npm install --global --allow-scripts=sap-ai-dev-toolkit sap-ai-dev-toolkit`, or run `sap-ai-dev --setup` from an interactive terminal after installation.
 
-The setup report uses icons and terminal colors; set `NO_COLOR=1` to disable ANSI colors. The table is a weather report, not a bouncer: green **PASS** means the ADT probe responded, red **FAIL** means it failed, and yellow **SKIPPED** means it was skipped. Probe failures do not block MCP registration or startup for destinations you select.
+The setup report uses icons and terminal colors; set `NO_COLOR=1` to disable ANSI colors. Long-running steps (BAS destination discovery, ADT probes, VSP runtime provisioning, `--doctor` checks) show an animated progress line so the terminal never looks stuck; it appears only on interactive terminals and is disabled automatically on CI — set `SAP_AI_DEV_TOOLKIT_DISABLE_SCAN_ANIMATION=true` to turn it off. The table is a weather report, not a bouncer: green **PASS** means the ADT probe responded, red **FAIL** means it failed, and yellow **SKIPPED** means it was skipped. Probe failures do not block MCP registration or startup for destinations you select.
 
-Run `sap-ai-dev --setup` later to change the destination selection or remove generated destination entries. Run `sap-ai-dev --setup --tools` to also choose optional companion tools. Use `--npx` to make generated destination entries start the pinned package through npm instead of relying on a global `sap-ai-dev` command; companion tools already use `npx` with their own npm packages.
+Run `sap-ai-dev --setup` later to change the destination selection or remove generated destination entries. Run `sap-ai-dev --setup --tools` to also choose optional companion tools. Generated destination entries use the global `sap-ai-dev` command when it is on `PATH`; otherwise (for example after a pure npx setup) they automatically launch the pinned package version through `npx`, routed through `cmd /c npx` on Windows so every MCP host can spawn them. Pass `--npx` to force the npx launcher even when a global command exists; companion tools already use `npx` with their own npm packages.
 
 If a setup step is skipped or fails, rerun it from an interactive terminal:
 
@@ -325,10 +340,10 @@ sap-ai-dev --setup
 To configure without a global install, run the guided setup directly through npm:
 
 ```sh
-npx --yes --ignore-scripts --package=sap-ai-dev-toolkit sap-ai-dev --setup --npx
+npx --yes --ignore-scripts sap-ai-dev-toolkit --setup
 ```
 
-This lists discovered systems in the same checkbox picker, with nothing selected by default. Use **Space** to choose destinations, **Enter** to confirm, and **a** to toggle all (select all if any are unchecked; otherwise clear the selection). It writes MCP entries that launch the selected servers through npx. The entries pin the package version used during setup, and `--ignore-scripts` avoids running the install-time wizard a second time. After setup, in BAS or VS Code run **MCP: List Servers**, select each chosen destination, and choose **Start Server**.
+This lists discovered systems in the same checkbox picker, with nothing selected by default. Use **Space** to choose destinations, **Enter** to confirm, and **a** to toggle all (select all if any are unchecked; otherwise clear the selection). Because no global `sap-ai-dev` command is on `PATH`, it writes MCP entries that launch the pinned package version through npx — through `cmd /c npx` on Windows, which is the form VS Code, Claude Code, and Cursor can spawn there. `--ignore-scripts` avoids running the install-time wizard a second time; add `--npx` to force this launcher shape even when the toolkit is installed globally. After setup, in BAS or VS Code run **MCP: List Servers**, select each chosen destination, and choose **Start Server**.
 
 For a non-interactive installation or a platform without a published VSP asset, provide a trusted binary override:
 
@@ -423,7 +438,7 @@ Review skipped or conflicting files and merge changes manually. `LintABAP` analy
 If the `cf` CLI is version 8.18 or newer and authenticated to a targeted space, setup offers an opt-in import from that space's SAP Destination service. It does not create service keys unless you accept. The imported records are limited to the current space and are merged with BAS destinations for selection. OnPremise destinations require choosing a Connectivity service instance; runtime traffic uses that service's proxy, and PrincipalPropagation uses the current CF user's token. Internet destinations use the configured HTTP(S) proxy environment. Setup stores only service-instance/key references in `mcp.json`, not the service-key credentials. At runtime the generated entry verifies the active CF space and resolves those references. Setup removes an add-on-created key only when no remaining CF entry references it and the CLI is targeted to the key's recorded space; keys are left untouched when the space cannot be verified.
 Cloud Foundry HTTP destination probes use forward-form HTTP requests, not CONNECT tunnels; SAP Connectivity requires HTTP from the application to its proxy. OnPremise requests are canceled when the client disconnects or the runtime route closes.
 
-Interactive npm install and `sap-ai-dev --setup` both use a checkbox picker with no destinations selected by default. Use **Space** to choose destinations, **Enter** to confirm, and **a** to toggle all (select all if any are unchecked; otherwise clear the selection). Confirming with none checked removes this package's generated MCP entries. Non-interactive installs skip destination or local SAP GUI system selection without changing MCP config. Run the interactive setup command above; add `--npx` when the package is not installed globally.
+Interactive npm install and `sap-ai-dev --setup` both use a checkbox picker with no destinations selected by default. Use **Space** to choose destinations, **Enter** to confirm, and **a** to toggle all (select all if any are unchecked; otherwise clear the selection). Confirming with none checked removes this package's generated MCP entries. Non-interactive installs skip destination or local SAP GUI system selection without changing MCP config. Run the interactive setup command above; generated entries fall back to the pinned npx launcher automatically when the package is not installed globally.
 
 Setup tidies its own footprint: it reconciles MCP entries managed by this package and removes legacy `sapAiDev_*` / `basVspMcp_*` entries from earlier releases. Existing unrelated MCP servers and top-level configuration such as `inputs` stay untouched.
 
