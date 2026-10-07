@@ -17,19 +17,26 @@ function scalar(value) {
 }
 
 function propertiesOf(item) {
+  // Nested property maps (BAS wraps destination attributes in `properties`,
+  // some proxies use `configuration` or a key/value array) only fill gaps:
+  // a nested `Name` — e.g. the Cloud Connector system name `_SIDCLNTOX` —
+  // must never overwrite the real destination name at the top level.
   const result = {};
-  for (const [key, value] of Object.entries(item || {})) result[keyName(key)] = scalar(value);
-  const maps = Object.entries(item || {}).filter(([key]) => ['properties', 'propertymap', 'destinationproperties', 'configuration'].includes(keyName(key))).map(([, value]) => value);
+  const entries = Object.entries(item || {});
+  const maps = entries.filter(([key]) => ['properties', 'propertymap', 'destinationproperties', 'configuration'].includes(keyName(key))).map(([, value]) => value);
   for (const map of maps) {
     if (Array.isArray(map)) {
       for (const entry of map) {
         const key = entry?.key ?? entry?.name ?? entry?.property;
-        if (key != null) result[keyName(key)] = scalar(entry?.value ?? entry?.val);
+        if (key != null && !(keyName(key) in result)) result[keyName(key)] = scalar(entry?.value ?? entry?.val);
       }
     } else if (map && typeof map === 'object') {
-      for (const [key, value] of Object.entries(map)) result[keyName(key)] = scalar(value);
+      for (const [key, value] of Object.entries(map)) {
+        if (!(keyName(key) in result)) result[keyName(key)] = scalar(value);
+      }
     }
   }
+  for (const [key, value] of entries) result[keyName(key)] = scalar(value);
   return result;
 }
 
@@ -42,23 +49,36 @@ function listFromBody(body) {
   if (Array.isArray(body)) return body;
   if (!body || typeof body !== 'object') return null;
   for (const [key, value] of Object.entries(body)) {
-    if (['destinations', 'data'].includes(keyName(key)) && Array.isArray(value)) return value;
+    if (!['destinations', 'destinationlist', 'data', 'items', 'value'].includes(keyName(key))) continue;
+    if (Array.isArray(value)) return value;
+    // Some destination services unwrap records into a name-keyed map
+    // instead of an array; heal the shape so discovery still proceeds.
+    if (value && typeof value === 'object') {
+      const records = Object.entries(value).filter(([, entry]) => entry && typeof entry === 'object').map(([mapName, entry]) => ({ name: mapName, ...entry }));
+      if (records.length) return records;
+    }
   }
   return null;
 }
 
 export function normalizeDestination(item) {
   const values = propertiesOf(item);
-  const name = text(values.name || values.destinationname || values.destname);
+  const name = text(values.name || values.destinationname || values.destname || values.destination || values.sapdestinationname);
   const authentication = text(values.authentication || values.authtype || values.auth);
-  const client = text(values.sapclient || values.client) || '001';
+  const client = text(values.sapclient || values.client || values.mandt) || '001';
   const backendUrl = text(values.url || values.host || values.webideexposedhost);
   const proxyType = text(values.proxytype || values.proxy);
+  // One destination with an unusable name must never abort discovery; the
+  // probe reports `invalid-name` for entries whose url stays null.
+  let url = null;
+  if (name) {
+    try { url = destinationUrl(name); } catch { url = null; }
+  }
   return {
     name,
     authentication: authentication || 'Unknown',
     client,
-    url: name ? destinationUrl(name) : null,
+    url,
     backendUrl: backendUrl || null,
     proxyType: proxyType || null,
     rawKeys: Object.keys(item || {}).map(String)
@@ -67,7 +87,10 @@ export function normalizeDestination(item) {
 
 export function destinationUrl(name) {
   const value = text(name);
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)) throw new Error(`Invalid BAS destination name: ${value || '<empty>'}`);
+  // A leading underscore is valid: BAS destination names allow it (Cloud
+  // Connector system names like `_SIDCLNTOX`), and `<name>.dest` resolution
+  // inside a dev space is Host-header matching in the BAS proxy, not DNS.
+  if (!/^[A-Za-z0-9_][A-Za-z0-9._-]*$/.test(value)) throw new Error(`Invalid BAS destination name: ${value || '<empty>'}`);
   return `http://${value}.dest`;
 }
 
@@ -137,7 +160,7 @@ function proxyDispatcher(target, env) {
 
 export async function fetchDestinationList(h2oUrl, options = {}) {
   if (!h2oUrl) throw new Error('H2O_URL is required for BAS destination discovery');
-  const url = `${String(h2oUrl).replace(/\/$/, '')}/api/listDestinations`;
+  const url = `${String(h2oUrl).trim().replace(/\/+$/, '')}/api/listDestinations`;
   const env = options.env || process.env;
   const dispatcher = proxyDispatcher(url, env);
   try {
@@ -147,7 +170,15 @@ export async function fetchDestinationList(h2oUrl, options = {}) {
       ...(dispatcher ? { dispatcher } : {})
     });
     if (!response.ok) throw new Error(`BAS destination discovery failed with HTTP ${response.status}`);
-    return await response.json();
+    // Parse from text so UTF-8 BOMs and text/plain content types from
+    // proxies in front of BAS do not break discovery.
+    const payload = await response.text();
+    try {
+      return JSON.parse(payload.replace(/^\uFEFF/, ''));
+    } catch {
+      const preview = payload.trim().slice(0, 200);
+      throw new Error(`BAS destination discovery returned unparsable JSON${preview ? `: ${preview}` : ''}`);
+    }
   } finally {
     await dispatcher?.close();
   }
@@ -186,7 +217,12 @@ function requestProbe(target, proxyUrl, timeoutMs) {
 }
 
 export async function probeADT(destination, options = {}) {
-  const url = `${destinationUrl(destination.name)}/sap/bc/adt/discovery`;
+  let url;
+  try {
+    url = `${destinationUrl(destination.name)}/sap/bc/adt/discovery`;
+  } catch (error) {
+    return { status: 'invalid-name', available: false, warning: error.message };
+  }
   if (options.skipProbe) return { status: 'skipped', available: true, url };
   try {
     const result = options.probeImpl ? await options.probeImpl(url, options) : await requestProbe(url, options.proxyUrl ?? DEFAULT_PROXY, options.timeoutMs || 5000);
@@ -204,7 +240,13 @@ export async function discoverDestinations(options = {}) {
   const list = listFromBody(body);
   if (!list) throw new Error(`Unrecognized BAS destination response shape; top-level keys: ${Object.keys(body || {}).map(String).join(', ') || '<none>'}`);
   const allow = text(brandedEnvValue(env, 'DESTINATION')).split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
-  const normalized = list.map(normalizeDestination).filter(item => item.name).filter(item => !allow.length || allow.includes(item.name.toLowerCase()));
+  const normalized = list
+    .map(item => {
+      try { return normalizeDestination(item); }
+      catch (error) { return { name: '', probe: { status: 'invalid-name', available: false, warning: error.message } }; }
+    })
+    .filter(item => item.name)
+    .filter(item => !allow.length || allow.includes(item.name.toLowerCase()));
   const brandedProxy = brandedEnvValue(env, 'HTTP_PROXY');
   const configuredProxy = brandedProxy !== undefined ? String(brandedProxy) : (env.HTTP_PROXY ?? env.http_proxy);
   const proxyUrl = configuredProxy !== undefined ? configuredProxy : DEFAULT_PROXY;

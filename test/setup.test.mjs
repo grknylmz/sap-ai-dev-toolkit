@@ -72,7 +72,7 @@ test('parseSapClientList handles defaults, whitespace, duplicates, and invalid c
   assert.throws(() => parseSapClientList('', 'abc'), /3 digits/);
 });
 
-function runPostinstallInPty(env, keys, assetsAnswer = '\r') {
+function runPostinstallInPty(env, keys, assetsAnswer = '\r', wizardAnswer = 'e\r') {
   return new Promise((resolve, reject) => {
     // Unix redirects stdin from /dev/null so postinstall's controlling-
     // terminal recovery (/dev/tty) is what drives the prompts. Windows has
@@ -85,9 +85,16 @@ function runPostinstallInPty(env, keys, assetsAnswer = '\r') {
     let stderr = '';
     let selectionSent = false;
     let assetsAnswerSent = false;
+    let wizardAnswerSent = false;
     const timeout = setTimeout(() => child.kill('SIGKILL'), 15000);
     child.stdout.on('data', chunk => {
       stdout += chunk.toString();
+      if (!wizardAnswerSent && stdout.includes('Configure an SAP system manually?')) {
+        // No systems were detected and setup offers the manual entry wizard;
+        // the default answer declines so postinstall continues.
+        wizardAnswerSent = true;
+        setTimeout(() => child.stdin.write(wizardAnswer), 500);
+      }
       if (!selectionSent && stdout.includes('Select destinations')) {
         selectionSent = true;
         child.stdin.write(keys);
@@ -278,23 +285,126 @@ await runSetup({
   }
 });
 
-test('local setup with no SAP GUI systems skips without installing', async () => {
+function manualWizardOutput() {
+  const output = outputStream();
+  output.columns = 80;
+  output.rows = 24;
+  return output;
+}
+
+async function answerManualWizard(input, answers) {
+  for (const answer of answers) {
+    await new Promise(resolve => setTimeout(resolve, 25));
+    input.write(answer);
+  }
+}
+
+test('local setup with no SAP GUI systems offers the manual wizard and skips when declined', async () => {
   const input = new PassThrough();
   input.isTTY = true;
   input.setRawMode = () => {};
-  const output = outputStream();
+  const output = manualWizardOutput();
   let installCalls = 0;
-  const result = await runSetup({
+  const pending = runSetup({
     env: { HOME: '/tmp/no-sap-gui-test' },
     input,
     output,
     discoverLocalSapGui: async () => [],
     install: async () => { installCalls += 1; }
   });
+  await answerManualWizard(input, ['e', '\r']);
+  const result = await pending;
   assert.equal(result.skipped, true);
   assert.equal(result.reason, 'no-destinations');
   assert.equal(installCalls, 0);
   assert.match(output.text(), /No SAP GUI systems were found/);
+  assert.match(output.text(), /💡 No systems were detected\. Configure an SAP system manually\?/);
+  assert.match(output.text(), /✍️ {1,2}Start manual entry wizard/);
+  assert.match(output.text(), /Exit setup/);
+});
+
+test('setup advertises the manual option before discovery starts', async () => {
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = manualWizardOutput();
+  const pending = runSetup({
+    env: { HOME: '/tmp/manual-tip-test' },
+    input,
+    output,
+    discoverLocalSapGui: async () => [],
+    install: async () => ({})
+  });
+  await answerManualWizard(input, ['e', '\r']);
+  await pending;
+  const text = output.text();
+  assert.match(text, /Tip: you can skip auto-discovery and add a system manually — press m in the destination picker/);
+});
+
+test('manual entry wizard configures a system when nothing was detected', async () => {
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = manualWizardOutput();
+  const installed = [];
+  const pending = runSetup({
+    env: { HOME: '/tmp/manual-entry-test' },
+    input,
+    output,
+    discoverLocalSapGui: async () => [],
+    install: async selected => {
+      installed.push(...selected);
+      return { path: '/tmp/manual-entry-test/mcp.json', servers: Object.fromEntries(selected.map(destination => [destination.name, { env: { SAP_AI_DEV_TOOLKIT_DESTINATION: destination.name } }])) };
+    }
+  });
+  // Offer prompt accepts the 'manual' default with Enter; then name, ADT URL,
+  // two clients, and 'no' at the add-another prompt. Non-Windows runs skip
+  // the authentication prompt (password is the default).
+  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example:44300\r', '100,200\r', 'n\r']);
+  const result = await pending;
+  assert.equal(result.skipped, undefined);
+  assert.equal(installed.length, 2);
+  assert.deepEqual(installed.map(destination => destination.name), ['Q7C 100', 'Q7C 200']);
+  for (const destination of installed) {
+    assert.equal(destination.source, 'sap-gui-local');
+    assert.equal(destination.url, 'https://q7c.example:44300');
+    assert.equal(destination.proxyType, 'Internet');
+    assert.equal(destination.authentication, 'Basic');
+    assert.equal(destination.authMode, 'basic');
+    assert.equal(destination.childEnv.SAP_AUTH_MODE, 'basic');
+    assert.match(destination.childEnv.SAP_USER, /^\$\{input:sap-ai-dev-q7c-(?:100|200)-user\}$/u);
+    assert.deepEqual(destination.inputs.map(input => input.type), ['promptString', 'promptString']);
+    assert.equal(destination.inputs[1].password, true);
+  }
+  assert.match(output.text(), /Manual system entry/);
+  assert.match(output.text(), /Added Q7C \(clients 100, 200\)/);
+  assert.match(output.text(), /Configured 2 MCP servers/);
+});
+
+test('manual entry wizard validates a missing ADT URL and repeats the prompt', async () => {
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = manualWizardOutput();
+  const installed = [];
+  const pending = runSetup({
+    env: { HOME: '/tmp/manual-entry-validate-test' },
+    input,
+    output,
+    discoverLocalSapGui: async () => [],
+    install: async selected => {
+      installed.push(...selected);
+      return { path: '/tmp/manual-entry-validate-test/mcp.json', servers: {} };
+    }
+  });
+  // Enter at the URL prompt without typing anything must re-prompt with the
+  // validation error; the retry then completes with a single client.
+  await answerManualWizard(input, ['\r', 'S4H\r', '\r', 'https://s4h.example:44300\r', '\r', 'n\r']);
+  await pending;
+  assert.equal(installed.length, 1);
+  assert.equal(installed[0].client, '001');
+  assert.equal(installed[0].url, 'https://s4h.example:44300');
+  assert.match(output.text(), /Enter an ADT base URL/);
 });
 
 test('non-TTY setup skips without writing config', async () => {
@@ -641,4 +751,44 @@ test('postinstall runs when invoked through a symlinked install path', async () 
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('destination picker m shortcut adds a manual system without re-prompting discovered ones', async () => {
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = manualWizardOutput();
+  const installed = [];
+  const pending = runSetup({
+    env: { HOME: '/tmp/picker-manual-test' },
+    input,
+    output,
+    discoverLocalSapGui: async () => [{ name: 'A4H', host: 'a4h.example', systemId: 'A4H', instance: '00', client: '100' }],
+    install: async selected => {
+      installed.push(...selected);
+      return { path: '/tmp/picker-manual-test/mcp.json', servers: Object.fromEntries(selected.map(destination => [destination.name, { env: { SAP_AI_DEV_TOOLKIT_DESTINATION: destination.name } }])) };
+    }
+  });
+  // m opens the wizard next to the discovered A4H entry; the configured
+  // system joins the picker pre-selected and Enter confirms the selection.
+  await answerManualWizard(input, ['m', 'Q7C\r', 'https://q7c.example:44300\r', '100\r', 'n\r', '\r']);
+  await pending;
+  // A single client keeps the base system name; the client rides in SAP_CLIENT.
+  assert.deepEqual(installed.map(destination => destination.name), ['Q7C']);
+  assert.equal(installed[0].configuredManually, true);
+  assert.equal(installed[0].url, 'https://q7c.example:44300');
+  assert.equal(installed[0].client, '100');
+  assert.equal(installed[0].childEnv.SAP_AUTH_MODE, 'basic');
+  const text = output.text();
+  // After the wizard reports the added system, the discovery confirmation
+  // flow must not re-ask its prompts for the manual entry.
+  const [, afterManualEntry] = text.split('Added Q7C');
+  assert.match(text, /ADT URL for Q7C/);
+  assert.match(text, /SAP client\(s\) for Q7C/);
+  assert.doesNotMatch(afterManualEntry, /ADT URL for|SAP client\(s\) for/);
+  assert.match(text, /m = add a system manually/);
+  assert.match(text, /💡 No system listed, or need an extra one\? Press m to skip discovery and add any SAP system manually\./);
+  assert.match(text, /skip discovery, add your SAP system directly/);
+  assert.match(text, /Q7C \(manual, client 100\)/);
+  assert.match(text, /Configured 1 MCP server in/);
 });

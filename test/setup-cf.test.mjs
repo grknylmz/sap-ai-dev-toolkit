@@ -104,7 +104,7 @@ await runSetup({
   return { directory, configPath, callLog, discoveryLog, harness, env };
 }
 
-function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r', selectionSequence = null, promptAnswers = [] } = {}) {
+function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r', selectionSequence = null, promptAnswers = [], wizardAnswer = 'e\r' } = {}) {
   return new Promise((resolve, reject) => {
     const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(fixture.harness)}`;
     const child = spawnWithPty(command, { env: fixture.env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -112,6 +112,7 @@ function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r', selec
     let stderr = '';
     let importSent = false;
     let selectionSent = false;
+    let wizardAnswerSent = false;
     let selectionStepIndex = 0;
     let promptAnswerIndex = 0;
     const timeout = setTimeout(() => child.kill('SIGKILL'), 15000);
@@ -126,6 +127,12 @@ function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r', selec
     };
     child.stdout.on('data', chunk => {
       stdout += chunk.toString();
+      if (!wizardAnswerSent && stdout.includes('Configure an SAP system manually?')) {
+        // Discovery found nothing and setup offers the manual entry wizard;
+        // the default answer declines so the pre-existing skip flow runs.
+        wizardAnswerSent = true;
+        send(wizardAnswer);
+      }
       if (!importSent && stdout.includes("Include destinations from the current CF space's Destination service?")) {
         importSent = true;
         send(importAnswer);

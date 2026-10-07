@@ -112,6 +112,167 @@ async function promptSapClients(destination, { input = stdin, output = stdout } 
   return parseSapClientList(answer, fallback);
 }
 
+function validateAdtUrlCandidate(candidate) {
+  if (!candidate) return 'Enter an ADT base URL, for example https://host:44300.';
+  try {
+    const parsed = new URL(candidate);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return 'Use an http:// or https:// URL.';
+    if (parsed.username || parsed.password) return 'Do not embed credentials in the ADT URL; use the login prompts.';
+    if (parsed.search || parsed.hash) return 'Enter an ADT base URL without a query or fragment.';
+    return true;
+  }
+  catch { return 'Enter a valid URL.'; }
+}
+
+function localAuthenticationLabel(authMode) {
+  return ['windows-sso', 'windows-credential-ui', 'windows-sso-basic-fallback'].includes(authMode) ? 'WindowsSSO' : 'Basic';
+}
+
+async function confirmPrompt(message, { input = stdin, output = stdout } = {}) {
+  const answer = await textPrompt({
+    message,
+    placeholder: 'y',
+    required: false,
+    validate: value => /^(?:|y|yes|n|no)$/i.test(String(value || '').trim()) || 'Enter y or n.'
+  }, { input, output });
+  return !/^n(?:o)?$/i.test(String(answer || '').trim());
+}
+
+function buildLocalClientDestination(destination, client, authMode, { multipleClients = false, duplicateSystemName = false } = {}) {
+  const name = localClientDestinationName(destination, client, { multipleClients, duplicateSystemName });
+  const localDestination = { ...destination, name, serverName: name, client };
+  const userInputId = `sap-ai-dev-${localDestination.serverName || localDestination.name}-user`.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+  const passwordInputId = `sap-ai-dev-${localDestination.serverName || localDestination.name}-password`.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
+  const credentialInputs = [
+    { id: userInputId, type: 'promptString', description: `SAP user for ${localDestination.name}` },
+    { id: passwordInputId, type: 'promptString', description: `SAP password for ${localDestination.name}`, password: true }
+  ];
+  if (authMode === 'windows-sso') {
+    localDestination.childEnv = { SAP_AUTH_MODE: 'windows-sso' };
+    localDestination.inputs = [];
+  } else if (authMode === 'windows-credential-ui') {
+    localDestination.childEnv = {
+      SAP_AUTH_MODE: 'windows-sso',
+      SAP_AI_DEV_TOOLKIT_WINDOWS_CREDENTIAL_UI: 'true'
+    };
+    localDestination.inputs = [];
+  } else if (authMode === 'windows-sso-basic-fallback') {
+    localDestination.childEnv = {
+      SAP_AUTH_MODE: 'windows-sso',
+      SAP_AUTH_FALLBACK_MODE: 'basic',
+      SAP_USER: `\${input:${userInputId}}`,
+      SAP_PASSWORD: `\${input:${passwordInputId}}`
+    };
+    localDestination.inputs = credentialInputs;
+  } else if (authMode === 'browser-saml') {
+    localDestination.childEnv = {
+      SAP_AUTH_MODE: 'browser-saml',
+      SAP_BROWSER_AUTH: 'true',
+      SAP_SAML_AUTH: 'true'
+    };
+    localDestination.inputs = [];
+  } else if (authMode === 'saml-password') {
+    localDestination.childEnv = {
+      SAP_AUTH_MODE: 'saml-password',
+      SAP_SAML_AUTH: 'true',
+      SAP_SAML_USER: `\${input:${userInputId}}`,
+      SAP_SAML_PASSWORD: `\${input:${passwordInputId}}`
+    };
+    localDestination.inputs = credentialInputs;
+  } else {
+    localDestination.childEnv = {
+      SAP_AUTH_MODE: 'basic',
+      SAP_USER: `\${input:${userInputId}}`,
+      SAP_PASSWORD: `\${input:${passwordInputId}}`
+    };
+    localDestination.inputs = credentialInputs;
+  }
+  return localDestination;
+}
+
+async function maybeConfigureTlsSelfHeal(destination, promptLabel, { input = stdin, output = stdout } = {}) {
+  const parsedAdtUrl = new URL(destination.url);
+  if (parsedAdtUrl.protocol !== 'https:' || !isIP(parsedAdtUrl.hostname)) return;
+  print(output, formatStatus('The ADT URL uses an IP address. Setup will inspect the SAP HTTPS certificate and can enable TLS self-healing automatically; certificate validation remains enabled.', 'warning', output, 'TLS self-heal'));
+  let discoveredNames = [];
+  try { discoveredNames = await discoverCertificateDnsNames(destination.url); }
+  catch { discoveredNames = []; }
+  if (!discoveredNames.length) {
+    print(output, formatStatus('No DNS subjectAltName entries could be read from the SAP HTTPS certificate. TLS self-healing was not configured automatically.', 'warning', output, 'TLS self-heal'));
+    return;
+  }
+  const preview = discoveredNames.slice(0, 5).join(', ');
+  const useDiscovered = await confirmPrompt(`Use discovered certificate DNS name${discoveredNames.length === 1 ? '' : 's'} for ${promptLabel}: ${preview}${discoveredNames.length > 5 ? ', ...' : ''}? (y/Enter=yes, n=no)`, { input, output });
+  if (useDiscovered) {
+    destination.tlsServerNames = discoveredNames;
+    destination.tlsServerName = discoveredNames[0];
+  }
+}
+
+// Manual MCP entry wizard: offered whenever discovery finds nothing to select
+// (no BAS destinations, no Cloud Foundry imports, no SAP GUI entries). It
+// collects the minimal ADT configuration directly from the user and produces
+// the same local destination shape as the SAP GUI flow, so installation,
+// credential inputs, and TLS handling stay identical.
+async function runManualEntryWizard({ env = process.env, input = stdin, output = stdout } = {}) {
+  print(output, '');
+  print(output, colorText('✍️  Manual system entry — skip discovery, add your SAP system directly', 'magenta', output));
+  print(output, colorText('   The ADT URL is the base URL that Eclipse ADT or VS Code ADT tools use, for example https://myhost.example:44300.', 'cyan', output));
+  print(output, colorText('   Setup writes one isolated MCP server per system/client pair, with login prompts and TLS self-healing like every other entry.', 'cyan', output));
+  const expanded = [];
+  const usedNames = new Set();
+  let addAnother = true;
+  while (addAnother) {
+    const name = (await textPrompt({
+      message: 'System name',
+      placeholder: 'S4H sandbox',
+      required: true,
+      validate: value => {
+        const trimmed = String(value || '').trim();
+        if (!trimmed) return 'Enter a name for the system.';
+        if (usedNames.has(trimmed.toLowerCase())) return 'A system with this name was already added; choose another name.';
+        return true;
+      }
+    }, { input, output })).trim();
+    usedNames.add(name.toLowerCase());
+    const url = await textPrompt({
+      message: `ADT URL for ${name}`,
+      placeholder: 'https://host:44300',
+      required: true,
+      validate: validateAdtUrlCandidate
+    }, { input, output });
+    let parsedUrl;
+    try { parsedUrl = new URL(url); }
+    catch { parsedUrl = null; }
+    const destination = {
+      source: 'sap-gui-local',
+      name,
+      serverName: name,
+      url,
+      host: parsedUrl?.hostname || '',
+      client: '001',
+      authentication: 'Basic',
+      authMode: 'basic',
+      proxyType: 'Internet',
+      // Marks wizard-configured systems so the discovery confirmation prompts
+      // (clients, ADT URL, login) skip them when they flow through the
+      // destination picker.
+      configuredManually: true
+    };
+    await maybeConfigureTlsSelfHeal(destination, name, { input, output });
+    const clients = await promptSapClients(destination, { input, output });
+    const authMode = await chooseLocalAuthMode(destination, { input, output, env });
+    destination.authentication = localAuthenticationLabel(authMode);
+    destination.authMode = authMode;
+    for (const client of clients) {
+      expanded.push(buildLocalClientDestination(destination, client, authMode, { multipleClients: clients.length > 1 }));
+    }
+    print(output, formatStatus(`Added ${name} (client${clients.length === 1 ? '' : 's'} ${clients.join(', ')}).`, 'success', output, 'Manual entry'));
+    addAnother = await confirmPrompt('Add another system? (y/Enter=yes, n=no)', { input, output });
+  }
+  return expanded;
+}
+
 function localSystemDiscriminator(destination) {
   return [destination.systemId, destination.host, destination.instance].map(value => String(value || '').trim()).filter(Boolean).join(' ');
 }
@@ -216,6 +377,90 @@ function printConnectionInstructions(output, result) {
 }
 
 
+// Checkbox selection over the discovered destinations plus, outside BAS, the
+// per-system confirmation prompts (clients, ADT URL, TLS self-heal, login).
+async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin, output = stdout, env = process.env } = {}) {
+  const orderedDestinations = [...destinations].sort((left, right) => {
+    const leftRank = left.disabledReason ? 2 : (left.probe?.available === false ? 1 : 0);
+    const rightRank = right.disabledReason ? 2 : (right.probe?.available === false ? 1 : 0);
+    return leftRank - rightRank || String(left.name).localeCompare(String(right.name));
+  });
+  const choices = orderedDestinations.map(destination => {
+    const probe = destination.probe?.status || 'unknown';
+    const source = destination.source === 'cloud-foundry'
+      ? `CF ${destination.cf.destinationInstanceName}`
+      : (destination.source === 'sap-gui-local' ? `SAP GUI ${destination.systemId || destination.host || ''}`.trim() : 'BAS');
+    const disabled = destination.disabledReason;
+    const state = disabled ? 'disabled' : (probe === 'needs-adt-url' ? probe : (destination.probe?.available === false ? `fail:${probe}` : `ok:${probe}`));
+    return {
+      value: destination,
+      name: `${destination.name} (${source}, client ${destination.client}, ${state})`,
+      ...(disabled ? { disabled } : {}),
+      checked: false
+    };
+  });
+  print(output, '');
+  print(output, formatStatus('Choose the destinations to add. Reachable destinations are shown first.', 'step', output, 'Setup'));
+  print(output, '');
+  print(output, colorText('  Space = select/deselect · a = toggle all · m = add a system manually · Enter = confirm.', 'cyan', output));
+  print(output, colorText('  💡 No system listed, or need an extra one? Press m to skip discovery and add any SAP system manually.', 'magenta', output));
+  print(output, '  Nothing selected removes this add-on’s MCP entries.');
+  print(output, '');
+  const addManually = async () => (await runManualEntryWizard({ env, input, output })).map(destination => ({
+    value: destination,
+    name: `${destination.name} (manual, client ${destination.client})`
+  }));
+  let selected = await checkboxPrompt({
+    message: colorText('🧭 Select destinations', 'cyan', output),
+    choices,
+    required: false,
+    shortcuts: { all: 'a' },
+    actions: { m: addManually }
+  }, { input, output });
+
+  if (!isBas && selected.length) {
+    print(output, '');
+    print(output, formatStatus('SAP GUI landscapes do not contain ADT HTTP(S) endpoints or a complete client catalog. Confirm the SAP client(s), ADT URL, and authentication for each selected system.', 'step', output, 'Local SAP GUI'));
+    print(output, '  Enter multiple clients as comma-separated 3-digit values, for example 100,200. Setup creates one isolated MCP server per system/client pair.');
+    if (windowsSsoSetupAvailable(env)) print(output, '  Windows SSO is experimental and only applies to ADT systems configured for HTTP Integrated Authentication (Negotiate/SPNEGO). It uses the current Windows logon session, including smart-card-backed Windows logon; the toolkit cannot prompt for or accept manual bearer/SAML tokens. Username/password remains the default.');
+    const selectedNameCounts = selected.reduce((counts, destination) => {
+      const key = String(destination.name).toLowerCase();
+      counts.set(key, (counts.get(key) || 0) + 1);
+      return counts;
+    }, new Map());
+    const expanded = [];
+    for (const destination of selected) {
+      // Wizard-configured systems are already complete; only discovered SAP
+      // GUI entries need their clients, ADT URL, and login confirmed here.
+      if (destination.configuredManually) {
+        expanded.push(destination);
+        continue;
+      }
+      const duplicateSystemName = (selectedNameCounts.get(String(destination.name).toLowerCase()) || 0) > 1;
+      const discriminator = duplicateSystemName ? localSystemDiscriminator(destination) : '';
+      const promptLabel = discriminator ? `${destination.name} (${discriminator})` : destination.name;
+      const clients = await promptSapClients({ ...destination, name: promptLabel }, { input, output });
+      const fallback = defaultAdtUrl(destination);
+      const url = await textPrompt({
+        message: `ADT URL for ${promptLabel}`,
+        placeholder: fallback || 'https://host:44300',
+        validate: value => validateAdtUrlCandidate(value || fallback),
+        required: false
+      }, { input, output });
+      destination.url = url || fallback;
+      await maybeConfigureTlsSelfHeal(destination, promptLabel, { input, output });
+      const authMode = await chooseLocalAuthMode({ ...destination, name: promptLabel }, { input, output, env });
+      destination.authentication = localAuthenticationLabel(authMode);
+      destination.authMode = authMode;
+      for (const client of clients) {
+        expanded.push(buildLocalClientDestination(destination, client, authMode, { multipleClients: clients.length > 1, duplicateSystemName }));
+      }
+    }
+    selected = expanded;
+  }
+  return selected;
+}
+
 export async function runSetup({
   env = process.env,
   input = stdin,
@@ -237,6 +482,7 @@ export async function runSetup({
     return { skipped: true, reason: 'non-tty' };
   }
   print(output, '');
+  print(output, colorText('💡 Tip: you can skip auto-discovery and add a system manually — press m in the destination picker, or take the wizard offer when nothing is found.', 'magenta', output));
   if (!isBas) print(output, formatStatus('Looking for local SAP GUI system configuration.', 'progress', output, 'Setup'));
 
   let destinations = [];
@@ -349,160 +595,32 @@ export async function runSetup({
     return result.warnings || [];
   };
   const selectable = destinations.filter(destination => !destination.disabledReason);
-  if (!selectable.length) {
-    print(output, formatStatus(isBas ? 'No selectable BAS or Cloud Foundry destinations were found.' : 'No SAP GUI systems were found on this computer.', 'warning', output, 'Setup'));
-    print(output, isBas ? remediation : 'Install SAP GUI and create SAP Logon entries, or set SAP_AI_DEV_MCP_CONFIG and add systems manually. ADT still needs an HTTP(S) URL; SAP GUI files contain DIAG routing only.');
+  const exitWithoutDestinations = async () => {
     await reportWarnings(warnings);
     const cleanupWarnings = await cleanupNewKeysWithoutConfigChange();
     await reportWarnings(cleanupWarnings);
     return { skipped: true, reason: 'no-destinations', warnings: [...warnings, ...cleanupWarnings] };
-  }
-
-  const orderedDestinations = [...destinations].sort((left, right) => {
-    const leftRank = left.disabledReason ? 2 : (left.probe?.available === false ? 1 : 0);
-    const rightRank = right.disabledReason ? 2 : (right.probe?.available === false ? 1 : 0);
-    return leftRank - rightRank || String(left.name).localeCompare(String(right.name));
-  });
-  const choices = orderedDestinations.map(destination => {
-    const probe = destination.probe?.status || 'unknown';
-    const source = destination.source === 'cloud-foundry'
-      ? `CF ${destination.cf.destinationInstanceName}`
-      : (destination.source === 'sap-gui-local' ? `SAP GUI ${destination.systemId || destination.host || ''}`.trim() : 'BAS');
-    const disabled = destination.disabledReason;
-    const state = disabled ? 'disabled' : (probe === 'needs-adt-url' ? probe : (destination.probe?.available === false ? `fail:${probe}` : `ok:${probe}`));
-    return {
-      value: destination,
-      name: `${destination.name} (${source}, client ${destination.client}, ${state})`,
-      ...(disabled ? { disabled } : {}),
-      checked: false
-    };
-  });
-  print(output, '');
-  print(output, formatStatus('Choose the destinations to add. Reachable destinations are shown first.', 'step', output, 'Setup'));
-  print(output, '');
-  print(output, '  Space = select/deselect · a = toggle all · Enter = confirm.');
-  print(output, '  Nothing selected removes this add-on’s MCP entries.');
-  print(output, '');
-  let selected = await checkboxPrompt({
-    message: colorText('🧭 Select destinations', 'cyan', output),
-    choices,
-    required: false,
-    shortcuts: { all: 'a' }
-  }, { input, output });
-
-  if (!isBas && selected.length) {
+  };
+  let selected;
+  if (!selectable.length) {
+    // Nothing was detected — no BAS/CF destinations, or no SAP GUI entries.
+    // Offer the manual MCP entry wizard before giving up.
+    print(output, formatStatus(isBas ? 'No selectable BAS or Cloud Foundry destinations were found.' : 'No SAP GUI systems were found on this computer.', 'warning', output, 'Setup'));
+    print(output, isBas ? remediation : 'Install SAP GUI and create SAP Logon entries, or configure your system manually below. ADT still needs an HTTP(S) URL; SAP GUI files contain DIAG routing only.');
     print(output, '');
-    print(output, formatStatus('SAP GUI landscapes do not contain ADT HTTP(S) endpoints or a complete client catalog. Confirm the SAP client(s), ADT URL, and authentication for each selected system.', 'step', output, 'Local SAP GUI'));
-    print(output, '  Enter multiple clients as comma-separated 3-digit values, for example 100,200. Setup creates one isolated MCP server per system/client pair.');
-    if (windowsSsoSetupAvailable(env)) print(output, '  Windows SSO is experimental and only applies to ADT systems configured for HTTP Integrated Authentication (Negotiate/SPNEGO). It uses the current Windows logon session, including smart-card-backed Windows logon; the toolkit cannot prompt for or accept manual bearer/SAML tokens. Username/password remains the default.');
-    const selectedNameCounts = selected.reduce((counts, destination) => {
-      const key = String(destination.name).toLowerCase();
-      counts.set(key, (counts.get(key) || 0) + 1);
-      return counts;
-    }, new Map());
-    const expanded = [];
-    for (const destination of selected) {
-      const duplicateSystemName = (selectedNameCounts.get(String(destination.name).toLowerCase()) || 0) > 1;
-      const discriminator = duplicateSystemName ? localSystemDiscriminator(destination) : '';
-      const promptLabel = discriminator ? `${destination.name} (${discriminator})` : destination.name;
-      const clients = await promptSapClients({ ...destination, name: promptLabel }, { input, output });
-      const fallback = defaultAdtUrl(destination);
-      const url = await textPrompt({
-        message: `ADT URL for ${promptLabel}`,
-        placeholder: fallback || 'https://host:44300',
-        validate: value => {
-          const candidate = value || fallback;
-          if (!candidate) return 'Enter an ADT base URL, for example https://host:44300.';
-          try {
-            const parsed = new URL(candidate);
-            if (!['http:', 'https:'].includes(parsed.protocol)) return 'Use an http:// or https:// URL.';
-            if (parsed.username || parsed.password) return 'Do not embed credentials in the ADT URL; use the login prompts.';
-            if (parsed.search || parsed.hash) return 'Enter an ADT base URL without a query or fragment.';
-            return true;
-          }
-          catch { return 'Enter a valid URL.'; }
-        },
-        required: false
-      }, { input, output });
-      destination.url = url || fallback;
-      const parsedAdtUrl = new URL(destination.url);
-      if (parsedAdtUrl.protocol === 'https:' && isIP(parsedAdtUrl.hostname)) {
-        print(output, formatStatus('The ADT URL uses an IP address. Setup will inspect the SAP HTTPS certificate and can enable TLS self-healing automatically; certificate validation remains enabled.', 'warning', output, 'TLS self-heal'));
-        let discoveredNames = [];
-        try { discoveredNames = await discoverCertificateDnsNames(destination.url); }
-        catch { discoveredNames = []; }
-        if (discoveredNames.length) {
-          const preview = discoveredNames.slice(0, 5).join(', ');
-          const answer = await textPrompt({
-            message: `Use discovered certificate DNS name${discoveredNames.length === 1 ? '' : 's'} for ${promptLabel}: ${preview}${discoveredNames.length > 5 ? ', ...' : ''}? (y/Enter=yes, n=no)`,
-            placeholder: 'y',
-            required: false,
-            validate: value => /^(?:|y|yes|n|no)$/i.test(String(value || '').trim()) || 'Enter y or n.'
-          }, { input, output });
-          if (!/^n(?:o)?$/i.test(String(answer || '').trim())) {
-            destination.tlsServerNames = discoveredNames;
-            destination.tlsServerName = discoveredNames[0];
-          }
-        } else {
-          print(output, formatStatus('No DNS subjectAltName entries could be read from the SAP HTTPS certificate. TLS self-healing was not configured automatically.', 'warning', output, 'TLS self-heal'));
-        }
-      }
-      const authMode = await chooseLocalAuthMode({ ...destination, name: promptLabel }, { input, output, env });
-      destination.authentication = ['windows-sso', 'windows-credential-ui', 'windows-sso-basic-fallback'].includes(authMode) ? 'WindowsSSO' : 'Basic';
-      destination.authMode = authMode;
-      for (const client of clients) {
-        const name = localClientDestinationName(destination, client, { multipleClients: clients.length > 1, duplicateSystemName });
-        const localDestination = { ...destination, name, serverName: name, client };
-        const userInputId = `sap-ai-dev-${localDestination.serverName || localDestination.name}-user`.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
-        const passwordInputId = `sap-ai-dev-${localDestination.serverName || localDestination.name}-password`.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
-        const credentialInputs = [
-          { id: userInputId, type: 'promptString', description: `SAP user for ${localDestination.name}` },
-          { id: passwordInputId, type: 'promptString', description: `SAP password for ${localDestination.name}`, password: true }
-        ];
-        if (authMode === 'windows-sso') {
-          localDestination.childEnv = { SAP_AUTH_MODE: 'windows-sso' };
-          localDestination.inputs = [];
-        } else if (authMode === 'windows-credential-ui') {
-          localDestination.childEnv = {
-            SAP_AUTH_MODE: 'windows-sso',
-            SAP_AI_DEV_TOOLKIT_WINDOWS_CREDENTIAL_UI: 'true'
-          };
-          localDestination.inputs = [];
-        } else if (authMode === 'windows-sso-basic-fallback') {
-          localDestination.childEnv = {
-            SAP_AUTH_MODE: 'windows-sso',
-            SAP_AUTH_FALLBACK_MODE: 'basic',
-            SAP_USER: `\${input:${userInputId}}`,
-            SAP_PASSWORD: `\${input:${passwordInputId}}`
-          };
-          localDestination.inputs = credentialInputs;
-        } else if (authMode === 'browser-saml') {
-          localDestination.childEnv = {
-            SAP_AUTH_MODE: 'browser-saml',
-            SAP_BROWSER_AUTH: 'true',
-            SAP_SAML_AUTH: 'true'
-          };
-          localDestination.inputs = [];
-        } else if (authMode === 'saml-password') {
-          localDestination.childEnv = {
-            SAP_AUTH_MODE: 'saml-password',
-            SAP_SAML_AUTH: 'true',
-            SAP_SAML_USER: `\${input:${userInputId}}`,
-            SAP_SAML_PASSWORD: `\${input:${passwordInputId}}`
-          };
-          localDestination.inputs = credentialInputs;
-        } else {
-          localDestination.childEnv = {
-            SAP_AUTH_MODE: 'basic',
-            SAP_USER: `\${input:${userInputId}}`,
-            SAP_PASSWORD: `\${input:${passwordInputId}}`
-          };
-          localDestination.inputs = credentialInputs;
-        }
-        expanded.push(localDestination);
-      }
-    }
-    selected = expanded;
+    const choice = await selectPrompt({
+      message: colorText('💡 No systems were detected. Configure an SAP system manually?', 'magenta', output),
+      defaultValue: 'manual',
+      choices: [
+        { name: '✍️  Start manual entry wizard (system name, ADT URL, client, login)', value: 'manual', shortcut: 'm' },
+        { name: 'Exit setup without changes', value: 'exit', shortcut: 'e' }
+      ]
+    }, { input, output });
+    if (choice !== 'manual') return await exitWithoutDestinations();
+    selected = await runManualEntryWizard({ env, input, output });
+    if (!selected.length) return await exitWithoutDestinations();
+  } else {
+    selected = await chooseDiscoveredDestinations(destinations, { isBas, input, output, env });
   }
 
   let sapDevelopmentServers = [];

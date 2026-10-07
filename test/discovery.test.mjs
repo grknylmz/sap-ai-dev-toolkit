@@ -442,3 +442,89 @@ test('redacts credential-bearing diagnostics without exposing payloads', () => {
   const value = redact({ name: 'dev', password: 'secret', authorization: 'Bearer abc', nested: { cookie: 'x', ok: 'visible' } });
   assert.deepEqual(value, { name: 'dev', password: '[redacted]', authorization: '[redacted]', nested: { cookie: '[redacted]', ok: 'visible' } });
 });
+
+test('nested destination properties never overwrite the top-level destination name', async () => {
+  // Regression: BAS wraps Cloud Connector metadata in `properties`; its
+  // `Name` (system name `_SIDCLNTOX`) used to clobber the real destination
+  // name and abort the whole discovery with "Invalid BAS destination name".
+  const destination = normalizeDestination({ name: 'S4H_DEV', type: 'HTTP', properties: { Name: '_SIDCLNTOX', URL: 'https://s4h.example', 'sap-client': '100' } });
+  assert.equal(destination.name, 'S4H_DEV');
+  assert.equal(destination.url, 'http://S4H_DEV.dest');
+  assert.equal(destination.client, '100');
+
+  const probed = [];
+  const destinations = await discoverDestinations({
+    body: [{ name: 'S4H_DEV', properties: { Name: '_SIDCLNTOX' } }],
+    env: {},
+    probeImpl: async url => { probed.push(url); return { status: 200 }; }
+  });
+  assert.deepEqual(probed, ['http://S4H_DEV.dest/sap/bc/adt/discovery']);
+  assert.deepEqual(destinations.map(item => item.name), ['S4H_DEV']);
+});
+
+test('nested properties fill gaps without a top-level name', () => {
+  const destination = normalizeDestination({ type: 'HTTP', properties: { Name: 'S4H_DEV', 'sap-client': '100' } });
+  assert.equal(destination.name, 'S4H_DEV');
+  assert.equal(destination.client, '100');
+});
+
+test('leading-underscore destination names stay probeable end to end', async () => {
+  assert.equal(destinationUrl('_SIDCLNTOX'), 'http://_SIDCLNTOX.dest');
+  const probed = [];
+  const destinations = await discoverDestinations({
+    body: [{ Name: '_SIDCLNTOX' }],
+    env: {},
+    probeImpl: async url => { probed.push(url); return { status: 403 }; }
+  });
+  assert.deepEqual(probed, ['http://_SIDCLNTOX.dest/sap/bc/adt/discovery']);
+  assert.deepEqual(destinations.map(item => [item.name, item.probe.status]), [['_SIDCLNTOX', 'auth-required']]);
+});
+
+test('one malformed destination degrades to an invalid-name probe instead of failing discovery', async () => {
+  const destinations = await discoverDestinations({
+    body: [
+      { Name: 'good-system' },
+      { Name: 'bad name/with.slashes:and@ats' },
+      { Name: '   ' },
+      'garbage-string-entry',
+      null
+    ],
+    env: {},
+    probeImpl: async () => ({ status: 200 })
+  });
+  assert.deepEqual(destinations.map(item => [item.name, item.url, item.probe.status]), [
+    ['bad name/with.slashes:and@ats', null, 'invalid-name'],
+    ['good-system', 'http://good-system.dest', 'available']
+  ]);
+});
+
+test('heals name-keyed destination maps and extended list wrappers', async () => {
+  const fromMap = await discoverDestinations({
+    body: { DESTINATIONS: { S4H_DEV: { properties: { 'sap-client': '100' } }, 'A_SYSTEM': { properties: { 'sap-client': '200' } } } },
+    env: {},
+    skipProbe: true
+  });
+  assert.deepEqual(fromMap.map(item => [item.name, item.client]), [['A_SYSTEM', '200'], ['S4H_DEV', '100']]);
+
+  const fromItems = await discoverDestinations({ body: { items: [{ Name: 'items-system' }] }, env: {}, skipProbe: true });
+  assert.deepEqual(fromItems.map(item => item.name), ['items-system']);
+
+  const fromValue = await discoverDestinations({ body: { value: [{ Name: 'odata-system' }] }, env: {}, skipProbe: true });
+  assert.deepEqual(fromValue.map(item => item.name), ['odata-system']);
+});
+
+test('fetchDestinationList tolerates BOMs and text/plain payloads and diagnoses unparsable bodies', async () => {
+  const bomBody = await fetchDestinationList('https://bas.example', {
+    env: {},
+    fetchImpl: async () => new Response(`\uFEFF${JSON.stringify([{ Name: 'bom-system' }])}`, { status: 200, headers: { 'content-type': 'text/plain' } })
+  });
+  assert.deepEqual(bomBody, [{ Name: 'bom-system' }]);
+
+  await assert.rejects(
+    fetchDestinationList('https://bas.example', {
+      env: {},
+      fetchImpl: async () => new Response('<html>login page</html>', { status: 200, headers: { 'content-type': 'text/html' } })
+    }),
+    /unparsable JSON: <html>login page<\/html>/
+  );
+});

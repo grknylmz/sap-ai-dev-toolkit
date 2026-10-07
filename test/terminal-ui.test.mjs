@@ -193,3 +193,58 @@ test('checkbox prompt redraws cleanly on arrow keys in terminals narrower than t
     assert.match(finished, /Select destinations none sel(ected)?/u);
   }
 }, { timeout: 5000 });
+
+test('checkbox prompt action shortcut suspends the picker and appends pre-selected items', async () => {
+  const output = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+  output.isTTY = true;
+  output.columns = 80;
+  output.rows = 24;
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  let actionRuns = 0;
+  const selection = checkboxPrompt({
+    message: 'Pick destinations',
+    choices: [{ value: 'alpha', name: 'alpha' }],
+    actions: { m: async () => {
+      actionRuns += 1;
+      return [{ value: 'manual-1', name: 'manual one' }];
+    } }
+  }, { input, output });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  // Toggle alpha, run the wizard action, then confirm everything.
+  input.write(' ');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  input.write('m');
+  await new Promise(resolve => setTimeout(resolve, 30));
+  input.write('m');
+  await new Promise(resolve => setTimeout(resolve, 30));
+  input.write('\r');
+  assert.deepEqual(await selection, ['alpha', 'manual-1', 'manual-1']);
+  assert.equal(actionRuns, 2);
+});
+
+test('checkbox prompt action shortcut keeps the picker working when the action is aborted', async () => {
+  const output = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+  output.isTTY = true;
+  output.columns = 80;
+  output.rows = 24;
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const selection = checkboxPrompt({
+    message: 'Pick destinations',
+    choices: [{ value: 'alpha', name: 'alpha' }],
+    actions: { m: async () => {
+      throw new Error('Prompt interrupted');
+    } }
+  }, { input, output });
+  await new Promise(resolve => setTimeout(resolve, 10));
+  input.write('m');
+  await new Promise(resolve => setTimeout(resolve, 30));
+  // The picker still responds after the aborted action; nothing is selected.
+  input.write(' ');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  input.write('\r');
+  assert.deepEqual(await selection, ['alpha']);
+});

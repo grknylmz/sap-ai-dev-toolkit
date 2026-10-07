@@ -28,7 +28,7 @@ function runLauncher(args, env) {
     child.on('exit', (code, signal) => resolve({ code, signal, stdout, stderr }));
   });
 }
-function runLauncherTty(env, input, args = ['--setup']) {
+function runLauncherTty(env, input, args = ['--setup'], wizardAnswer = 'e\r') {
   return new Promise((resolve, reject) => {
     // Quoted paths: the Windows node install lives under "C:\Program Files".
     const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(launcher)} ${args.join(' ')}`;
@@ -36,9 +36,16 @@ function runLauncherTty(env, input, args = ['--setup']) {
     let stdout = '';
     let stderr = '';
     let inputSent = false;
+    let wizardAnswerSent = false;
     const timeout = setTimeout(() => child.kill('SIGKILL'), 15000);
     child.stdout.on('data', chunk => {
       stdout += chunk.toString();
+      if (!wizardAnswerSent && stdout.includes('Configure an SAP system manually?')) {
+        // Discovery found nothing and setup offers the manual entry wizard;
+        // the default answer declines so the legacy skip flow completes.
+        wizardAnswerSent = true;
+        setTimeout(() => child.stdin.write(wizardAnswer), 400);
+      }
       if (!inputSent && stdout.includes('Select destinations')) {
         inputSent = true;
         child.stdin.end(input);
@@ -488,6 +495,40 @@ test('interactive local no-arg launcher starts setup instead of VSP', async () =
     assert.match(logs, /starting local interactive setup/);
     assert.match(logs, /Looking for local SAP GUI system configuration/);
     assert.match(logs, /No SAP GUI systems were found on this computer/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('interactive local launcher starts the manual entry wizard when no SAP GUI systems exist', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-wizard-'));
+  const config = join(directory, 'mcp.json');
+  const env = {
+    ...process.env,
+    ...isolatedWindowsEnv(directory),
+    HOME: directory,
+    APPDATA: join(directory, 'AppData', 'Roaming'),
+    SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config
+  };
+  delete env.H2O_URL;
+  try {
+    const result = await runLauncherTtyScripted(env, [
+      { when: 'Configure an SAP system manually?', input: '\r' },
+      { when: 'System name', input: 'Q7C\r' },
+      { when: 'ADT URL for Q7C', input: 'https://q7c.example:44300\r' },
+      { when: 'SAP client(s) for Q7C', input: '\r' },
+      ...(isWindows ? [{ when: 'Authentication for Q7C', input: '\r' }] : []),
+      { when: 'Add another system?', input: 'n\r' }
+    ], ['--setup']);
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    const current = JSON.parse(await readFile(config, 'utf8'));
+    assert.deepEqual(Object.keys(current.servers), ['q7c']);
+    assert.equal(current.servers.q7c.env.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE, 'sap-gui-local');
+    assert.equal(current.servers.q7c.env.SAP_URL, 'https://q7c.example:44300');
+    assert.equal(current.servers.q7c.env.SAP_CLIENT, '001');
+    assert.equal(current.servers.q7c.env.SAP_AUTH_MODE, 'basic');
+    assert.equal(current.servers.q7c.env.SAP_USER, '${input:sap-ai-dev-q7c-user}');
+    assert.match(`${result.stdout}\n${result.stderr}`, /Added Q7C \(client 001\)/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

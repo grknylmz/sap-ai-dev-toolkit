@@ -213,8 +213,11 @@ export async function selectPrompt({ message, choices, defaultValue } = {}, { in
   });
 }
 
-export async function checkboxPrompt({ message, choices, required = false, shortcuts = { all: 'a' }, validate } = {}, { input = process.stdin, output = process.stdout } = {}) {
-  if (!Array.isArray(choices) || !choices.length) return [];
+export async function checkboxPrompt({ message, choices: initialChoices, required = false, shortcuts = { all: 'a' }, actions = {}, validate } = {}, { input = process.stdin, output = process.stdout } = {}) {
+  if (!Array.isArray(initialChoices) || !initialChoices.length) return [];
+  // Action shortcuts (for example 'm' → manual entry wizard) may append new
+  // choices while the picker is open, so the list itself stays mutable.
+  let choices = initialChoices;
   const selectable = enabledChoices(choices);
   const selected = new Set(choices.flatMap((choice, index) => choice.checked && !choice.disabled ? [index] : []));
   let cursor = firstEnabledIndex(choices);
@@ -261,6 +264,42 @@ export async function checkboxPrompt({ message, choices, required = false, short
   };
 
   return new Promise((resolve, reject) => {
+    const actionShortcuts = new Map(Object.entries(actions).filter(([shortcut, action]) => shortcut && typeof action === 'function'));
+    const actionShortcutFor = (chunk, key = {}) => {
+      if (!actionShortcuts.size) return undefined;
+      const typed = String(chunk ?? '').toLowerCase();
+      if (typed.length === 1 && actionShortcuts.has(typed)) return actionShortcuts.get(typed);
+      if (key.name && actionShortcuts.has(key.name)) return actionShortcuts.get(key.name);
+      return undefined;
+    };
+    // Running an action suspends the picker (listener detached, raw mode off),
+    // lets the action drive its own prompts on the same streams, and appends
+    // the produced items as pre-selected choices before redrawing. An aborted
+    // action (Ctrl+C in a sub-prompt) returns to the picker unchanged instead
+    // of tearing down the whole selection.
+    const runAction = async action => {
+      input.off('keypress', onKeypress);
+      if (typeof input.setRawMode === 'function') input.setRawMode(false);
+      clearRendered();
+      let appended = [];
+      try { appended = await action() || []; }
+      catch { appended = []; }
+      const added = (Array.isArray(appended) ? appended : []).filter(item => item && item.value !== undefined);
+      if (added.length) {
+        for (const item of added) {
+          choices.push({ checked: true, ...item });
+          selected.add(choices.length - 1);
+        }
+        cursor = choices.length - added.length;
+      }
+      if (typeof input.setRawMode === 'function') input.setRawMode(previousRawMode);
+      // Sub-prompts pause the stream on cleanup; resume so keypresses reach
+      // the re-attached picker listener.
+      if (typeof input.resume === 'function') input.resume();
+      input.on('keypress', onKeypress);
+      render();
+    };
+
     const cleanup = () => {
       input.off('keypress', onKeypress);
       if (typeof input.setRawMode === 'function' && previousRawMode !== undefined) input.setRawMode(previousRawMode);
@@ -289,9 +328,12 @@ export async function checkboxPrompt({ message, choices, required = false, short
         if (selected.has(cursor)) selected.delete(cursor);
         else selected.add(cursor);
       } else if (shortcuts?.all && key.name === shortcuts.all) {
-        const allSelected = selectable.every(choice => selected.has(choices.indexOf(choice)));
+        const allSelected = enabledChoices(choices).every(choice => selected.has(choices.indexOf(choice)));
         selected.clear();
-        if (!allSelected) for (const choice of selectable) selected.add(choices.indexOf(choice));
+        if (!allSelected) for (const choice of enabledChoices(choices)) selected.add(choices.indexOf(choice));
+      } else if (actionShortcutFor(_chunk, key)) {
+        void runAction(actionShortcutFor(_chunk, key));
+        return;
       } else if (key.name === 'return' || key.name === 'enter') {
         const values = [...selected].sort((a, b) => a - b).map(index => choices[index].value);
         const validation = typeof validate === 'function' ? validate(values) : true;
