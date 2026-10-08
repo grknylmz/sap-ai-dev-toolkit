@@ -222,7 +222,14 @@ async function rememberAdtUrl(configured, found) {
 // swept only when the configuration never named one.
 async function resolveLocalAdtUrl(name, configured, client) {
   const log = message => logLine(`[sap-ai-dev] ${name}: ${message}`);
-  const detect = target => detectLocalAdtUrl({ client, ...target }).catch(error => ({ url: '', reason: error.message, failed: true }));
+  const detect = async target => {
+    const started = Date.now();
+    // MCP output channels cannot animate, so a long scan reports that it is still running.
+    const heartbeat = setInterval(() => log(`port scan still running on ${new URL(target.url).hostname} (${Math.round((Date.now() - started) / 1000)} s)`), 20_000);
+    try { return await detectLocalAdtUrl({ client, ...target }); }
+    catch (error) { return { url: '', reason: error.message, failed: true }; }
+    finally { clearInterval(heartbeat); }
+  };
   const explicit = hasExplicitPort(configured);
   let verdict = { url: '', reason: '' };
   if (explicit) {

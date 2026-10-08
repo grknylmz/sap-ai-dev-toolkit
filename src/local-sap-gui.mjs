@@ -461,8 +461,10 @@ export function adtVerdict(result, protocol = 'https:') {
 }
 
 // A portless URL means 443, which on-premise ICMs rarely serve; VSP's `detect`
-// probes the conventional ADT ports and reports which one answers.
-export async function detectAdtUrl(binary, { url, client, instance, env = process.env, exhaustive = false, ports = [], timeoutMs = 180_000 } = {}) {
+// probes the conventional ADT ports and reports which one answers. A host that
+// accepts every port makes each probe wait out its HTTP timeouts, so the full
+// sweep gets minutes.
+export async function detectAdtUrl(binary, { url, client, instance, env = process.env, exhaustive = false, ports = [], timeoutMs = exhaustive ? 600_000 : 120_000 } = {}) {
   let configured;
   try { configured = new URL(url); } catch { return { url: '', reason: `${url} is not a valid URL` }; }
   const host = configured.hostname.replace(/^\[(.*)\]$/, '$1');

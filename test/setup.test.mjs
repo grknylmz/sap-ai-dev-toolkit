@@ -480,8 +480,26 @@ test('SSO port detection sweeps every port, then asks until a port answers', asy
     { url: 'https://q7c.example:8422', client: '100', ports: [8422] }
   ]);
   assert.equal(installed[0].url, 'https://q7c.example:8422');
-  assert.match(output.text(), /port scan in progress on every conventional SAP port/);
+  assert.match(output.text(), /Scanning the remaining conventional SAP ports on q7c\.example/);
   assert.match(output.text(), /No ADT answer for Q7C: no port answered on q7c\.example/);
+});
+
+test('long port scans show a short spinner with elapsed time instead of a frozen line', async () => {
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = manualWizardOutput();
+  const pending = runSetup({
+    env: { HOME: '/tmp/manual-sso-port-spinner-test', SAP_AI_DEV_TOOLKIT_ENABLE_WINDOWS_SSO_SETUP: 'true' },
+    input,
+    output,
+    discoverLocalSapGui: async () => [],
+    detectAdtUrl: () => new Promise(resolve => setTimeout(() => resolve({ url: 'https://q7c.example:44310', reason: '' }), 1300)),
+    install: async () => ({ servers: {} })
+  });
+  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example\r', '100\r', '\r', 'n\r']);
+  await pending;
+  assert.match(output.text(), /ADT: Scanning the usual ADT ports on q7c\.example \(1 s\)/);
 });
 
 test('SSO port detection lets the user skip a system that never answers', async () => {

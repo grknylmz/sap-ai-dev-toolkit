@@ -141,30 +141,42 @@ export function adtCandidate(answer, baseUrl) {
 // Cheapest evidence first: named ports get one probe, then the host's usual
 // ports, then the message server's application servers, then every port.
 async function findAdtUrl(destination, label, client, { candidates = [], scan = true, output = stdout, env = process.env, detectAdtUrl } = {}) {
-  const detect = async (message, target) => {
-    print(output, formatStatus(message, 'progress', output, 'ADT'));
-    const stopProgress = startProgress(message, { output, env, label: 'ADT' });
+  const detect = async (line, activity, target) => {
+    print(output, formatStatus(line, 'progress', output, 'ADT'));
+    const started = Date.now();
+    const progress = startProgress(activity, { output, env, label: 'ADT' });
+    // A short, ticking spinner: a long line would truncate the animation away and look frozen.
+    const ticker = setInterval(() => progress.update(`${activity} (${Math.round((Date.now() - started) / 1000)} s)`), 1000);
     try { return await detectAdtUrl({ client, ...target }); }
     catch (error) { return { url: '', reason: error.message }; }
-    finally { stopProgress(); }
+    finally {
+      clearInterval(ticker);
+      progress();
+    }
   };
   let verdict = { url: '', reason: `no port was checked for ${label}` };
   for (const candidate of [...new Set([destination.url, ...candidates].filter(url => url && hasExplicitPort(url)))]) {
-    verdict = await detect(`Checking ADT at ${candidate}`, { url: candidate, ports: [adtPort(candidate)] });
+    verdict = await detect(`Checking ADT at ${candidate}`, `Checking ${candidate}`, { url: candidate, ports: [adtPort(candidate)] });
     if (verdict.url || verdict.unresolved) return verdict;
   }
   if (!scan) return verdict;
   const host = new URL(destination.url).hostname;
-  verdict = await detect(`Port scan in progress on ${host} to find the ADT port for ${label}`, { url: destination.url, ...(destination.instance ? { instance: destination.instance } : {}) });
+  verdict = await detect(`Port scan in progress on ${host} to find the ADT port for ${label}`, `Scanning the usual ADT ports on ${host}`, { url: destination.url, ...(destination.instance ? { instance: destination.instance } : {}) });
   if (verdict.url || verdict.unresolved) return verdict;
   if (destination.messageServer) {
-    print(output, formatStatus(`Asking the message server ${destination.messageServer.host}:${destination.messageServer.httpPort} for the application servers of ${label}`, 'progress', output, 'ADT'));
-    for (const server of (await messageServerAppServers({ ...destination.messageServer, systemId: destination.systemId })).slice(0, 3)) {
-      const found = await detect(`Port scan in progress on application server ${server.host} (instance ${server.instance})`, { url: `${new URL(destination.url).protocol}//${server.host}`, instance: server.instance });
+    const { host: messageHost, httpPort } = destination.messageServer;
+    print(output, formatStatus(`Asking the message server ${messageHost}:${httpPort} for the application servers of ${label}`, 'progress', output, 'ADT'));
+    const servers = (await messageServerAppServers({ ...destination.messageServer, systemId: destination.systemId })).slice(0, 3);
+    print(output, formatStatus(servers.length
+      ? `The message server lists ${servers.map(server => `${server.host} (instance ${server.instance})`).join(', ')}.`
+      : `The message server at ${messageHost}:${httpPort} listed no application servers.`, 'info', output, 'ADT'));
+    for (const server of servers) {
+      const found = await detect(`Port scan in progress on application server ${server.host} (instance ${server.instance})`, `Scanning ${server.host}`, { url: `${new URL(destination.url).protocol}//${server.host}`, instance: server.instance });
       if (found.url) return found;
     }
   }
-  return detect(`No ADT port on the usual ports for ${label} (${verdict.reason}); port scan in progress on every conventional SAP port of ${host} (this can take a minute)`, { url: destination.url, exhaustive: true });
+  print(output, formatStatus(`No ADT port on the usual ports for ${label}: ${verdict.reason}.`, 'info', output, 'ADT'));
+  return detect(`Scanning the remaining conventional SAP ports on ${host} (about 300 ports; this can take a few minutes)`, `Scanning the remaining SAP ports on ${host}`, { url: destination.url, exhaustive: true });
 }
 
 // An SSO sign-in can only start where ADT answers, so for SSO setup does not
