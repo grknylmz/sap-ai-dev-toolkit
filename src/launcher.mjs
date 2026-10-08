@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { discoverDestinations, remediation, slugifyDestination, statusRows } from './bas-discovery.mjs';
-import { discoverSapGuiSystems } from './local-sap-gui.mjs';
+import { detectAdtUrl, discoverSapGuiSystems, hasExplicitPort } from './local-sap-gui.mjs';
 import { binaryTarget, downloadBinary, findBinary } from './binary.mjs';
 import { MCPProxy } from './mcp-proxy.mjs';
 import { installMcpConfig, npxMcpLauncher, repairManagedMcpConfig } from './mcp-config.mjs';
@@ -186,6 +186,10 @@ async function binaryOrError() {
   ].join(' '));
 }
 
+async function detectLocalAdtUrl(target) {
+  return detectAdtUrl(await binaryOrError(), { ...target, env: runtimeEnv });
+}
+
 async function discoverForCommand() {
   const env = { ...runtimeEnv };
   if (env.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'cloud-foundry') env.SAP_AI_DEV_TOOLKIT_DESTINATION = '';
@@ -205,10 +209,19 @@ async function configuredLocalSapGuiDestination(env) {
   // Older entries used windows-sso, browser-saml or saml-password; all of them now mean browser SSO.
   if (!['', 'basic'].includes(String(env.SAP_AUTH_MODE || '').toLowerCase())) {
     const cacheKey = `${systemId || new URL(env.SAP_URL).hostname}-${client}`.toLowerCase().replace(/[^a-z0-9.-]+/g, '-');
+    let url = env.SAP_URL;
+    // SAP GUI landscapes carry no HTTP port, and the SSO browser cannot sign in on a guessed one.
+    if (!hasExplicitPort(url)) {
+      const detected = await detectLocalAdtUrl({ url, client }).catch(() => '');
+      logLine(detected
+        ? `[sap-ai-dev] ${name}: SAP_URL has no port; ADT answers at ${detected}`
+        : `[sap-ai-dev] ${name}: SAP_URL has no port and no ADT port answered on ${new URL(url).hostname}; add the port to SAP_URL or rerun sap-ai-dev --setup`);
+      url = detected || url;
+    }
     return {
       source: 'sap-gui-local',
       name,
-      url: env.SAP_URL,
+      url,
       client,
       systemId,
       authentication: 'SSO',
@@ -280,7 +293,8 @@ async function main() {
   }
   if (setup) {
     const setupOptions = {
-      includeSapDevelopmentToolsPrompt: hasFlag('--tools') || hasFlag('--companion-tools')
+      includeSapDevelopmentToolsPrompt: hasFlag('--tools') || hasFlag('--companion-tools'),
+      detectAdtUrl: detectLocalAdtUrl
     };
     if (hasFlag('--npx')) {
       // Windows has no npx.exe, so generated entries there launch through
@@ -335,7 +349,7 @@ async function main() {
   if (!runtimeEnv.H2O_URL) {
     if (args().length === 0 && process.stdin.isTTY && process.stdout.isTTY) {
       console.error('sap-ai-dev: no BAS environment detected; starting local interactive setup. Use --help for other commands.');
-      await runSetup();
+      await runSetup({ detectAdtUrl: detectLocalAdtUrl });
       return;
     }
     const binary = await binaryOrError();

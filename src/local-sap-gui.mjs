@@ -401,3 +401,27 @@ export function defaultAdtUrl(system) {
   const authority = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
   return /^\d{2}$/.test(instance) ? `https://${authority}:443${instance}` : `https://${authority}`;
 }
+
+// new URL() drops a default port, so `https://host:443` must be read from the text.
+export function hasExplicitPort(url) {
+  return /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*:\d+(?:[/?#]|$)/i.test(String(url || '').trim());
+}
+
+// A portless URL means 443, which on-premise ICMs rarely serve; VSP's `detect`
+// probes the conventional ADT ports and reports which one answers.
+export async function detectAdtUrl(binary, { url, client, env = process.env, timeoutMs = 60_000 } = {}) {
+  let configured;
+  try { configured = new URL(url); } catch { return ''; }
+  const args = ['detect', configured.hostname.replace(/^\[(.*)\]$/, '$1'), '--json', ...(client ? ['--client', String(client)] : [])];
+  const [command, ...prefixArgs] = /\.(?:mjs|cjs|js)$/i.test(binary)
+    ? [process.execPath, binary]
+    : (/\.(?:cmd|bat)$/i.test(binary) && platform() === 'win32' ? ['cmd', '/c', binary] : [binary]);
+  try {
+    const { stdout } = await execFileAsync(command, [...prefixArgs, ...args], { env, windowsHide: true, timeout: timeoutMs, maxBuffer: 1024 * 1024 });
+    const adt = (JSON.parse(stdout)?.findings || []).filter(finding => finding?.kind === 'adt' && /^https?:\/\//i.test(String(finding.url || '')));
+    // The SSO session cookie is the whole credential; never trade https for http.
+    return (adt.find(finding => finding.secure) || (configured.protocol === 'http:' ? adt[0] : undefined))?.url || '';
+  } catch {
+    return '';
+  }
+}

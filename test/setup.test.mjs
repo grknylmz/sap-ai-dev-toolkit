@@ -204,6 +204,22 @@ test('reconciles generated entries while preserving unrelated MCP config', async
     await rm(directory, { recursive: true, force: true });
   }
 });
+test('setup run through npx pins the npx launcher instead of the disposable npx cache path', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-npx-cache-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // npx puts its cache bin dir, holding this package's own sap-ai-dev, first on PATH.
+  const npxBin = join(directory, '_npx', '0123456789abcdef', 'node_modules', '.bin');
+  await mkdir(npxBin, { recursive: true });
+  await writeFile(join(npxBin, isWindows ? 'sap-ai-dev.cmd' : 'sap-ai-dev'), '', { mode: 0o755 });
+  const installed = await installMcpConfig(destinations.slice(0, 1), { env: { H2O_URL: 'http://new-h2o', PATH: npxBin }, path: join(directory, 'mcp.json') });
+  const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const npxLauncher = npxMcpLauncher();
+  const entry = installed.servers['alpha-system'];
+  assert.deepEqual([entry.command, entry.args], [
+    npxLauncher.command,
+    [...npxLauncher.prefixArgs, '--yes', '--ignore-scripts', `--package=sap-ai-dev-toolkit@${version}`, 'sap-ai-dev']
+  ]);
+});
 test('does not overwrite an unrelated server with the destination name', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-config-collision-'));
   const path = join(directory, 'mcp.json');
@@ -271,12 +287,13 @@ await runSetup({
       FORCE_COLOR: '1'
     };
     delete env.NO_COLOR;
-    const result = await runSetupVisibilityInPty(fixture, env, '\r');
+    // Confirming an empty destination selection takes a second Enter.
+    const result = await runSetupVisibilityInPty(fixture, env, '\r\r');
     const logs = `${result.stdout}\n${result.stderr}`;
     const visible = stripVTControlCharacters(logs);
     assert.equal(result.code, 0, logs);
     assert.equal(result.selectionSent, true, logs);
-    assert.match(visible, /[❯>]\s*✗ S4H \(BAS, client 100, ok:available\)/u, visible);
+    assert.match(visible, /[❯>]\s*\[ \] S4H \(BAS, client 100, ok:available\)/u, visible);
     assert.match(visible, /Configured 0 MCP servers/u, visible);
     assert.doesNotMatch(logs, /[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏]/u, logs);
     assert.doesNotMatch(logs, /⏳/u, logs);
@@ -407,6 +424,32 @@ test('manual entry wizard validates a missing ADT URL and repeats the prompt', a
   assert.match(output.text(), /Enter an ADT base URL/);
 });
 
+test('manual SSO entry without a port takes the ADT URL that port detection found', async () => {
+  for (const detected of ['https://q7c.example:44310', '']) {
+    const input = new PassThrough();
+    input.isTTY = true;
+    input.setRawMode = () => {};
+    const output = manualWizardOutput();
+    const installed = [];
+    const probes = [];
+    const pending = runSetup({
+      env: { HOME: '/tmp/manual-sso-port-test', SAP_AI_DEV_TOOLKIT_ENABLE_WINDOWS_SSO_SETUP: 'true' },
+      input,
+      output,
+      discoverLocalSapGui: async () => [],
+      detectAdtUrl: async target => { probes.push(target); return detected; },
+      install: async selected => { installed.push(...selected); return { servers: {} }; }
+    });
+    // Enter at the authentication prompt keeps the SSO default.
+    await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example\r', '100\r', '\r', 'n\r']);
+    await pending;
+    assert.deepEqual(probes, [{ url: 'https://q7c.example', client: '100' }]);
+    assert.equal(installed[0].childEnv.SAP_AUTH_MODE, 'sso');
+    assert.equal(installed[0].url, detected || 'https://q7c.example');
+    assert.match(output.text(), detected ? /ADT answers at https:\/\/q7c\.example:44310/ : /No ADT port answered for Q7C/);
+  }
+});
+
 test('non-TTY setup skips without writing config', async () => {
   const input = new PassThrough();
   input.isTTY = false;
@@ -467,7 +510,7 @@ test('global postinstall completes BAS selection before default Copilot asset in
     await rm(directory, { recursive: true, force: true });
   });
 
-  const declined = await runPostinstallInPty(env, '\r', 'aa\r');
+  const declined = await runPostinstallInPty(env, '\r\r', 'aa\r');
   assert.equal(declined.code, 0, `${declined.stdout}\n${declined.stderr}`);
   assert.equal(declined.selectionSent, true, declined.stdout);
   assert.equal(declined.assetsAnswerSent, true, declined.stdout);

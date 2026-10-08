@@ -450,10 +450,43 @@ test('runtime starts a configured local SAP GUI SSO destination with VSP browser
     const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
     const init = entries.find(entry => entry.event === 'initialize');
     assert.equal(init.argv[init.argv.indexOf('--url') + 1], 'https://abap.example.com:44300');
+    assert.equal(entries.some(entry => entry.event === 'detect'), false);
     assert.equal(init.argv.includes('--proxy-auth'), false);
     assert.equal(init.env.sso, 'true');
     assert.equal(init.env.ssoSystem, 's4h-100');
     assert.equal(JSON.stringify(init).includes('must-not-pass'), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('runtime detects the ADT port for an SSO destination whose SAP_URL has none', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-sso-port-'));
+  const log = join(directory, 'children.log');
+  try {
+    const result = await runLauncher(['--doctor', '--json'], {
+      ...process.env,
+      SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
+      SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
+      SAP_AI_DEV_TOOLKIT_DESTINATION: 'Portless SSO',
+      SAP_URL: 'https://abap.example.com',
+      SAP_CLIENT: '100',
+      SAP_SYSTEM_ID: 'S4H',
+      SAP_AUTH_MODE: 'sso',
+      H2O_URL: '',
+      FAKE_LOG: log,
+      FAKE_DETECT_JSON: JSON.stringify({ host: 'abap.example.com', findings: [
+        { port: 8000, url: 'http://abap.example.com:8000', kind: 'adt', status: 401, secure: false },
+        { port: 44310, url: 'https://abap.example.com:44310', kind: 'adt', status: 302, secure: true }
+      ] })
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
+    assert.deepEqual(entries.find(entry => entry.event === 'detect').argv, ['detect', 'abap.example.com', '--json', '--client', '100']);
+    const init = entries.find(entry => entry.event === 'initialize');
+    assert.equal(init.argv[init.argv.indexOf('--url') + 1], 'https://abap.example.com:44310');
+    assert.equal(init.env.ssoSystem, 's4h-100');
+    assert.match(result.stderr, /SAP_URL has no port; ADT answers at https:\/\/abap\.example\.com:44310/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -481,6 +514,8 @@ test('runtime maps legacy browser-saml and windows-sso entries to VSP browser SS
       assert.equal(result.code, 0, result.stderr);
       const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
       const init = entries.find(entry => entry.event === 'initialize');
+      // Nothing answered the port scan, so the configured URL stays.
+      assert.equal(init.argv[init.argv.indexOf('--url') + 1], 'https://abap.example.com');
       assert.equal(init.env.sso, 'true', legacy.SAP_AUTH_MODE);
       assert.equal(init.env.ssoSystem, 'abap.example.com-100');
       assert.equal(init.env.browserAuth, undefined);
@@ -535,7 +570,8 @@ test('setup subprocess writes one isolated MCP entry per selected destination', 
       npxLauncher.command,
       [...npxLauncher.prefixArgs, '--yes', '--ignore-scripts', `--package=sap-ai-dev-toolkit@${packageJson.version}`, 'sap-ai-dev']
     ]));
-    const second = await runLauncherTty(env, '\r', ['--setup', '--npx']);
+    // An empty selection needs a second Enter before it removes the entries.
+    const second = await runLauncherTty(env, '\r\r', ['--setup', '--npx']);
     assert.equal(second.code, 0, `${second.stdout}\\n${second.stderr}`);
     current = JSON.parse(await readFile(config, 'utf8'));
     generated = Object.keys(current.servers).filter(name => name !== 'unrelated');
@@ -799,6 +835,42 @@ test('local setup can write SSO auth mode without login inputs', async () => {
     assert.equal(current.servers['s4h-100'].env.SAP_PASSWORD, undefined);
     assert.equal(current.servers['s4h-100'].env.SAP_URL, 'https://sso.example.com:44300');
     assert.deepEqual(current.inputs.map(input => input.id), ['keep-me']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('local SSO setup writes the detected ADT port for a load-balanced SAP GUI system', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-sso-port-setup-'));
+  const appData = join(directory, 'AppData', 'Roaming');
+  const sapCommon = join(appData, 'SAP', 'Common');
+  await mkdir(sapCommon, { recursive: true });
+  await writeFile(join(sapCommon, 'SAPUILandscape.xml'), `<?xml version="1.0"?><Landscape><Services><Service type="SAPGUI" name="LB ABAP" server="PUBLIC" msid="ms1" systemid="T4D" client="100" /></Services><Messageservers><Messageserver uuid="ms1" host="t4d.example.com" port="3601" /></Messageservers></Landscape>`);
+  const config = join(directory, 'mcp.json');
+  await writeFile(config, JSON.stringify({ inputs: [], servers: {} }));
+  try {
+    const result = await runLauncherTtyScripted({
+      ...process.env,
+      ...isolatedWindowsEnv(directory),
+      HOME: directory,
+      USERPROFILE: directory,
+      APPDATA: appData,
+      H2O_URL: '',
+      SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
+      SAP_AI_DEV_TOOLKIT_ENABLE_WINDOWS_SSO_SETUP: 'true',
+      SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config,
+      FAKE_DETECT_JSON: JSON.stringify({ host: 't4d.example.com', findings: [{ port: 44310, url: 'https://t4d.example.com:44310', kind: 'adt', status: 302, secure: true }] })
+    }, [
+      { when: 'Select destinations', input: ' \r', end: false },
+      { when: 'SAP client(s) for LB ABAP', input: '\r', end: false },
+      { when: 'ADT URL for LB ABAP', input: '\r', end: false },
+      { when: 'Authentication for LB ABAP', input: '\r' }
+    ], ['--setup', '--npx']);
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /ADT answers at https:\/\/t4d\.example\.com:44310/);
+    const current = JSON.parse(await readFile(config, 'utf8'));
+    assert.equal(current.servers['t4d-100'].env.SAP_AUTH_MODE, 'sso');
+    assert.equal(current.servers['t4d-100'].env.SAP_URL, 'https://t4d.example.com:44310');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

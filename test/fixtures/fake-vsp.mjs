@@ -9,6 +9,10 @@ const destination = url.replace(/^https?:\/\//, '').replace(/\.dest$/, '');
 const logPath = process.env.FAKE_LOG;
 function log(entry) { if (logPath) appendFileSync(logPath, `${JSON.stringify({ destination, ...entry })}\n`); }
 function reply(id, result) { process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`); }
+if (args[0] === 'detect') {
+  log({ event: 'detect', argv: args });
+  process.stdout.write(`${process.env.FAKE_DETECT_JSON || JSON.stringify({ host: args[1], findings: null })}\n`, () => process.exit(0));
+}
 function requestADTThroughProxy(targetUrl, proxyUrl, { method = 'GET', body = '', bypassProxyForLoopback = false } = {}) {
   const target = new URL(targetUrl);
   const proxy = new URL(proxyUrl);

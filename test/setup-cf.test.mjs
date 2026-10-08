@@ -205,7 +205,8 @@ test('imports selected CF destinations, passes managed key references, and remov
   assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
   assert.equal(result.importSent, true, result.stdout);
   assert.equal(result.selectionSent, true, result.stdout);
-  assert.match(result.stdout, /✗/, 'unselected destinations use a red X');
+  assert.match(result.stdout, /\[ \]/, 'unselected destinations show an empty box');
+  assert.doesNotMatch(result.stdout, /✗/, 'unselected destinations must not look like errors');
   assert.match(result.stdout, /✓/, 'selected destinations use a green checkmark');
   assert.doesNotMatch(result.stdout, /override SAP credentials|SAP user|SAP password/);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /SECRET|clientSecret|Password/);

@@ -106,6 +106,8 @@ export async function resolveMcpServerCommand(env = process.env) {
     : ['sap-ai-dev'];
   const searchPath = String(env.PATH || env.Path || '').split(delimiter).filter(Boolean);
   for (const directory of searchPath) {
+    // npx prepends its disposable cache bin dir; entries pointing there go stale or vanish with the cache.
+    if (/[\\/]_npx[\\/][^\\/]+[\\/]node_modules[\\/]\.bin[\\/]?$/.test(directory)) continue;
     for (const executableName of executableNames) {
       const candidate = resolve(directory, executableName);
       try {

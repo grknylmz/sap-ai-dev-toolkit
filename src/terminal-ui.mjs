@@ -213,7 +213,7 @@ export async function selectPrompt({ message, choices, defaultValue } = {}, { in
   });
 }
 
-export async function checkboxPrompt({ message, choices: initialChoices, required = false, shortcuts = { all: 'a' }, actions = {}, validate } = {}, { input = process.stdin, output = process.stdout } = {}) {
+export async function checkboxPrompt({ message, choices: initialChoices, required = false, shortcuts = { all: 'a' }, actions = {}, validate, confirmEmpty = '' } = {}, { input = process.stdin, output = process.stdout } = {}) {
   if (!Array.isArray(initialChoices) || !initialChoices.length) return [];
   // Action shortcuts (for example 'm' → manual entry wizard) may append new
   // choices while the picker is open, so the list itself stays mutable.
@@ -225,6 +225,8 @@ export async function checkboxPrompt({ message, choices: initialChoices, require
   let renderedLines = 0;
   let done = false;
   let previousRawMode;
+  // With confirmEmpty set, Enter on an empty selection shows it and waits for a second Enter.
+  let awaitingEmptyConfirm = false;
 
   const write = text => output.write(text);
   const clearRendered = () => {
@@ -237,6 +239,12 @@ export async function checkboxPrompt({ message, choices: initialChoices, require
     if (cursor >= top + pageSize) top = cursor - pageSize + 1;
     top = clamp(top, 0, Math.max(0, choices.length - pageSize));
   };
+  const footer = error => {
+    if (error) return [[error, 'red']];
+    if (awaitingEmptyConfirm) return [['Nothing is selected yet. Press Space to select the highlighted item (❯).', 'yellow'], [confirmEmpty, 'yellow']];
+    if (!selected.size) return [['Press Space to select the highlighted item (❯), then Enter to confirm.', 'cyan']];
+    return [[`${selected.size} selected. Press Enter to confirm, or Space to change.`, 'green']];
+  };
   const render = (error = '') => {
     const columns = Number.isFinite(output?.columns) ? output.columns : 80;
     const pageSize = checkboxPageSize(output, choices.length);
@@ -247,17 +255,15 @@ export async function checkboxPrompt({ message, choices: initialChoices, require
     for (let index = top; index < end; index += 1) {
       const choice = choices[index];
       const pointer = index === cursor ? '❯' : ' ';
-      const marker = selected.has(index)
-        ? colorText('✓', 'green', output)
-        : colorText('✗', 'red', output);
+      // A red ✗ for "not selected yet" was read as an error, so unselected rows show an empty box.
+      const box = choice.disabled ? '[-]' : (selected.has(index) ? colorText('[✓]', 'green', output) : '[ ]');
       const disabled = choice.disabled ? ` — ${choice.disabled}` : '';
-      const label = `${pointer}${marker} ${choice.name}${disabled}`;
-      lines.push(truncateToColumns(label, columns));
+      lines.push(truncateToColumns(`${pointer} ${box} ${choice.name}${disabled}`, columns));
     }
     if (choices.length > pageSize) {
       lines.push(truncateToColumns(colorText(`  Showing ${top + 1}-${end} of ${choices.length}; use ↑/↓ to scroll.`, 'cyan', output), columns));
     }
-    if (error) lines.push(truncateToColumns(colorText(`  ${error}`, 'red', output), columns));
+    for (const [text, color] of footer(error)) lines.push(truncateToColumns(colorText(`  ${text}`, color, output), columns));
     clearRendered();
     write(`${lines.join('\n')}\n`);
     renderedLines = physicalRows(lines, columns);
@@ -332,6 +338,7 @@ export async function checkboxPrompt({ message, choices: initialChoices, require
         selected.clear();
         if (!allSelected) for (const choice of enabledChoices(choices)) selected.add(choices.indexOf(choice));
       } else if (actionShortcutFor(_chunk, key)) {
+        awaitingEmptyConfirm = false;
         void runAction(actionShortcutFor(_chunk, key));
         return;
       } else if (key.name === 'return' || key.name === 'enter') {
@@ -339,10 +346,15 @@ export async function checkboxPrompt({ message, choices: initialChoices, require
         const validation = typeof validate === 'function' ? validate(values) : true;
         if (validation !== true) return render(String(validation));
         if (required && !values.length) return render('Select at least one item.');
+        if (confirmEmpty && !values.length && !awaitingEmptyConfirm) {
+          awaitingEmptyConfirm = true;
+          return render();
+        }
         return finish(values);
       } else {
         return;
       }
+      awaitingEmptyConfirm = false;
       render();
     };
 

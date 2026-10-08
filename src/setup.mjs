@@ -4,7 +4,7 @@ import { platform } from 'node:os';
 import { isIP } from 'node:net';
 import { checkboxPrompt, colorText, formatStatus, selectPrompt, startProgress, textPrompt } from './terminal-ui.mjs';
 import { discoverDestinations, remediation } from './bas-discovery.mjs';
-import { defaultAdtUrl, discoverSapGuiSystems } from './local-sap-gui.mjs';
+import { defaultAdtUrl, discoverSapGuiSystems, hasExplicitPort } from './local-sap-gui.mjs';
 import { discoverCloudFoundryDestinations, getCloudFoundryTarget, deleteManagedCloudFoundryServiceKeys, findOrphanedCloudFoundryServiceKeys } from './cf-destination.mjs';
 import { SAP_DEVELOPMENT_MCP_SERVERS, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, installMcpConfig, readMcpConfig, resolveMcpConfigPath } from './mcp-config.mjs';
 import { discoverCertificateDnsNames } from './tls-adt-proxy.mjs';
@@ -124,6 +124,23 @@ function localAuthenticationLabel(authMode) {
   return authMode === 'sso' ? 'SSO' : 'Basic';
 }
 
+// The SSO browser signs in on the ADT URL itself, and SAP GUI landscapes never
+// carry the HTTP port, so a portless URL would send it to 443.
+async function detectSsoAdtPort(destination, label, client, { output = stdout, env = process.env, detectAdtUrl } = {}) {
+  if (!detectAdtUrl || hasExplicitPort(destination.url)) return;
+  const stopProgress = startProgress(`Detecting the ADT port for ${label}`, { output, env, label: 'SSO' });
+  let detected = '';
+  try { detected = await detectAdtUrl({ url: destination.url, client }); }
+  catch { detected = ''; }
+  finally { stopProgress(); }
+  if (detected) {
+    destination.url = detected;
+    print(output, formatStatus(`ADT answers at ${detected}; SSO signs in there.`, 'success', output, 'SSO'));
+    return;
+  }
+  print(output, formatStatus(`No ADT port answered for ${label}; SSO keeps ${destination.url}. If the browser cannot reach it, rerun setup and enter the ADT URL with its port, for example ${new URL(destination.url).origin}:44300.`, 'warning', output, 'SSO'));
+}
+
 async function confirmPrompt(message, { input = stdin, output = stdout } = {}) {
   const answer = await textPrompt({
     message,
@@ -181,7 +198,7 @@ async function maybeConfigureTlsSelfHeal(destination, promptLabel, { input = std
 // collects the minimal ADT configuration directly from the user and produces
 // the same local destination shape as the SAP GUI flow, so installation,
 // credential inputs, and TLS handling stay identical.
-async function runManualEntryWizard({ env = process.env, input = stdin, output = stdout } = {}) {
+async function runManualEntryWizard({ env = process.env, input = stdin, output = stdout, detectAdtUrl } = {}) {
   print(output, '');
   print(output, colorText('✍️  Manual system entry — skip discovery, add your SAP system directly', 'magenta', output));
   print(output, colorText('   The ADT URL is the base URL that Eclipse ADT or VS Code ADT tools use, for example https://myhost.example:44300.', 'cyan', output));
@@ -229,6 +246,7 @@ async function runManualEntryWizard({ env = process.env, input = stdin, output =
     await maybeConfigureTlsSelfHeal(destination, name, { input, output });
     const clients = await promptSapClients(destination, { input, output });
     const authMode = await chooseLocalAuthMode(destination, { input, output, env });
+    if (authMode === 'sso') await detectSsoAdtPort(destination, name, clients[0], { output, env, detectAdtUrl });
     destination.authentication = localAuthenticationLabel(authMode);
     destination.authMode = authMode;
     for (const client of clients) {
@@ -346,7 +364,7 @@ function printConnectionInstructions(output, result) {
 
 // Checkbox selection over the discovered destinations plus, outside BAS, the
 // per-system confirmation prompts (clients, ADT URL, TLS self-heal, login).
-async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin, output = stdout, env = process.env } = {}) {
+async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin, output = stdout, env = process.env, detectAdtUrl } = {}) {
   const orderedDestinations = [...destinations].sort((left, right) => {
     const leftRank = left.disabledReason ? 2 : (left.probe?.available === false ? 1 : 0);
     const rightRank = right.disabledReason ? 2 : (right.probe?.available === false ? 1 : 0);
@@ -371,9 +389,8 @@ async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin
   print(output, '');
   print(output, colorText('  Space = select/deselect · a = toggle all · m = add a system manually · Enter = confirm.', 'cyan', output));
   print(output, colorText('  💡 No system listed, or need an extra one? Press m to skip discovery and add any SAP system manually.', 'magenta', output));
-  print(output, '  Nothing selected removes this add-on’s MCP entries.');
   print(output, '');
-  const addManually = async () => (await runManualEntryWizard({ env, input, output })).map(destination => ({
+  const addManually = async () => (await runManualEntryWizard({ env, input, output, detectAdtUrl })).map(destination => ({
     value: destination,
     name: `${destination.name} (manual, client ${destination.client})`
   }));
@@ -382,7 +399,8 @@ async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin
     choices,
     required: false,
     shortcuts: { all: 'a' },
-    actions: { m: addManually }
+    actions: { m: addManually },
+    confirmEmpty: 'Press Enter again to continue with none (removes this add-on’s MCP entries).'
   }, { input, output });
 
   if (!isBas && selected.length) {
@@ -417,6 +435,7 @@ async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin
       destination.url = url || fallback;
       await maybeConfigureTlsSelfHeal(destination, promptLabel, { input, output });
       const authMode = await chooseLocalAuthMode({ ...destination, name: promptLabel }, { input, output, env });
+      if (authMode === 'sso') await detectSsoAdtPort(destination, promptLabel, clients[0], { output, env, detectAdtUrl });
       destination.authentication = localAuthenticationLabel(authMode);
       destination.authMode = authMode;
       for (const client of clients) {
@@ -437,7 +456,8 @@ export async function runSetup({
   discoverLocalSapGui = discoverSapGuiSystems,
   confirmCfImport = confirmCloudFoundryImport,
   install = installMcpConfig,
-  includeSapDevelopmentToolsPrompt = false
+  includeSapDevelopmentToolsPrompt = false,
+  detectAdtUrl
 } = {}) {
   const isBas = Boolean(env.H2O_URL);
   if (!isBas && (!input.isTTY || !output.isTTY)) {
@@ -584,10 +604,10 @@ export async function runSetup({
       ]
     }, { input, output });
     if (choice !== 'manual') return await exitWithoutDestinations();
-    selected = await runManualEntryWizard({ env, input, output });
+    selected = await runManualEntryWizard({ env, input, output, detectAdtUrl });
     if (!selected.length) return await exitWithoutDestinations();
   } else {
-    selected = await chooseDiscoveredDestinations(destinations, { isBas, input, output, env });
+    selected = await chooseDiscoveredDestinations(destinations, { isBas, input, output, env, detectAdtUrl });
   }
 
   let sapDevelopmentServers = [];

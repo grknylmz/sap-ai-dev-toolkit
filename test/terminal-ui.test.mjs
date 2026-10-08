@@ -248,3 +248,51 @@ test('checkbox prompt action shortcut keeps the picker working when the action i
   input.write('\r');
   assert.deepEqual(await selection, ['alpha']);
 });
+
+test('checkbox prompt shows empty boxes, names the next key, and confirms an empty selection twice', async () => {
+  const screen = makeScreen(80, 24);
+  const output = new Writable({
+    write(chunk, encoding, callback) {
+      screen.feed(chunk.toString());
+      callback();
+    }
+  });
+  output.isTTY = true;
+  output.columns = 80;
+  output.rows = 24;
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const selection = checkboxPrompt({
+    message: 'Select destinations',
+    choices: [{ value: 't33', name: 'T33 (SAP GUI, client 800)' }],
+    confirmEmpty: 'Press Enter again to continue with none.'
+  }, { input, output });
+  let settled = false;
+  selection.then(() => { settled = true; });
+  const press = async key => {
+    input.write(key);
+    await new Promise(resolve => setTimeout(resolve, 10));
+  };
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.match(screen.dump(), /❯ \[ \] T33/u);
+  assert.match(screen.dump(), /Press Space to select the highlighted item \(❯\), then Enter to confirm\./u);
+  assert.doesNotMatch(screen.dump(), /✗/u);
+
+  await press('\r');
+  assert.equal(settled, false);
+  assert.match(screen.dump(), /Nothing is selected yet\. Press Space to select the highlighted item/u);
+  assert.match(screen.dump(), /Press Enter again to continue with none\./u);
+
+  await press(' ');
+  assert.match(screen.dump(), /❯ \[✓\] T33/u);
+  assert.match(screen.dump(), /1 selected\. Press Enter to confirm, or Space to change\./u);
+  assert.doesNotMatch(screen.dump(), /Nothing is selected yet/u);
+
+  // Any other key cancels the pending confirmation, so a later Enter warns again.
+  await press(' ');
+  await press('\r');
+  assert.equal(settled, false);
+  await press('\r');
+  assert.deepEqual(await selection, []);
+});

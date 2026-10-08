@@ -3,7 +3,10 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { discoverSapGuiSystems, defaultAdtUrl } from '../src/local-sap-gui.mjs';
+import { fileURLToPath } from 'node:url';
+import { discoverSapGuiSystems, defaultAdtUrl, detectAdtUrl, hasExplicitPort } from '../src/local-sap-gui.mjs';
+
+const fakeVsp = fileURLToPath(new URL('./fixtures/fake-vsp.mjs', import.meta.url));
 
 async function fixture(t, filename, content) {
   const dir = await mkdtemp(join(tmpdir(), 'sap-logon-regression-'));
@@ -55,4 +58,23 @@ test('Java connections can be a regular file rather than a directory', async t =
 test('explicitly disabled SNC/SSO flags are not positive hints', async t => {
   const systems = await fixture(t, 'landscape.xml', '<Service type="SAPGUI" name="Basic" host="dev.example" sncmode="0" sso="false" use_sso="no" />');
   assert.equal(systems[0].ssoHint, false);
+});
+
+test('hasExplicitPort reads the port from the URL text, including default ports', () => {
+  for (const url of ['https://host:443', 'https://host:44300/', 'http://host:8000?x=1', 'https://[::1]:44300']) assert.equal(hasExplicitPort(url), true, url);
+  for (const url of ['https://host', 'https://host/', 'https://[::1]', 'https://user:1@host', '']) assert.equal(hasExplicitPort(url), false, url);
+});
+
+test('detectAdtUrl takes the TLS ADT port from VSP detect and never downgrades https', async () => {
+  const findings = [
+    { port: 8000, url: 'http://sap.example:8000', kind: 'adt', status: 401, secure: false },
+    { port: 44310, url: 'https://sap.example:44310', kind: 'adt', status: 302, secure: true },
+    { port: 443, url: '', kind: 'open', secure: false }
+  ];
+  const env = findings => ({ ...process.env, FAKE_DETECT_JSON: JSON.stringify({ host: 'sap.example', findings }) });
+  assert.equal(await detectAdtUrl(fakeVsp, { url: 'https://sap.example', client: '100', env: env(findings) }), 'https://sap.example:44310');
+  assert.equal(await detectAdtUrl(fakeVsp, { url: 'https://sap.example', env: env(findings.slice(0, 1)) }), '');
+  assert.equal(await detectAdtUrl(fakeVsp, { url: 'http://sap.example', env: env(findings.slice(0, 1)) }), 'http://sap.example:8000');
+  assert.equal(await detectAdtUrl(fakeVsp, { url: 'https://sap.example', env: env(null) }), '');
+  assert.equal(await detectAdtUrl(fakeVsp, { url: 'https://sap.example', env: { ...process.env, FAKE_DETECT_JSON: 'not json' } }), '');
 });
