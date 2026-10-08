@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { isIP } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { discoverDestinations, remediation, slugifyDestination, statusRows } from './bas-discovery.mjs';
-import { detectAdtUrl, discoverSapGuiSystems, hasExplicitPort } from './local-sap-gui.mjs';
-import { binaryTarget, downloadBinary, findBinary } from './binary.mjs';
+import { adtBaseUrl, adtPort, detectAdtUrl, discoverSapGuiSystems, hasExplicitPort, hasPathPrefix } from './local-sap-gui.mjs';
+import { binaryTarget, cacheDirectory, downloadBinary, findBinary } from './binary.mjs';
 import { MCPProxy } from './mcp-proxy.mjs';
 import { installMcpConfig, npxMcpLauncher, repairManagedMcpConfig } from './mcp-config.mjs';
 import { runSetup } from './setup.mjs';
@@ -165,7 +166,14 @@ function probeDiagnostic(destination) {
 
 // npx MCP entries run with --ignore-scripts, so postinstall's verified
 // download fallback never ran; a missing or corrupt bundled binary heals here.
-async function binaryOrError() {
+// Port detection and the server share one resolution, so a failed download is not repeated.
+let binaryResolution;
+function binaryOrError() {
+  binaryResolution ??= resolveBinary();
+  return binaryResolution;
+}
+
+async function resolveBinary() {
   const notes = [];
   const found = await findBinary(pkg, { env: runtimeEnv, log: note => notes.push(note) });
   if (found) return found;
@@ -190,6 +198,68 @@ async function detectLocalAdtUrl(target) {
   return detectAdtUrl(await binaryOrError(), { ...target, env: runtimeEnv });
 }
 
+const adtUrlCachePath = () => join(cacheDirectory(runtimeEnv), 'adt-urls.json');
+
+async function cachedAdtUrls() {
+  try { return JSON.parse(await readFile(adtUrlCachePath(), 'utf8')) || {}; }
+  catch { return {}; }
+}
+
+async function rememberAdtUrl(configured, found) {
+  try {
+    const path = adtUrlCachePath();
+    const urls = { ...await cachedAdtUrls(), [configured.toLowerCase()]: found };
+    await mkdir(dirname(path), { recursive: true });
+    const temporary = `${path}.${process.pid}.tmp`;
+    await writeFile(temporary, `${JSON.stringify(urls, null, 2)}\n`);
+    await rename(temporary, path);
+  } catch {
+    // The cache only saves a later scan.
+  }
+}
+
+// A named port gets one probe, a scan result is remembered, and every port is
+// swept only when the configuration never named one.
+async function resolveLocalAdtUrl(name, configured, client) {
+  const log = message => logLine(`[sap-ai-dev] ${name}: ${message}`);
+  const detect = target => detectLocalAdtUrl({ client, ...target }).catch(error => ({ url: '', reason: error.message, failed: true }));
+  const explicit = hasExplicitPort(configured);
+  let verdict = { url: '', reason: '' };
+  if (explicit) {
+    verdict = await detect({ url: configured, ports: [adtPort(configured)] });
+    if (verdict.url) return { url: verdict.url, verified: true };
+    log(`ADT did not answer at ${configured}: ${verdict.reason}`);
+    if (verdict.unresolved || verdict.failed) return { url: configured, verified: false, reason: verdict.reason };
+  }
+  const remembered = (await cachedAdtUrls())[configured.toLowerCase()];
+  if (remembered) {
+    const recheck = await detect({ url: remembered, ports: [adtPort(remembered)] });
+    if (recheck.url) {
+      log(`ADT answers at ${recheck.url} (found by an earlier port scan)`);
+      return { url: recheck.url, verified: true };
+    }
+  }
+  const host = new URL(configured).hostname;
+  log(`port scan in progress on ${host} (usual ADT ports)`);
+  verdict = await detect({ url: configured });
+  if (!verdict.url && !explicit && !verdict.unresolved && !verdict.failed) {
+    log(`no ADT port on the usual ports (${verdict.reason}); port scan in progress on every conventional SAP port of ${host} (can take a minute)`);
+    verdict = await detect({ url: configured, exhaustive: true });
+  }
+  if (verdict.url) {
+    log(`port scan finished; ADT answers at ${verdict.url}`);
+    await rememberAdtUrl(configured, verdict.url);
+    return { url: verdict.url, verified: true };
+  }
+  log(`port scan finished; ${verdict.reason}; keeping ${configured}. Add the ADT port to SAP_URL or rerun sap-ai-dev --setup.`);
+  return { url: configured, verified: false, reason: verdict.reason };
+}
+
+function noProxyEnv(env, host) {
+  const noProxy = [env.NO_PROXY || env.no_proxy, host].filter(Boolean).join(',');
+  return { NO_PROXY: noProxy, no_proxy: noProxy };
+}
+
 async function discoverForCommand() {
   const env = { ...runtimeEnv };
   if (env.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'cloud-foundry') env.SAP_AI_DEV_TOOLKIT_DESTINATION = '';
@@ -206,56 +276,54 @@ async function configuredLocalSapGuiDestination(env) {
   if (!env.SAP_URL) throw new Error('SAP_URL is required for local SAP GUI MCP entries. Rerun sap-ai-dev --setup and enter the ADT URL.');
   const client = env.SAP_CLIENT || '001';
   const systemId = env.SAP_SYSTEM_ID || '';
+  const configuredUrl = adtBaseUrl(env.SAP_URL);
   // Older entries used windows-sso, browser-saml or saml-password; all of them now mean browser SSO.
-  if (!['', 'basic'].includes(String(env.SAP_AUTH_MODE || '').toLowerCase())) {
-    const cacheKey = `${systemId || new URL(env.SAP_URL).hostname}-${client}`.toLowerCase().replace(/[^a-z0-9.-]+/g, '-');
-    let url = env.SAP_URL;
-    // SAP GUI landscapes carry no HTTP port, and the SSO browser cannot sign in on a guessed one.
-    if (!hasExplicitPort(url)) {
-      const host = new URL(url).hostname;
-      logLine(`[sap-ai-dev] ${name}: SAP_URL has no port; port scan in progress on ${host} (usual ADT ports)`);
-      let detected = await detectLocalAdtUrl({ url, client }).catch(() => '');
-      if (!detected) {
-        logLine(`[sap-ai-dev] ${name}: no ADT port on the usual ports; port scan in progress on every conventional SAP port of ${host} (can take a minute)`);
-        detected = await detectLocalAdtUrl({ url, client, exhaustive: true }).catch(() => '');
-      }
-      logLine(detected
-        ? `[sap-ai-dev] ${name}: port scan finished; ADT answers at ${detected}`
-        : `[sap-ai-dev] ${name}: port scan finished; no ADT port answered on ${host}; add the port to SAP_URL or rerun sap-ai-dev --setup`);
-      url = detected || url;
-    }
+  const sso = !['', 'basic'].includes(String(env.SAP_AUTH_MODE || '').toLowerCase());
+  const tlsServerName = String(env.SAP_TLS_SERVER_NAME || env.SAP_AI_DEV_TOOLKIT_TLS_SERVER_NAME || '').trim();
+  const tlsServerNames = String(env.SAP_TLS_SERVER_NAMES || env.SAP_AI_DEV_TOOLKIT_TLS_SERVER_NAMES || tlsServerName).split(',').map(value => value.trim()).filter(Boolean);
+  const tlsCaFile = String(env.SAP_TLS_CA_FILE || env.SAP_AI_DEV_TOOLKIT_TLS_CA_FILE || '').trim();
+  // SNI-routed Basic entries pin port and certificate names on purpose; SSO ignores those names.
+  const adt = (sso || !tlsServerNames.length) && !hasPathPrefix(configuredUrl)
+    ? await resolveLocalAdtUrl(name, configuredUrl, client)
+    : { url: configuredUrl };
+  // The scan reached ADT directly, so an env proxy the browser's PAC would bypass must not reroute VSP.
+  const direct = adt.verified ? noProxyEnv(env, new URL(adt.url).hostname) : {};
+  const probe = adt.verified === undefined
+    ? { status: 'configured', available: true }
+    : (adt.verified ? { status: `adt-verified at ${adt.url}`, available: true } : { status: `adt-unverified: ${adt.reason}`, available: false });
+  if (sso) {
+    const cacheKey = `${systemId || new URL(configuredUrl).hostname}-${client}`.toLowerCase().replace(/[^a-z0-9.-]+/g, '-');
+    if (isIP(new URL(adt.url).hostname.replace(/^\[(.*)\]$/, '$1'))) logLine(`[sap-ai-dev] ${name}: SSO is configured for an IP address; Kerberos and the browser certificate check need the DNS host name`);
     return {
       source: 'sap-gui-local',
       name,
-      url,
+      url: adt.url,
       client,
       systemId,
       authentication: 'SSO',
       // SAP_SAML_AUTH survives sanitizeChildEnv and would make VSP demand SAML credentials.
-      childEnv: { SAP_SSO: 'true', SAP_SSO_SYSTEM: cacheKey, SAP_SAML_AUTH: '' },
-      probe: { status: 'configured', available: true }
+      childEnv: { SAP_SSO: 'true', SAP_SSO_SYSTEM: cacheKey, SAP_SAML_AUTH: '', ...direct },
+      probe
     };
   }
-  const tlsServerName = String(env.SAP_TLS_SERVER_NAME || env.SAP_AI_DEV_TOOLKIT_TLS_SERVER_NAME || '').trim();
-  const tlsServerNames = String(env.SAP_TLS_SERVER_NAMES || env.SAP_AI_DEV_TOOLKIT_TLS_SERVER_NAMES || tlsServerName).split(',').map(value => value.trim()).filter(Boolean);
-  const tlsCaFile = String(env.SAP_TLS_CA_FILE || env.SAP_AI_DEV_TOOLKIT_TLS_CA_FILE || '').trim();
   const tlsRoute = tlsServerNames.length
-    ? await createTlsServerNameAdtProxy({ destinationUrl: env.SAP_URL, tlsServerNames, caFile: tlsCaFile || undefined })
+    ? await createTlsServerNameAdtProxy({ destinationUrl: configuredUrl, tlsServerNames, caFile: tlsCaFile || undefined })
     : null;
   return {
     source: 'sap-gui-local',
     name,
-    url: tlsRoute?.url || env.SAP_URL,
-    backendUrl: tlsRoute ? env.SAP_URL : undefined,
+    url: tlsRoute?.url || adt.url,
+    backendUrl: tlsRoute ? configuredUrl : undefined,
     client,
     systemId,
     authentication: 'Basic',
     childEnv: {
       SAP_USER: env.SAP_USER || env.SAP_USERNAME || '',
-      SAP_PASSWORD: env.SAP_PASSWORD || env.SAP_PASS || ''
+      SAP_PASSWORD: env.SAP_PASSWORD || env.SAP_PASS || '',
+      ...direct
     },
     close: tlsRoute?.close,
-    probe: { status: tlsRoute ? 'configured-tls-server-name' : 'configured', available: true }
+    probe: tlsRoute ? { status: 'configured-tls-server-name', available: true } : probe
   };
 }
 

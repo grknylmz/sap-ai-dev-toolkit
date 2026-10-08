@@ -4,7 +4,7 @@ import { platform } from 'node:os';
 import { isIP } from 'node:net';
 import { checkboxPrompt, colorText, formatStatus, selectPrompt, startProgress, textPrompt } from './terminal-ui.mjs';
 import { discoverDestinations, remediation } from './bas-discovery.mjs';
-import { defaultAdtUrl, discoverSapGuiSystems, hasExplicitPort } from './local-sap-gui.mjs';
+import { adtBaseUrl, adtPort, defaultAdtUrl, discoverSapGuiSystems, hasExplicitPort, hasPathPrefix, messageServerAppServers } from './local-sap-gui.mjs';
 import { discoverCloudFoundryDestinations, getCloudFoundryTarget, deleteManagedCloudFoundryServiceKeys, findOrphanedCloudFoundryServiceKeys } from './cf-destination.mjs';
 import { SAP_DEVELOPMENT_MCP_SERVERS, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, installMcpConfig, readMcpConfig, resolveMcpConfigPath } from './mcp-config.mjs';
 import { discoverCertificateDnsNames } from './tls-adt-proxy.mjs';
@@ -124,41 +124,96 @@ function localAuthenticationLabel(authMode) {
   return authMode === 'sso' ? 'SSO' : 'Basic';
 }
 
-// The SSO browser signs in on the ADT URL itself, and SAP GUI landscapes never
-// carry the HTTP port, so a portless URL would send it to 443.
-async function detectSsoAdtPort(destination, label, client, { input = stdin, output = stdout, env = process.env, detectAdtUrl } = {}) {
-  if (!detectAdtUrl || hasExplicitPort(destination.url)) return;
-  const scan = async (message, options) => {
-    const stopProgress = startProgress(message, { output, env, label: 'SSO' });
-    try { return await detectAdtUrl({ url: destination.url, client, ...options }); }
-    catch { return ''; }
+// Ports typed at the prompt are range-checked before anything parses them as a URL.
+export function adtCandidate(answer, baseUrl) {
+  const value = String(answer || '').trim();
+  if (/^\d+$/.test(value)) {
+    const port = Number(value);
+    if (port < 1 || port > 65535) throw new Error('Enter a port between 1 and 65535, or a full URL.');
+    const base = new URL(baseUrl);
+    return `${base.protocol}//${base.hostname}:${port}`;
+  }
+  const validation = validateAdtUrlCandidate(value);
+  if (validation !== true) throw new Error(validation);
+  return adtBaseUrl(value);
+}
+
+// Cheapest evidence first: named ports get one probe, then the host's usual
+// ports, then the message server's application servers, then every port.
+async function findAdtUrl(destination, label, client, { candidates = [], scan = true, output = stdout, env = process.env, detectAdtUrl } = {}) {
+  const detect = async (message, target) => {
+    print(output, formatStatus(message, 'progress', output, 'ADT'));
+    const stopProgress = startProgress(message, { output, env, label: 'ADT' });
+    try { return await detectAdtUrl({ client, ...target }); }
+    catch (error) { return { url: '', reason: error.message }; }
     finally { stopProgress(); }
   };
-  print(output, formatStatus(`Port scan in progress on ${new URL(destination.url).hostname} to find the ADT port for ${label}.`, 'progress', output, 'SSO'));
-  let detected = await scan(`Detecting the ADT port for ${label}`, {});
-  if (!detected) {
-    print(output, formatStatus(`No ADT port answered on the usual ports for ${label}; port scan in progress on every conventional SAP port (this can take a minute).`, 'progress', output, 'SSO'));
-    detected = await scan(`Sweeping SAP HTTP(S) ports for ${label}`, { exhaustive: true });
+  let verdict = { url: '', reason: `no port was checked for ${label}` };
+  for (const candidate of [...new Set([destination.url, ...candidates].filter(url => url && hasExplicitPort(url)))]) {
+    verdict = await detect(`Checking ADT at ${candidate}`, { url: candidate, ports: [adtPort(candidate)] });
+    if (verdict.url || verdict.unresolved) return verdict;
   }
-  // Nothing on the machine knows the port, so the person who does is asked until one answers.
-  while (!detected) {
-    const host = new URL(destination.url).hostname;
-    print(output, formatStatus(`No ADT port answered on ${host}. Ask basis or check SMICM (Goto > Services) for the HTTPS port.`, 'warning', output, 'SSO'));
-    const answer = String(await textPrompt({
-      message: `ADT port or URL for ${label}`,
-      placeholder: '44300 or https://host:44300',
-      validate: value => /^\d{2,5}$/.test(String(value).trim()) || validateAdtUrlCandidate(String(value).trim())
-    }, { input, output })).trim();
-    const candidate = /^\d+$/.test(answer) ? `${new URL(destination.url).origin}:${answer}` : answer;
-    const port = Number(new URL(candidate).port || (candidate.startsWith('http:') ? 80 : 443));
-    detected = await detectAdtUrl({ url: candidate, client, ports: [port] }).catch(() => '');
-    if (!detected && await confirmPrompt(`${candidate} did not answer as ADT. Use it anyway? (y/Enter=yes, n=try another)`, { input, output })) {
-      destination.url = candidate;
-      return;
+  if (!scan) return verdict;
+  const host = new URL(destination.url).hostname;
+  verdict = await detect(`Port scan in progress on ${host} to find the ADT port for ${label}`, { url: destination.url, ...(destination.instance ? { instance: destination.instance } : {}) });
+  if (verdict.url || verdict.unresolved) return verdict;
+  if (destination.messageServer) {
+    print(output, formatStatus(`Asking the message server ${destination.messageServer.host}:${destination.messageServer.httpPort} for the application servers of ${label}`, 'progress', output, 'ADT'));
+    for (const server of (await messageServerAppServers({ ...destination.messageServer, systemId: destination.systemId })).slice(0, 3)) {
+      const found = await detect(`Port scan in progress on application server ${server.host} (instance ${server.instance})`, { url: `${new URL(destination.url).protocol}//${server.host}`, instance: server.instance });
+      if (found.url) return found;
     }
   }
-  destination.url = detected;
-  print(output, formatStatus(`ADT answers at ${detected}; SSO signs in there.`, 'success', output, 'SSO'));
+  return detect(`No ADT port on the usual ports for ${label} (${verdict.reason}); port scan in progress on every conventional SAP port of ${host} (this can take a minute)`, { url: destination.url, exhaustive: true });
+}
+
+// An SSO sign-in can only start where ADT answers, so for SSO setup does not
+// end on an unverified URL unless the user chooses to.
+async function settleAdtUrl(destination, label, client, { insist = false, candidates = [], input = stdin, output = stdout, env = process.env, detectAdtUrl } = {}) {
+  if (!detectAdtUrl) return 'unchecked';
+  if (hasPathPrefix(destination.url)) {
+    print(output, formatStatus(`${destination.url} has a gateway path, so setup uses it as entered without a port scan.`, 'info', output, 'ADT'));
+    return 'unchecked';
+  }
+  const options = { candidates, output, env, detectAdtUrl };
+  let verdict = await findAdtUrl(destination, label, client, options);
+  while (!verdict.url) {
+    print(output, formatStatus(`No ADT answer for ${label}: ${verdict.reason}.`, 'warning', output, 'ADT'));
+    if (!insist) return 'unverified';
+    const choice = await selectPrompt({
+      message: `ADT for ${label}`,
+      defaultValue: 'enter',
+      choices: [
+        { name: 'Enter the ADT port or URL (basis finds it in SMICM > Goto > Services)', value: 'enter', shortcut: 'e' },
+        { name: 'Scan again, for example after connecting the VPN', value: 'retry', shortcut: 'r' },
+        { name: `Keep ${destination.url} without an ADT answer`, value: 'keep', shortcut: 'k' },
+        { name: 'Skip this system', value: 'skip', shortcut: 's' }
+      ]
+    }, { input, output });
+    if (choice === 'keep') return 'unverified';
+    if (choice === 'skip') return 'skipped';
+    if (choice === 'enter') {
+      const answer = await textPrompt({
+        message: `ADT port or URL for ${label}`,
+        placeholder: '44300 or https://host:44300',
+        validate: value => {
+          try { adtCandidate(value, destination.url); return true; }
+          catch (error) { return error.message; }
+        }
+      }, { input, output });
+      destination.url = adtCandidate(answer, destination.url);
+    }
+    const retry = choice === 'retry';
+    verdict = await findAdtUrl(destination, label, client, { ...options, candidates: retry ? candidates : [], scan: retry || !hasExplicitPort(destination.url) });
+  }
+  destination.url = verdict.url;
+  print(output, formatStatus(`ADT answers at ${verdict.url}.`, 'success', output, 'ADT'));
+  return 'verified';
+}
+
+function warnSsoIpHost(destination, label, output) {
+  if (!isIP(new URL(destination.url).hostname.replace(/^\[(.*)\]$/, '$1'))) return;
+  print(output, formatStatus(`${label} uses an IP address; SSO needs the DNS host name for Kerberos and the browser certificate check. Enter the host name if the sign-in fails.`, 'warning', output, 'SSO'));
 }
 
 async function confirmPrompt(message, { input = stdin, output = stdout } = {}) {
@@ -252,7 +307,7 @@ async function runManualEntryWizard({ env = process.env, input = stdin, output =
       source: 'sap-gui-local',
       name,
       serverName: name,
-      url,
+      url: adtBaseUrl(url),
       host: parsedUrl?.hostname || '',
       client: '001',
       authentication: 'Basic',
@@ -263,16 +318,21 @@ async function runManualEntryWizard({ env = process.env, input = stdin, output =
       // destination picker.
       configuredManually: true
     };
-    await maybeConfigureTlsSelfHeal(destination, name, { input, output });
     const clients = await promptSapClients(destination, { input, output });
     const authMode = await chooseLocalAuthMode(destination, { input, output, env });
-    if (authMode === 'sso') await detectSsoAdtPort(destination, name, clients[0], { input, output, env, detectAdtUrl });
-    destination.authentication = localAuthenticationLabel(authMode);
-    destination.authMode = authMode;
-    for (const client of clients) {
-      expanded.push(buildLocalClientDestination(destination, client, authMode, { multipleClients: clients.length > 1 }));
+    const adt = await settleAdtUrl(destination, name, clients[0], { insist: authMode === 'sso', input, output, env, detectAdtUrl });
+    if (adt === 'skipped') {
+      print(output, formatStatus(`Skipped ${name}; no MCP server was added for it.`, 'info', output, 'Manual entry'));
+    } else {
+      if (authMode === 'sso') warnSsoIpHost(destination, name, output);
+      else await maybeConfigureTlsSelfHeal(destination, name, { input, output });
+      destination.authentication = localAuthenticationLabel(authMode);
+      destination.authMode = authMode;
+      for (const client of clients) {
+        expanded.push(buildLocalClientDestination(destination, client, authMode, { multipleClients: clients.length > 1 }));
+      }
+      print(output, formatStatus(`Added ${name} (client${clients.length === 1 ? '' : 's'} ${clients.join(', ')}).`, 'success', output, 'Manual entry'));
     }
-    print(output, formatStatus(`Added ${name} (client${clients.length === 1 ? '' : 's'} ${clients.join(', ')}).`, 'success', output, 'Manual entry'));
     addAnother = await confirmPrompt('Add another system? (y/Enter=yes, n=no)', { input, output });
   }
   return expanded;
@@ -292,6 +352,18 @@ function localClientDestinationName(destination, client, { multipleClients = fal
   return suffix.length ? `${destination.name} ${suffix.join(' ')}` : destination.name;
 }
 
+
+// Two systems sharing a SID cannot be told apart, so neither URL is offered for them.
+function previousLocalAdtUrls(config) {
+  const urls = new Map();
+  for (const entry of Object.values(config?.servers || {})) {
+    const entryEnv = entry?.env || {};
+    if (entryEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE !== 'sap-gui-local' || !entryEnv.SAP_SYSTEM_ID || !entryEnv.SAP_URL) continue;
+    const key = String(entryEnv.SAP_SYSTEM_ID).toUpperCase();
+    urls.set(key, urls.has(key) && urls.get(key) !== entryEnv.SAP_URL ? '' : entryEnv.SAP_URL);
+  }
+  return urls;
+}
 
 function safeProbe(probe) {
   const result = {};
@@ -330,6 +402,7 @@ function safeLocalSapGuiDestination(destination) {
     proxyType: 'Internet',
     tlsServerName: destination.tlsServerName,
     tlsServerNames: destination.tlsServerNames,
+    messageServer: destination.messageServer,
     probe: safeProbe(destination.probe),
     childEnv: destination.childEnv || {}
   };
@@ -384,7 +457,7 @@ function printConnectionInstructions(output, result) {
 
 // Checkbox selection over the discovered destinations plus, outside BAS, the
 // per-system confirmation prompts (clients, ADT URL, TLS self-heal, login).
-async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin, output = stdout, env = process.env, detectAdtUrl } = {}) {
+async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin, output = stdout, env = process.env, detectAdtUrl, previousAdtUrls = new Map() } = {}) {
   const orderedDestinations = [...destinations].sort((left, right) => {
     const leftRank = left.disabledReason ? 2 : (left.probe?.available === false ? 1 : 0);
     const rightRank = right.disabledReason ? 2 : (right.probe?.available === false ? 1 : 0);
@@ -446,17 +519,24 @@ async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin
       const discriminator = duplicateSystemName ? localSystemDiscriminator(destination) : '';
       const promptLabel = discriminator ? `${destination.name} (${discriminator})` : destination.name;
       const clients = await promptSapClients({ ...destination, name: promptLabel }, { input, output });
-      const fallback = defaultAdtUrl(destination);
+      const guess = defaultAdtUrl(destination);
+      // A URL an earlier setup verified beats the 443NN naming convention.
+      const fallback = previousAdtUrls.get(String(destination.systemId || '').toUpperCase()) || guess;
       const url = await textPrompt({
         message: `ADT URL for ${promptLabel}`,
         placeholder: fallback || 'https://host:44300',
         validate: value => validateAdtUrlCandidate(value || fallback),
         required: false
       }, { input, output });
-      destination.url = url || fallback;
-      await maybeConfigureTlsSelfHeal(destination, promptLabel, { input, output });
+      destination.url = adtBaseUrl(url || fallback);
       const authMode = await chooseLocalAuthMode({ ...destination, name: promptLabel }, { input, output, env });
-      if (authMode === 'sso') await detectSsoAdtPort(destination, promptLabel, clients[0], { input, output, env, detectAdtUrl });
+      const adt = await settleAdtUrl(destination, promptLabel, clients[0], { insist: authMode === 'sso', candidates: url ? [] : [guess], input, output, env, detectAdtUrl });
+      if (adt === 'skipped') {
+        print(output, formatStatus(`Skipped ${promptLabel}; no MCP server was added for it.`, 'info', output, 'Local SAP GUI'));
+        continue;
+      }
+      if (authMode === 'sso') warnSsoIpHost(destination, promptLabel, output);
+      else await maybeConfigureTlsSelfHeal(destination, promptLabel, { input, output });
       destination.authentication = localAuthenticationLabel(authMode);
       destination.authMode = authMode;
       for (const client of clients) {
@@ -524,9 +604,12 @@ export async function runSetup({
   let createdKeys = [];
   let configPath;
   let managedKeys = [];
+  let previousAdtUrls = new Map();
   try {
     configPath = await resolveMcpConfigPath(env);
-    managedKeys = collectManagedCloudFoundryKeyReferences(await readMcpConfig(configPath));
+    const existingConfig = await readMcpConfig(configPath);
+    managedKeys = collectManagedCloudFoundryKeyReferences(existingConfig);
+    previousAdtUrls = previousLocalAdtUrls(existingConfig);
   } catch {
     warnings.push('Existing MCP config could not be read before setup; existing CF service keys will not be reused.');
   }
@@ -628,7 +711,7 @@ export async function runSetup({
     selected = await runManualEntryWizard({ env, input, output, detectAdtUrl });
     if (!selected.length) return await exitWithoutDestinations();
   } else {
-    selected = await chooseDiscoveredDestinations(destinations, { isBas, input, output, env, detectAdtUrl });
+    selected = await chooseDiscoveredDestinations(destinations, { isBas, input, output, env, detectAdtUrl, previousAdtUrls });
   }
 
   let sapDevelopmentServers = [];

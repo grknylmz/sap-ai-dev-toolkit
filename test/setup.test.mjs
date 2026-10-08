@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { installMcpConfig, npxMcpLauncher } from '../src/mcp-config.mjs';
-import { parseSapClientList, runSetup } from '../src/setup.mjs';
+import { adtCandidate, parseSapClientList, runSetup } from '../src/setup.mjs';
 import { spawnWithPty } from './pty.mjs';
 import { isolatedWindowsEnv, isWindows, pathEntry, writeFakeCli } from './fake-bin.mjs';
 
@@ -440,11 +440,11 @@ test('manual SSO entry without a port takes the ADT URL that port detection foun
     input,
     output,
     discoverLocalSapGui: async () => [],
-    detectAdtUrl: async target => { probes.push(target); return 'https://q7c.example:44310'; },
+    detectAdtUrl: async target => { probes.push(target); return { url: 'https://q7c.example:44310', reason: '' }; },
     install: async selected => { installed.push(...selected); return { servers: {} }; }
   });
   // Enter at the authentication prompt keeps the SSO default.
-  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example\r', '100\r', '\r', 'n\r']);
+  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example/sap/bc/adt/\r', '100\r', '\r', 'n\r']);
   await pending;
   assert.deepEqual(probes, [{ url: 'https://q7c.example', client: '100' }]);
   assert.equal(installed[0].childEnv.SAP_AUTH_MODE, 'sso');
@@ -466,12 +466,12 @@ test('SSO port detection sweeps every port, then asks until a port answers', asy
     discoverLocalSapGui: async () => [],
     detectAdtUrl: async target => {
       probes.push(target);
-      return target.ports?.[0] === 8422 ? 'https://q7c.example:8422' : '';
+      return target.ports?.[0] === 8422 ? { url: 'https://q7c.example:8422', reason: '' } : { url: '', reason: 'no port answered on q7c.example' };
     },
     install: async selected => { installed.push(...selected); return { servers: {} }; }
   });
-  // 44399 does not answer and is declined, then 8422 answers.
-  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example\r', '100\r', '\r', '44399\r', 'n\r', '8422\r', 'n\r']);
+  // Enter picks "enter the port" twice: 44399 does not answer, 8422 does.
+  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example\r', '100\r', '\r', '\r', '44399\r', '\r', '8422\r', 'n\r']);
   await pending;
   assert.deepEqual(probes, [
     { url: 'https://q7c.example', client: '100' },
@@ -481,7 +481,37 @@ test('SSO port detection sweeps every port, then asks until a port answers', asy
   ]);
   assert.equal(installed[0].url, 'https://q7c.example:8422');
   assert.match(output.text(), /port scan in progress on every conventional SAP port/);
-  assert.match(output.text(), /did not answer as ADT/);
+  assert.match(output.text(), /No ADT answer for Q7C: no port answered on q7c\.example/);
+});
+
+test('SSO port detection lets the user skip a system that never answers', async () => {
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = manualWizardOutput();
+  let installCalls = 0;
+  const pending = runSetup({
+    env: { HOME: '/tmp/manual-sso-port-skip-test', SAP_AI_DEV_TOOLKIT_ENABLE_WINDOWS_SSO_SETUP: 'true' },
+    input,
+    output,
+    discoverLocalSapGui: async () => [],
+    detectAdtUrl: async () => ({ url: '', reason: 'q7c.example does not resolve; connect to the company network or VPN', unresolved: true }),
+    install: async () => { installCalls += 1; return { servers: {} }; }
+  });
+  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example\r', '100\r', '\r', 's', '\r', 'n\r']);
+  const result = await pending;
+  assert.equal(result.reason, 'no-destinations');
+  assert.equal(installCalls, 0);
+  assert.match(output.text(), /does not resolve; connect to the company network or VPN/);
+  assert.match(output.text(), /Skipped Q7C/);
+});
+
+test('adtCandidate range-checks ports and strips pasted ADT paths', () => {
+  assert.equal(adtCandidate('44310', 'https://q7c.example'), 'https://q7c.example:44310');
+  assert.equal(adtCandidate(' 8000 ', 'http://[::1]'), 'http://[::1]:8000');
+  assert.equal(adtCandidate('https://q7c.example:44300/sap/bc/adt/discovery', 'https://other.example'), 'https://q7c.example:44300');
+  for (const port of ['0', '65536', '99999']) assert.throws(() => adtCandidate(port, 'https://q7c.example'), /between 1 and 65535/);
+  assert.throws(() => adtCandidate('ftp://q7c.example', 'https://q7c.example'), /http/);
 });
 
 test('non-TTY setup skips without writing config', async () => {

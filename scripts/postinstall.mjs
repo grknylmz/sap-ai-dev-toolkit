@@ -3,6 +3,7 @@ import { closeSync, openSync, realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installBinary } from '../src/binary.mjs';
+import { detectAdtUrl } from '../src/local-sap-gui.mjs';
 import { runSetup } from '../src/setup.mjs';
 import { installUserAssetsForHarnesses } from '../src/install-user-assets.mjs';
 import { installMcpServersForHarnesses } from '../src/harness-mcp-config.mjs';
@@ -76,8 +77,9 @@ async function withInstallTerminal(action) {
   }
 }
 
-async function runInstallSetup() {
-  return withInstallTerminal(terminal => runSetup({ env: runtimeEnv, ...(terminal || {}) }));
+async function runInstallSetup(binary) {
+  const detect = binary ? target => detectAdtUrl(binary, { ...target, env: runtimeEnv }) : undefined;
+  return withInstallTerminal(terminal => runSetup({ env: runtimeEnv, ...(terminal || {}), detectAdtUrl: detect }));
 }
 
 function harnessSelectionLabels(ids) {
@@ -300,15 +302,16 @@ async function main() {
   // runs `go` (only the repository-only build:vsp script does), so a toolchain
   // download at install time was pure cost. The pinned, checksum-verified VSP
   // binary ships with the package; the download below is the fallback.
+  let binary = brandedEnvValue(runtimeEnv, 'BINARY');
   try {
-    if (brandedEnvValue(runtimeEnv, 'BINARY')) {
+    if (binary) {
       await announce('Using the SAP_AI_DEV_TOOLKIT_BINARY override.', 'info');
     } else {
       // The bundled binary resolves in milliseconds; the animation only
       // appears when provisioning actually takes time (download fallback).
       const stopBinaryProgress = startProgress('Preparing the pinned VSP runtime for this platform', { output: process.stderr, env: runtimeEnv });
       try {
-        await installBinary(pkg, { env: runtimeEnv });
+        binary = await installBinary(pkg, { env: runtimeEnv });
         stopBinaryProgress();
         await announce('Pinned VSP binary installed and ready.', 'success');
       } catch (error) {
@@ -326,7 +329,7 @@ async function main() {
   let setupResult;
   let setupCompleted = false;
   try {
-    setupResult = await runInstallSetup();
+    setupResult = await runInstallSetup(binary);
     setupCompleted = true;
   } catch (error) {
     await announce(`BAS MCP setup failed: ${error.message}`, 'error');

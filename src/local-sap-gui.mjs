@@ -1,4 +1,5 @@
 import { platform, homedir } from 'node:os';
+import { isIP } from 'node:net';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -149,6 +150,8 @@ function normalizeRecord(record, sourcePath) {
   const port = endpoint ? Number(endpoint[2]) : 0;
   const instance = instanceFrom(record) || (port >= 3200 && port <= 3299 ? String(port - 3200).padStart(2, '0') : '');
   const client = text(record.client || record.sapclient) || '001';
+  // A load-balanced entry names the message server, whose port is 3600 + its instance.
+  const messageServerPort = text(record.msport).match(/^36(\d{2})$/);
   return {
     source: 'sap-gui-local',
     name,
@@ -157,6 +160,7 @@ function normalizeRecord(record, sourcePath) {
     systemId,
     instance,
     client,
+    ...(messageServerPort ? { messageServer: { host, httpPort: 8100 + Number(messageServerPort[1]) } } : {}),
     authentication: ssoHintFrom(record) ? 'Basic/SSO hint' : 'Basic',
     authMode: 'basic',
     ssoHint: ssoHintFrom(record),
@@ -182,6 +186,7 @@ function parseLandscapeXml(content, sourcePath) {
       // For load-balanced entries `server` is a logon group, not a host.
       if (!messageServer?.host) continue;
       record.server = messageServer.host;
+      record.msport = messageServer.port;
     }
     const normalized = normalizeRecord(record, sourcePath);
     if (normalized) records.push(normalized);
@@ -407,25 +412,110 @@ export function hasExplicitPort(url) {
   return /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*:\d+(?:[/?#]|$)/i.test(String(url || '').trim());
 }
 
+// VSP appends every ADT path to the base URL, so a pasted ADT path would double up.
+export function adtBaseUrl(url) {
+  return String(url || '').trim().replace(/[?#].*$/, '').replace(/\/sap\/bc\/adt(?:\/.*)?$/i, '').replace(/\/+$/, '');
+}
+
+// A gateway path prefix cannot be probed by host and port alone.
+export function hasPathPrefix(url) {
+  return /^[a-z][a-z0-9+.-]*:\/\/[^/?#]+\/[^?#]/i.test(adtBaseUrl(url));
+}
+
+export function adtPort(url) {
+  const parsed = new URL(url);
+  return Number(parsed.port) || (parsed.protocol === 'http:' ? 80 : 443);
+}
+
+// A redirect proves less than a 401 or 200: a gateway can redirect every path.
+function adtRank(finding) {
+  return (finding.secure ? 0 : 2) + (finding.status >= 300 && finding.status < 400 ? 1 : 0);
+}
+
+// Picks the ADT URL from VSP detect's JSON, or explains why there is none.
+export function adtVerdict(result, protocol = 'https:') {
+  const findings = Array.isArray(result?.findings) ? result.findings.filter(Boolean) : [];
+  const usable = findings
+    .filter(finding => finding.kind === 'adt' && /^https?:\/\//i.test(String(finding.url || '')) && (finding.secure || protocol === 'http:'))
+    .sort((left, right) => adtRank(left) - adtRank(right));
+  if (usable.length) return { url: usable[0].url, reason: '' };
+  const host = result?.host || 'the host';
+  const unsearched = Array.isArray(result?.unsearched) ? result.unsearched[0] : undefined;
+  if (unsearched) {
+    const unresolved = /does not resolve/i.test(String(unsearched.reason));
+    return { url: '', unresolved, reason: unresolved ? `${unsearched.object} does not resolve; connect to the company network or VPN` : `${unsearched.object}: ${unsearched.reason}` };
+  }
+  const plain = findings.find(finding => finding.kind === 'adt');
+  // The SSO session cookie is the whole credential; https is never traded for http silently.
+  if (plain) return { url: '', reason: `only plain HTTP answers ADT (${plain.url}); enter it explicitly to accept an unencrypted connection` };
+  const inactive = findings.find(finding => finding.kind === 'sap-without-adt');
+  if (inactive) return { url: '', reason: `SAP answers at ${inactive.url} but /sap/bc/adt is not active; ask basis to activate it in SICF` };
+  const tls = findings.find(finding => finding.kind === 'tls-name-mismatch');
+  if (tls && /certificate required|bad certificate/i.test(String(tls.detail))) {
+    return { url: '', reason: `port ${tls.port} demands a client certificate (smart card), which VSP cannot present` };
+  }
+  if (tls) return { url: '', reason: `port ${tls.port} presents a certificate ${tls.certHost ? `for ${tls.certHost}` : 'this machine does not trust'}${tls.detail ? ` (${tls.detail})` : ''}` };
+  const open = findings.filter(finding => ['open', 'http'].includes(finding.kind)).map(finding => finding.port);
+  if (open.length) return { url: '', reason: `${open.length === 1 ? `port ${open[0]} on ${host} accepts` : `ports ${open.join(', ')} on ${host} accept`} connections but none answered as ADT` };
+  return { url: '', reason: `no port answered on ${host}` };
+}
+
 // A portless URL means 443, which on-premise ICMs rarely serve; VSP's `detect`
 // probes the conventional ADT ports and reports which one answers.
-export async function detectAdtUrl(binary, { url, client, env = process.env, exhaustive = false, ports = [], timeoutMs = 180_000 } = {}) {
+export async function detectAdtUrl(binary, { url, client, instance, env = process.env, exhaustive = false, ports = [], timeoutMs = 180_000 } = {}) {
   let configured;
-  try { configured = new URL(url); } catch { return ''; }
+  try { configured = new URL(url); } catch { return { url: '', reason: `${url} is not a valid URL` }; }
   const host = configured.hostname.replace(/^\[(.*)\]$/, '$1');
-  const args = ['detect', host, '--json', ...(client ? ['--client', String(client)] : []), ...(exhaustive ? ['--all'] : []), ...ports.flatMap(port => ['--port', String(port)])];
+  const args = ['detect', host, '--json',
+    ...(client ? ['--client', String(client)] : []),
+    ...(/^\d{2}$/.test(String(instance || '')) ? ['--instance', String(instance)] : []),
+    ...(exhaustive ? ['--all'] : []),
+    ...ports.flatMap(port => ['--port', String(port)])];
   // A corporate HTTPS_PROXY rarely routes internal SAP hosts; probe them directly.
   const noProxy = [env.NO_PROXY || env.no_proxy, host].filter(Boolean).join(',');
-  env = { ...env, NO_PROXY: noProxy, no_proxy: noProxy };
   const [command, ...prefixArgs] = /\.(?:mjs|cjs|js)$/i.test(binary)
     ? [process.execPath, binary]
     : (/\.(?:cmd|bat)$/i.test(binary) && platform() === 'win32' ? ['cmd', '/c', binary] : [binary]);
+  let stdout;
   try {
-    const { stdout } = await execFileAsync(command, [...prefixArgs, ...args], { env, windowsHide: true, timeout: timeoutMs, maxBuffer: 1024 * 1024 });
-    const adt = (JSON.parse(stdout)?.findings || []).filter(finding => finding?.kind === 'adt' && /^https?:\/\//i.test(String(finding.url || '')));
-    // The SSO session cookie is the whole credential; never trade https for http.
-    return (adt.find(finding => finding.secure) || (configured.protocol === 'http:' ? adt[0] : undefined))?.url || '';
-  } catch {
-    return '';
+    ({ stdout } = await execFileAsync(command, [...prefixArgs, ...args], { env: { ...env, NO_PROXY: noProxy, no_proxy: noProxy }, windowsHide: true, timeout: timeoutMs, maxBuffer: 1024 * 1024 }));
+  } catch (error) {
+    const why = error.killed ? `timed out after ${Math.round(timeoutMs / 1000)} s` : (typeof error.code === 'string' ? error.code : `exit code ${error.code}`);
+    const blocked = ['EACCES', 'EPERM', 'UNKNOWN'].includes(error.code) ? '; antivirus or application control may block it' : '';
+    return { url: '', reason: `VSP detect could not run (${why}) from ${binary}${blocked}` };
   }
+  try { return adtVerdict(JSON.parse(stdout), configured.protocol); }
+  catch { return { url: '', reason: 'VSP detect returned unreadable output' }; }
+}
+
+// Application servers appear by their SM51 names, host_SID_NN.
+export function parseMessageServerServers(body, { host = '', systemId = '' } = {}) {
+  const domain = isIP(host) ? '' : (/^[^.]+\.(.+)$/.exec(host)?.[1] || '');
+  const servers = new Map();
+  for (const [, name, sid, instance] of String(body).matchAll(/\b([A-Za-z0-9][A-Za-z0-9.-]*)_([A-Za-z][A-Za-z0-9]{2})_(\d{2})\b/g)) {
+    if (systemId && sid.toUpperCase() !== systemId.toUpperCase()) continue;
+    const appHost = name.includes('.') || !domain ? name : `${name}.${domain}`;
+    servers.set(`${appHost.toLowerCase()}:${instance}`, { host: appHost, instance });
+  }
+  return [...servers.values()];
+}
+
+// A load-balanced landscape entry names the message server, which serves no
+// ADT; its HTTP port lists the application servers that do, the same source
+// SAP Web Dispatcher reads.
+export async function messageServerAppServers({ host, httpPort, systemId } = {}, { timeoutMs = 5000 } = {}) {
+  if (!host || !httpPort) return [];
+  const authority = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  for (const path of ['/msgserver/text/logon', '/msgserver/text/serverlist']) {
+    let body = '';
+    try {
+      const response = await fetch(`http://${authority}:${httpPort}${path}`, { signal: AbortSignal.timeout(timeoutMs) });
+      if (response.ok) body = await response.text();
+    } catch {
+      continue;
+    }
+    const servers = parseMessageServerServers(body, { host, systemId });
+    if (servers.length) return servers;
+  }
+  return [];
 }

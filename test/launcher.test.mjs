@@ -436,7 +436,8 @@ test('runtime starts a configured local SAP GUI SSO destination with VSP browser
       SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
       SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
       SAP_AI_DEV_TOOLKIT_DESTINATION: 'Local SSO',
-      SAP_URL: 'https://abap.example.com:44300',
+      // A pasted ADT path must not reach VSP, which appends every ADT path itself.
+      SAP_URL: 'https://abap.example.com:44300/sap/bc/adt/discovery',
       SAP_CLIENT: '100',
       SAP_SYSTEM_ID: 'S4H',
       SAP_AUTH_MODE: 'sso',
@@ -446,11 +447,15 @@ test('runtime starts a configured local SAP GUI SSO destination with VSP browser
       FAKE_LOG: log
     });
     assert.equal(result.code, 0, result.stderr);
-    assert.equal(JSON.parse(result.stdout).ok, true);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.ok, true);
+    assert.match(report.checks.find(row => row.stage === 'ADT probe').detail, /^adt-verified at https:\/\/abap\.example\.com:44300$/);
     const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
     const init = entries.find(entry => entry.event === 'initialize');
     assert.equal(init.argv[init.argv.indexOf('--url') + 1], 'https://abap.example.com:44300');
-    assert.equal(entries.some(entry => entry.event === 'detect'), false);
+    // A named port costs one probe and no scan.
+    assert.deepEqual(entries.filter(entry => entry.event === 'detect').map(entry => entry.argv), [['detect', 'abap.example.com', '--json', '--client', '100', '--port', '44300']]);
+    assert.ok(init.env.noProxy.split(',').includes('abap.example.com'), init.env.noProxy);
     assert.equal(init.argv.includes('--proxy-auth'), false);
     assert.equal(init.env.sso, 'true');
     assert.equal(init.env.ssoSystem, 's4h-100');
@@ -467,6 +472,7 @@ test('runtime detects the ADT port for an SSO destination whose SAP_URL has none
     const result = await runLauncher(['--doctor', '--json'], {
       ...process.env,
       SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
+      SAP_AI_DEV_TOOLKIT_CACHE_DIR: directory,
       SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
       SAP_AI_DEV_TOOLKIT_DESTINATION: 'Portless SSO',
       SAP_URL: 'https://abap.example.com',
@@ -476,18 +482,86 @@ test('runtime detects the ADT port for an SSO destination whose SAP_URL has none
       H2O_URL: '',
       FAKE_LOG: log,
       FAKE_DETECT_JSON: JSON.stringify({ host: 'abap.example.com', findings: [
+        { port: 443, url: 'https://abap.example.com:443', kind: 'adt', status: 302, secure: true },
         { port: 8000, url: 'http://abap.example.com:8000', kind: 'adt', status: 401, secure: false },
-        { port: 44310, url: 'https://abap.example.com:44310', kind: 'adt', status: 302, secure: true }
+        { port: 44310, url: 'https://abap.example.com:44310', kind: 'adt', status: 401, secure: true }
       ] })
     });
     assert.equal(result.code, 0, result.stderr);
     const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
     assert.deepEqual(entries.find(entry => entry.event === 'detect').argv, ['detect', 'abap.example.com', '--json', '--client', '100']);
     const init = entries.find(entry => entry.event === 'initialize');
+    // A 401 beats a redirect on a lower port, and https beats http.
     assert.equal(init.argv[init.argv.indexOf('--url') + 1], 'https://abap.example.com:44310');
     assert.equal(init.env.ssoSystem, 's4h-100');
-    assert.match(result.stderr, /SAP_URL has no port; port scan in progress on abap\.example\.com/);
+    assert.match(result.stderr, /port scan in progress on abap\.example\.com/);
     assert.match(result.stderr, /port scan finished; ADT answers at https:\/\/abap\.example\.com:44310/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('runtime remembers a scanned ADT port and rechecks it with one probe on the next start', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-port-cache-'));
+  const env = {
+    ...process.env,
+    SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
+    SAP_AI_DEV_TOOLKIT_CACHE_DIR: directory,
+    SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
+    SAP_AI_DEV_TOOLKIT_DESTINATION: 'Moved SSO',
+    SAP_URL: 'https://abap.example.com:44399',
+    SAP_CLIENT: '100',
+    SAP_SYSTEM_ID: 'S4H',
+    SAP_AUTH_MODE: 'sso',
+    H2O_URL: '',
+    FAKE_DETECT_DEAD_PORTS: '44399'
+  };
+  const detectCalls = async log => (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line)).filter(entry => entry.event === 'detect').map(entry => entry.argv.slice(4).join(' '));
+  try {
+    const first = await runLauncher(['--doctor', '--json'], {
+      ...env,
+      FAKE_LOG: join(directory, 'first.log'),
+      FAKE_DETECT_JSON: JSON.stringify({ host: 'abap.example.com', findings: [{ port: 44310, url: 'https://abap.example.com:44310', kind: 'adt', status: 401, secure: true }] })
+    });
+    assert.equal(first.code, 0, first.stderr);
+    assert.match(first.stderr, /ADT did not answer at https:\/\/abap\.example\.com:44399: no port answered on abap\.example\.com/);
+    // An explicit port that went dead gets the usual ports, never the full sweep.
+    assert.deepEqual(await detectCalls(join(directory, 'first.log')), ['100 --port 44399', '100']);
+    const second = await runLauncher(['--doctor', '--json'], { ...env, FAKE_LOG: join(directory, 'second.log') });
+    assert.equal(second.code, 0, second.stderr);
+    assert.match(second.stderr, /ADT answers at https:\/\/abap\.example\.com:44310 \(found by an earlier port scan\)/);
+    assert.deepEqual(await detectCalls(join(directory, 'second.log')), ['100 --port 44399', '100 --port 44310']);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('runtime keeps the configured URL and fails the doctor ADT probe when no port answers', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-no-adt-'));
+  const log = join(directory, 'children.log');
+  try {
+    const result = await runLauncher(['--doctor', '--json'], {
+      ...process.env,
+      SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
+      SAP_AI_DEV_TOOLKIT_CACHE_DIR: directory,
+      SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
+      SAP_AI_DEV_TOOLKIT_DESTINATION: 'Silent SSO',
+      SAP_URL: 'https://abap.example.com',
+      SAP_CLIENT: '100',
+      SAP_AUTH_MODE: 'sso',
+      H2O_URL: '',
+      FAKE_LOG: log
+    });
+    assert.equal(result.code, 1, result.stderr);
+    const probe = JSON.parse(result.stdout).checks.find(row => row.stage === 'ADT probe');
+    assert.equal(probe.status, 'failed');
+    assert.match(probe.detail, /adt-unverified: no port answered on abap\.example\.com/);
+    const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
+    assert.deepEqual(entries.filter(entry => entry.event === 'detect').map(entry => entry.argv.includes('--all')), [false, true]);
+    const init = entries.find(entry => entry.event === 'initialize');
+    assert.equal(init.argv[init.argv.indexOf('--url') + 1], 'https://abap.example.com');
+    // An unverified route keeps whatever proxy settings the environment had.
+    assert.equal(String(init.env.noProxy || '').split(',').includes('abap.example.com'), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -504,20 +578,20 @@ test('runtime maps legacy browser-saml and windows-sso entries to VSP browser SS
       const result = await runLauncher(['--doctor', '--json'], {
         ...process.env,
         SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
+        SAP_AI_DEV_TOOLKIT_CACHE_DIR: directory,
         SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
         SAP_AI_DEV_TOOLKIT_DESTINATION: 'Legacy SSO',
         SAP_URL: 'https://abap.example.com',
         SAP_CLIENT: '100',
         ...legacy,
         H2O_URL: '',
-        FAKE_LOG: log
+        FAKE_LOG: log,
+        FAKE_DETECT_JSON: JSON.stringify({ host: 'abap.example.com', findings: [{ port: 44300, url: 'https://abap.example.com:44300', kind: 'adt', status: 401, secure: true }] })
       });
       assert.equal(result.code, 0, result.stderr);
       const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
       const init = entries.find(entry => entry.event === 'initialize');
-      // Nothing answered the shortlist or the full sweep, so the configured URL stays.
-      assert.deepEqual(entries.filter(entry => entry.event === 'detect').map(entry => entry.argv.includes('--all')), [false, true]);
-      assert.equal(init.argv[init.argv.indexOf('--url') + 1], 'https://abap.example.com');
+      assert.equal(init.argv[init.argv.indexOf('--url') + 1], 'https://abap.example.com:44300');
       assert.equal(init.env.sso, 'true', legacy.SAP_AUTH_MODE);
       assert.equal(init.env.ssoSystem, 'abap.example.com-100');
       assert.equal(init.env.browserAuth, undefined);
@@ -615,6 +689,7 @@ test('interactive local launcher starts the manual entry wizard when no SAP GUI 
     ...isolatedWindowsEnv(directory),
     HOME: directory,
     APPDATA: join(directory, 'AppData', 'Roaming'),
+    SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
     SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config
   };
   delete env.H2O_URL;
@@ -657,6 +732,7 @@ test('local setup discovers SAP GUI systems, prompts for ADT URL, and writes log
       USERPROFILE: directory,
       APPDATA: appData,
       H2O_URL: '',
+      SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
       SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config
     }, [
       { when: 'Select destinations', input: ' \r', end: false },
@@ -697,6 +773,8 @@ test('local setup creates separate MCP entries for multiple entered SAP clients'
       USERPROFILE: directory,
       APPDATA: appData,
       H2O_URL: '',
+      SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
+      FAKE_DETECT_DEAD_PORTS: '44300',
       SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config
     }, [
       { when: 'Select destinations', input: ' \r', end: false },
@@ -706,6 +784,8 @@ test('local setup creates separate MCP entries for multiple entered SAP clients'
     ], ['--setup', '--npx']);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
     assert.equal(result.sent, isWindows ? 4 : 3);
+    // Basic setup reports an unanswered ADT URL but keeps what the user confirmed.
+    assert.match(result.stdout, /No ADT answer for Multi ABAP: no port answered on abap\.example\.com/);
     const current = JSON.parse(await readFile(config, 'utf8'));
     assert.deepEqual(Object.keys(current.servers).sort(), ['a4h-100', 'a4h-200']);
     assert.equal(current.servers['a4h-100'].env.SAP_CLIENT, '100');
@@ -739,6 +819,7 @@ test('local setup disambiguates duplicate SAP GUI system names before writing MC
       USERPROFILE: directory,
       APPDATA: appData,
       H2O_URL: '',
+      SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
       SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config
     }, [
       { when: 'Select destinations', input: 'a\r', end: false },
@@ -783,6 +864,7 @@ test('local setup auto-discovers TLS certificate DNS names when ADT URL uses an 
       USERPROFILE: directory,
       APPDATA: appData,
       H2O_URL: '',
+      SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
       SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config
     }, [
       { when: 'Select destinations', input: ' \r', end: false },
@@ -822,6 +904,7 @@ test('local setup can write SSO auth mode without login inputs', async () => {
       APPDATA: appData,
       H2O_URL: '',
       SAP_AI_DEV_TOOLKIT_ENABLE_WINDOWS_SSO_SETUP: 'true',
+      SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
       SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config
     }, [
       { when: 'Select destinations', input: ' \r', end: false },

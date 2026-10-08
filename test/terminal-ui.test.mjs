@@ -183,6 +183,7 @@ test('searchable checkbox prompt filters choices by typed prefix', async () => {
   input.write('\r');
 
   assert.match(filtered, /Search: T/u);
+  assert.match(filtered, /Esc clears/u);
   assert.match(filtered, /T33/u);
   assert.match(filtered, /TST/u);
   assert.doesNotMatch(filtered, /QAS/u);

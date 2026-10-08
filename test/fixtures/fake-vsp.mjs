@@ -11,7 +11,14 @@ function log(entry) { if (logPath) appendFileSync(logPath, `${JSON.stringify({ d
 function reply(id, result) { process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`); }
 if (args[0] === 'detect') {
   log({ event: 'detect', argv: args });
-  process.stdout.write(`${process.env.FAKE_DETECT_JSON || JSON.stringify({ host: args[1], findings: null })}\n`, () => process.exit(0));
+  const host = args[1].includes(':') ? `[${args[1]}]` : args[1];
+  const ports = args.flatMap((arg, index) => arg === '--port' ? [Number(args[index + 1])] : []);
+  const dead = String(process.env.FAKE_DETECT_DEAD_PORTS || '').split(',').filter(Boolean).map(Number);
+  // A scan answers FAKE_DETECT_JSON (default: nothing); a named port answers as ADT unless listed as dead.
+  const answer = !ports.length && process.env.FAKE_DETECT_JSON
+    ? process.env.FAKE_DETECT_JSON
+    : JSON.stringify({ host: args[1], findings: ports.filter(port => !dead.includes(port)).map(port => ({ port, url: `https://${host}:${port}`, kind: 'adt', status: 401, secure: true })) });
+  process.stdout.write(`${answer}\n`, () => process.exit(0));
 }
 function requestADTThroughProxy(targetUrl, proxyUrl, { method = 'GET', body = '', bypassProxyForLoopback = false } = {}) {
   const target = new URL(targetUrl);

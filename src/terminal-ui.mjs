@@ -267,7 +267,7 @@ export async function checkboxPrompt({ message, choices: initialChoices, require
   const footer = error => {
     if (error) return [[error, 'red']];
     if (awaitingEmptyConfirm) return [['Nothing is selected yet. Press Space to select the highlighted item (❯).', 'yellow'], [confirmEmpty, 'yellow']];
-    if (searchable && matchingIndexes().length === 0) return [['No choices match. Backspace or Esc clears search.', 'yellow']];
+    if (searchable && matchingIndexes().length === 0) return [['No choices match.', 'yellow']];
     if (!selected.size) return [['Press Space to select the highlighted item (❯), then Enter to confirm.', 'cyan']];
     return [[`${selected.size} selected. Press Enter to confirm, or Space to change.`, 'green']];
   };
@@ -281,7 +281,10 @@ export async function checkboxPrompt({ message, choices: initialChoices, require
     ensureVisible(pageSize, indexes.length, cursorPosition);
     const lines = [];
     lines.push(truncateToColumns(`${message} (Space: select, ${shortcuts?.all || 'a'}: toggle all, Enter: confirm)`, columns));
-    if (searchable) lines.push(truncateToColumns(`Search: ${searchQuery || (searchMode ? '' : 'type a prefix; / for a or m')}`, columns));
+    if (searchable) {
+      const hint = searchQuery ? 'Backspace edits; Esc clears' : 'type prefix; / before a or m';
+      lines.push(truncateToColumns(`Search: ${searchQuery || 'type prefix'} (${hint})`, columns));
+    }
     const end = Math.min(indexes.length, top + pageSize);
     for (let index = top; index < end; index += 1) {
       const choiceIndex = indexes[index];
