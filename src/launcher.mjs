@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { discoverDestinations, remediation, slugifyDestination, statusRows } from './bas-discovery.mjs';
 import { discoverSapGuiSystems } from './local-sap-gui.mjs';
-import { findBinary } from './binary.mjs';
+import { binaryTarget, downloadBinary, findBinary } from './binary.mjs';
 import { MCPProxy } from './mcp-proxy.mjs';
 import { installMcpConfig, npxMcpLauncher, repairManagedMcpConfig } from './mcp-config.mjs';
 import { runSetup } from './setup.mjs';
@@ -163,10 +163,27 @@ function probeDiagnostic(destination) {
   return `[sap-ai-dev] ${destination.name}: probe=${probe.status || 'unknown'}${details.length ? ` (${details.join('; ')})` : ''}`;
 }
 
+// npx MCP entries run with --ignore-scripts, so postinstall's verified
+// download fallback never ran; a missing or corrupt bundled binary heals here.
 async function binaryOrError() {
-  const path = await findBinary(pkg, { env: runtimeEnv });
-  if (path) return path;
-  throw new Error('VSP binary is not installed. Reinstall with scripts enabled, set SAP_AI_DEV_TOOLKIT_BINARY to a trusted patched binary, or run npm run build:vsp.');
+  const notes = [];
+  const found = await findBinary(pkg, { env: runtimeEnv, log: note => notes.push(note) });
+  if (found) return found;
+  logLine(`[sap-ai-dev] ${notes.join('; ') || 'no VSP binary found'}; downloading a checksum-verified copy`);
+  try {
+    const downloaded = await downloadBinary(pkg, { env: runtimeEnv });
+    logLine(`[sap-ai-dev] VSP binary installed at ${downloaded}`);
+    return downloaded;
+  } catch (error) {
+    notes.push(`download fallback failed: ${error.message}${error.cause?.code ? ` (${error.cause.code})` : ''}`);
+  }
+  const npxDirectory = root.match(/^(.*[\\/]_npx[\\/][^\\/]+)[\\/]node_modules[\\/]/)?.[1];
+  throw new Error([
+    `VSP binary ${binaryTarget().asset} is unavailable for ${pkg.name}@${pkg.version}: ${notes.join('; ')}.`,
+    npxDirectory
+      ? `The npm package ships this binary, so an interrupted install or an antivirus quarantine usually removed it: delete ${npxDirectory} and restart the MCP server so npx reinstalls the package, or set SAP_AI_DEV_TOOLKIT_BINARY to a trusted patched VSP binary.`
+      : `Reinstall ${pkg.name} (a git checkout needs npm run build:vsp), check whether antivirus quarantined the binary, or set SAP_AI_DEV_TOOLKIT_BINARY to a trusted patched VSP binary.`
+  ].join(' '));
 }
 
 async function discoverForCommand() {

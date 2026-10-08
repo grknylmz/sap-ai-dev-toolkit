@@ -431,6 +431,9 @@ test('global postinstall completes BAS selection before default Copilot asset in
   await mkdir(bin);
   const postinstallEnv = { ...process.env, PATH: pathEntry(bin) };
   await writeFakeCli(bin, 'cf', 'process.exitCode = 1;', postinstallEnv);
+  // A global install puts sap-ai-dev on PATH; without one (CI runners) setup writes the npx launcher.
+  const globalLauncher = join(bin, isWindows ? 'sap-ai-dev.cmd' : 'sap-ai-dev');
+  await writeFile(globalLauncher, '', { mode: 0o755 });
   const server = createServer((request, response) => {
     if (request.url === '/api/listDestinations') {
       response.writeHead(200, { 'content-type': 'application/json' });
@@ -500,7 +503,7 @@ test('global postinstall completes BAS selection before default Copilot asset in
   assert.ok(acceptLogs.indexOf('Installation configuration summary') > acceptLogs.indexOf('Installed 38 files across 2 harnesses'), acceptLogs);
   assert.ok(acceptLogs.includes(`MCP config file: ${config}`), acceptLogs);
   assert.ok(acceptLogs.includes('Destination: BAS · alpha-system · client 100 · Basic'), acceptLogs);
-  assert.match(acceptLogs, /Launch: stdio · (?:[^\r\n]*[\\/])?sap-ai-dev(?:\.cmd)?(?:\r?\n|$)/, acceptLogs);
+  assert.ok(acceptLogs.split(/\r?\n/).some(line => line.trim() === `Launch: stdio · ${globalLauncher}`), acceptLogs);
   assert.ok(acceptLogs.includes('Environment keys: H2O_URL, SAP_AI_DEV_TOOLKIT_DESTINATION, SAP_ALLOW_TRANSPORTABLE_EDITS'), acceptLogs);
   const configAfterAccept = JSON.parse(await readFile(config, 'utf8'));
   assert.deepEqual(Object.values(configAfterAccept.servers)

@@ -90,7 +90,8 @@ jobs:
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "GitHub release $tag already exists; skipping"
           else
-            gh release create "$tag" \
+            # prepublishOnly built dist/; these assets are the launcher's verified download fallback.
+            gh release create "$tag" dist/vsp-* dist/checksums.txt \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "$tag" \

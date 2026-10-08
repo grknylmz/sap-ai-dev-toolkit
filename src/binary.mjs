@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
-import { homedir, tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { brandedEnvValue } from './branding.mjs';
@@ -114,12 +114,14 @@ export async function findBinary(pkg, options = {}) {
       await stat(bundled);
       const verified = await verifyAgainstPackagedChecksums(bundled, target);
       if (verified === false) {
-        log(`bundled VSP binary ${target.asset} failed checksum verification; ignoring it`);
+        log(`bundled VSP binary ${bundled} failed checksum verification; ignoring it`);
       } else {
         if (verified === null) log(`bundled VSP binary ${target.asset} has no packaged checksum entry; using it unverified`);
         return bundled;
       }
-    } catch {}
+    } catch (error) {
+      log(`bundled VSP binary not found at ${bundled} (${error.code || error.message})`);
+    }
   }
   const path = cachedBinaryPath(pkg, options.platform, options.arch, env);
   try {
@@ -158,6 +160,11 @@ export async function installBinary(pkg, options = {}) {
       if (String(error?.message || '').includes('checksum verification')) throw error;
     }
   }
+  return downloadBinary(pkg, options);
+}
+
+export async function downloadBinary(pkg, options = {}) {
+  const env = options.env || process.env;
   const target = binaryTarget(options.platform, options.arch);
   const base = releaseBaseUrl(pkg, pkg.version);
   const assetUrl = brandedEnvValue(env, 'BINARY_URL') || `${base}/${target.asset}`;
@@ -184,7 +191,8 @@ export async function installBinary(pkg, options = {}) {
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
   const destination = cachedBinaryPath(pkg, options.platform, options.arch, env);
-  const temporary = join(tmpdir(), `sap-ai-dev-toolkit-vsp-${process.pid}-${Date.now()}`);
+  // Same directory as the destination: rename fails with EXDEV across filesystems (tmpfs /tmp).
+  const temporary = `${destination}.${process.pid}-${Date.now()}.tmp`;
   await writeFile(temporary, bytes, { mode: 0o700 });
   await chmod(temporary, 0o700);
   await rename(temporary, destination);

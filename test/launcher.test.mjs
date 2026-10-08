@@ -5,21 +5,24 @@ import https from 'node:https';
 import tls from 'node:tls';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { isolatedWindowsEnv, isWindows, pathEntry, writeFakeCli } from './fake-bin.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { binaryTarget } from '../src/binary.mjs';
 import { npxMcpLauncher } from '../src/mcp-config.mjs';
 import { spawnWithPty } from './pty.mjs';
 
 const launcher = fileURLToPath(new URL('../src/launcher.mjs', import.meta.url));
 const fakeVsp = fileURLToPath(new URL('./fixtures/fake-vsp.mjs', import.meta.url));
+const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const exec = promisify(execFile);
 
-function runLauncher(args, env) {
+function runLauncher(args, env, script = launcher) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [launcher, ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [script, ...args], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', chunk => { stdout += chunk; });
@@ -275,6 +278,98 @@ test('configured local SAP GUI runtime fails clearly without ADT URL', async () 
   assert.equal(result.code, 1);
   assert.match(result.stderr, /SAP_URL is required for local SAP GUI MCP entries/);
   assert.doesNotMatch(result.stderr, /H2O_URL is required/);
+});
+
+// The copy stays inside the repo so bare imports still resolve to its
+// node_modules, while dist/ is absent like a package whose binary vanished.
+async function packageWithoutBinaries(t) {
+  await mkdir(join(repoRoot, '.tmp'), { recursive: true });
+  const root = await mkdtemp(join(repoRoot, '.tmp', 'package-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, 'src'));
+  for (const name of await readdir(join(repoRoot, 'src'))) await copyFile(join(repoRoot, 'src', name), join(root, 'src', name));
+  await copyFile(join(repoRoot, 'package.json'), join(root, 'package.json'));
+  const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+  return { launcher: join(root, 'src', 'launcher.mjs'), version };
+}
+
+async function startReleaseServer(t, files) {
+  const requests = [];
+  const server = createServer((request, response) => {
+    requests.push(request.url);
+    if (files[request.url] === undefined) response.writeHead(404);
+    response.end(files[request.url]);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  return { origin: `http://127.0.0.1:${server.address().port}`, requests };
+}
+
+async function missingBinaryEnv(t, origin) {
+  const scratch = await mkdtemp(join(tmpdir(), 'sap-ai-missing-vsp-'));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  return {
+    ...process.env,
+    SAP_AI_DEV_TOOLKIT_BINARY: '',
+    SAP_AI_DEV_TOOLKIT_BINARY_URL: '',
+    SAP_AI_DEV_TOOLKIT_RELEASE_BASE_URL: origin,
+    SAP_AI_DEV_TOOLKIT_CACHE_DIR: join(scratch, 'cache'),
+    XDG_CACHE_HOME: join(scratch, 'xdg'),
+    SAP_AI_DEV_MCP_CONFIG: join(scratch, 'mcp.json'),
+    SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
+    SAP_AI_DEV_TOOLKIT_DESTINATION: 'T4D',
+    SAP_URL: 'https://abap.example.com:44300',
+    SAP_CLIENT: '100',
+    SAP_SYSTEM_ID: 'T4D',
+    SAP_USER: 'local-user',
+    SAP_PASSWORD: 'local-password',
+    H2O_URL: '',
+    HTTP_PROXY: '',
+    HTTPS_PROXY: '',
+    http_proxy: '',
+    https_proxy: '',
+    NO_PROXY: '127.0.0.1,localhost',
+    FAKE_LOG: join(scratch, 'children.log')
+  };
+}
+
+test('runtime names the missing bundled VSP binary when the download fallback fails', async t => {
+  const copy = await packageWithoutBinaries(t);
+  const release = await startReleaseServer(t, {});
+  const { asset } = binaryTarget();
+  const result = await runLauncher([], await missingBinaryEnv(t, release.origin), copy.launcher);
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, new RegExp(`VSP binary ${asset} is unavailable for sap-ai-dev-toolkit@${copy.version}: bundled VSP binary not found at .*dist[\\\\/]${asset} \\(ENOENT\\)`));
+  assert.match(result.stderr, /download fallback failed: VSP binary download failed \(404\)/);
+  assert.match(result.stderr, /Reinstall sap-ai-dev-toolkit \(a git checkout needs npm run build:vsp\)/);
+  assert.deepEqual(release.requests, [`/v${copy.version}/${asset}`]);
+});
+
+test('runtime heals a missing bundled VSP binary with a checksum-verified download once', { skip: isWindows && 'the downloaded fake VSP is a shebang script' }, async t => {
+  const copy = await packageWithoutBinaries(t);
+  const { asset } = binaryTarget();
+  // A shell wrapper: the cached name (…-0.9.5-vsp-…) would give Node a bogus file extension.
+  const fake = Buffer.from(`#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(fakeVsp)} "$@"\n`);
+  const release = await startReleaseServer(t, {
+    [`/v${copy.version}/${asset}`]: fake,
+    [`/v${copy.version}/checksums.txt`]: `${createHash('sha256').update(fake).digest('hex')}  ${asset}\n`
+  });
+  const env = await missingBinaryEnv(t, release.origin);
+  const healed = await runLauncher(['--doctor', '--json'], env, copy.launcher);
+  assert.equal(healed.code, 0, healed.stderr);
+  assert.equal(JSON.parse(healed.stdout).ok, true, healed.stdout);
+  assert.match(healed.stderr, /bundled VSP binary not found at .*; downloading a checksum-verified copy/);
+  const cached = join(env.SAP_AI_DEV_TOOLKIT_CACHE_DIR, `sap-ai-dev-toolkit-${copy.version}-${asset}`);
+  assert.ok(healed.stderr.includes(`VSP binary installed at ${cached}`), healed.stderr);
+  assert.deepEqual(await readFile(cached), fake);
+  const children = (await readFile(env.FAKE_LOG, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
+  assert.ok(children.some(entry => entry.event === 'initialize'));
+
+  const downloads = release.requests.length;
+  const restarted = await runLauncher(['--doctor', '--json'], env, copy.launcher);
+  assert.equal(restarted.code, 0, restarted.stderr);
+  assert.equal(release.requests.length, downloads);
+  assert.doesNotMatch(restarted.stderr, /downloading a checksum-verified copy/);
 });
 
 test('runtime starts a configured local SAP GUI destination without BAS discovery', async () => {

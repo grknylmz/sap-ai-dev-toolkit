@@ -297,7 +297,7 @@ The guided setup can also offer companion MCP entries with `sap-ai-dev --setup -
 
 The installer handles VSP provisioning automatically:
 
-- Uses the package's bundled patched VSP binary for the current platform, verified against the npm-published `dist/checksums.txt`. A checksum-anchored remote download is the fallback only when the package has no bundled asset.
+- Uses the package's bundled patched VSP binary for the current platform, verified against the npm-published `dist/checksums.txt`. When the bundled asset is missing (an interrupted install, an antivirus quarantine, or a git checkout without `dist/`), a checksum-anchored download from the matching GitHub release is the fallback; MCP server startup runs it too, because npx entries skip install scripts.
 - No Go toolchain is downloaded or required at install time; Go is only used by the repository's own `build:vsp` development script.
 
 Setup detects where it is running. With `H2O_URL` set, it treats the environment as SAP Business Application Studio and opens a checkbox picker for BAS destinations, with no destinations selected by default. Use **Space** to choose destinations and **Enter** to confirm. Press **a** to toggle all destinations (select all if any are unchecked; otherwise clear the selection). Confirming with none selected removes this add-on's managed MCP entries. When the `cf` CLI 8.18 or newer is authenticated to a targeted space, setup first offers an optional import from that space's Destination service; type **y** then **Enter** to include it, or press **Enter** to skip. Accepted CF and BAS destinations appear together in the picker.
@@ -880,7 +880,7 @@ NPM_PUBLISH_TOKEN=npm_...
 - To publish a patch bump, run `npm run publish:npm -- --patch`; it updates `package.json` and `package-lock.json` before publishing. If publishing fails after the bump, retry without `--patch`.
 - npm's `prepublishOnly` hook builds the pinned VSP binaries for all platforms (including the Go toolchain if missing) and refuses to ship a tarball whose `dist/checksums.txt` does not list all five assets; it guards `npm run publish:npm` and a plain `npm publish` alike. Pass `--skip-build` to republish an already-built `dist/` without rebuilding.
 - Preview the package without publishing, changing its version, or building with `npm run publish:npm -- --dry-run`.
-- GitHub Actions runs the test suite on pushes to `main` and pull requests. A push to `main` that changes the `package.json` version runs the same checks, builds the VSP binaries, publishes that version to npm, and creates a `v<version>` GitHub release with generated notes.
+- GitHub Actions runs the test suite on pushes to `main` and pull requests. A push to `main` that changes the `package.json` version runs the same checks, builds the VSP binaries, publishes that version to npm, and creates a `v<version>` GitHub release with generated notes and the VSP binaries plus `checksums.txt` attached for the download fallback.
 - The publish workflow uses the `NPM_PUBLISH_TOKEN` GitHub repository secret. Verify it with `gh secret list`; the token value is never stored in the repository.
 
 The token is not printed or stored in the repository.
