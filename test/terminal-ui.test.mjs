@@ -151,6 +151,80 @@ test('select prompt single-key shortcuts take precedence over value prefixes', a
   assert.equal(await selection, 'windows-credential-ui');
 });
 
+test('searchable checkbox prompt filters choices by typed prefix', async () => {
+  const screen = makeScreen(80, 24);
+  const output = new Writable({
+    write(chunk, encoding, callback) {
+      screen.feed(chunk.toString());
+      callback();
+    }
+  });
+  output.isTTY = true;
+  output.columns = 80;
+  output.rows = 24;
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const selection = checkboxPrompt({
+    message: 'Select destinations',
+    choices: [
+      { value: 'qas', name: 'QAS (BAS, client 100)' },
+      { value: 't33', name: 'T33 (SAP GUI, client 800)' },
+      { value: 'tst', name: 'TST (BAS, client 200)' }
+    ],
+    searchable: true
+  }, { input, output });
+
+  await new Promise(resolve => setTimeout(resolve, 10));
+  input.write('T');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const filtered = screen.dump();
+  input.write(' ');
+  input.write('\r');
+
+  assert.match(filtered, /Search: T/u);
+  assert.match(filtered, /T33/u);
+  assert.match(filtered, /TST/u);
+  assert.doesNotMatch(filtered, /QAS/u);
+  assert.deepEqual(await selection, ['t33']);
+});
+
+test('searchable checkbox prompt accepts k as a search character', async () => {
+  const screen = makeScreen(80, 24);
+  const output = new Writable({
+    write(chunk, encoding, callback) {
+      screen.feed(chunk.toString());
+      callback();
+    }
+  });
+  output.isTTY = true;
+  output.columns = 80;
+  output.rows = 24;
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const selection = checkboxPrompt({
+    message: 'Select destinations',
+    choices: [
+      { value: 'qas', name: 'QAS (BAS, client 100)' },
+      { value: 'k11', name: 'K11 (SAP GUI, client 800)' }
+    ],
+    searchable: true
+  }, { input, output });
+
+  await new Promise(resolve => setTimeout(resolve, 10));
+  input.write('K');
+  await new Promise(resolve => setTimeout(resolve, 10));
+  const filtered = screen.dump();
+  input.write(' ');
+  input.write('\r');
+
+  assert.match(filtered, /Search: K/u);
+  assert.match(filtered, /K11/u);
+  assert.doesNotMatch(filtered, /QAS/u);
+  assert.deepEqual(await selection, ['k11']);
+});
+
 test('checkbox prompt redraws cleanly on arrow keys in terminals narrower than the header', async () => {
   for (const columns of [63, 30]) {
     const screen = makeScreen(columns, 24);

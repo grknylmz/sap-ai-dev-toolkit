@@ -409,10 +409,14 @@ export function hasExplicitPort(url) {
 
 // A portless URL means 443, which on-premise ICMs rarely serve; VSP's `detect`
 // probes the conventional ADT ports and reports which one answers.
-export async function detectAdtUrl(binary, { url, client, env = process.env, timeoutMs = 60_000 } = {}) {
+export async function detectAdtUrl(binary, { url, client, env = process.env, exhaustive = false, ports = [], timeoutMs = 180_000 } = {}) {
   let configured;
   try { configured = new URL(url); } catch { return ''; }
-  const args = ['detect', configured.hostname.replace(/^\[(.*)\]$/, '$1'), '--json', ...(client ? ['--client', String(client)] : [])];
+  const host = configured.hostname.replace(/^\[(.*)\]$/, '$1');
+  const args = ['detect', host, '--json', ...(client ? ['--client', String(client)] : []), ...(exhaustive ? ['--all'] : []), ...ports.flatMap(port => ['--port', String(port)])];
+  // A corporate HTTPS_PROXY rarely routes internal SAP hosts; probe them directly.
+  const noProxy = [env.NO_PROXY || env.no_proxy, host].filter(Boolean).join(',');
+  env = { ...env, NO_PROXY: noProxy, no_proxy: noProxy };
   const [command, ...prefixArgs] = /\.(?:mjs|cjs|js)$/i.test(binary)
     ? [process.execPath, binary]
     : (/\.(?:cmd|bat)$/i.test(binary) && platform() === 'win32' ? ['cmd', '/c', binary] : [binary]);

@@ -212,10 +212,16 @@ async function configuredLocalSapGuiDestination(env) {
     let url = env.SAP_URL;
     // SAP GUI landscapes carry no HTTP port, and the SSO browser cannot sign in on a guessed one.
     if (!hasExplicitPort(url)) {
-      const detected = await detectLocalAdtUrl({ url, client }).catch(() => '');
+      const host = new URL(url).hostname;
+      logLine(`[sap-ai-dev] ${name}: SAP_URL has no port; port scan in progress on ${host} (usual ADT ports)`);
+      let detected = await detectLocalAdtUrl({ url, client }).catch(() => '');
+      if (!detected) {
+        logLine(`[sap-ai-dev] ${name}: no ADT port on the usual ports; port scan in progress on every conventional SAP port of ${host} (can take a minute)`);
+        detected = await detectLocalAdtUrl({ url, client, exhaustive: true }).catch(() => '');
+      }
       logLine(detected
-        ? `[sap-ai-dev] ${name}: SAP_URL has no port; ADT answers at ${detected}`
-        : `[sap-ai-dev] ${name}: SAP_URL has no port and no ADT port answered on ${new URL(url).hostname}; add the port to SAP_URL or rerun sap-ai-dev --setup`);
+        ? `[sap-ai-dev] ${name}: port scan finished; ADT answers at ${detected}`
+        : `[sap-ai-dev] ${name}: port scan finished; no ADT port answered on ${host}; add the port to SAP_URL or rerun sap-ai-dev --setup`);
       url = detected || url;
     }
     return {

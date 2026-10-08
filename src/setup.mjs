@@ -126,19 +126,39 @@ function localAuthenticationLabel(authMode) {
 
 // The SSO browser signs in on the ADT URL itself, and SAP GUI landscapes never
 // carry the HTTP port, so a portless URL would send it to 443.
-async function detectSsoAdtPort(destination, label, client, { output = stdout, env = process.env, detectAdtUrl } = {}) {
+async function detectSsoAdtPort(destination, label, client, { input = stdin, output = stdout, env = process.env, detectAdtUrl } = {}) {
   if (!detectAdtUrl || hasExplicitPort(destination.url)) return;
-  const stopProgress = startProgress(`Detecting the ADT port for ${label}`, { output, env, label: 'SSO' });
-  let detected = '';
-  try { detected = await detectAdtUrl({ url: destination.url, client }); }
-  catch { detected = ''; }
-  finally { stopProgress(); }
-  if (detected) {
-    destination.url = detected;
-    print(output, formatStatus(`ADT answers at ${detected}; SSO signs in there.`, 'success', output, 'SSO'));
-    return;
+  const scan = async (message, options) => {
+    const stopProgress = startProgress(message, { output, env, label: 'SSO' });
+    try { return await detectAdtUrl({ url: destination.url, client, ...options }); }
+    catch { return ''; }
+    finally { stopProgress(); }
+  };
+  print(output, formatStatus(`Port scan in progress on ${new URL(destination.url).hostname} to find the ADT port for ${label}.`, 'progress', output, 'SSO'));
+  let detected = await scan(`Detecting the ADT port for ${label}`, {});
+  if (!detected) {
+    print(output, formatStatus(`No ADT port answered on the usual ports for ${label}; port scan in progress on every conventional SAP port (this can take a minute).`, 'progress', output, 'SSO'));
+    detected = await scan(`Sweeping SAP HTTP(S) ports for ${label}`, { exhaustive: true });
   }
-  print(output, formatStatus(`No ADT port answered for ${label}; SSO keeps ${destination.url}. If the browser cannot reach it, rerun setup and enter the ADT URL with its port, for example ${new URL(destination.url).origin}:44300.`, 'warning', output, 'SSO'));
+  // Nothing on the machine knows the port, so the person who does is asked until one answers.
+  while (!detected) {
+    const host = new URL(destination.url).hostname;
+    print(output, formatStatus(`No ADT port answered on ${host}. Ask basis or check SMICM (Goto > Services) for the HTTPS port.`, 'warning', output, 'SSO'));
+    const answer = String(await textPrompt({
+      message: `ADT port or URL for ${label}`,
+      placeholder: '44300 or https://host:44300',
+      validate: value => /^\d{2,5}$/.test(String(value).trim()) || validateAdtUrlCandidate(String(value).trim())
+    }, { input, output })).trim();
+    const candidate = /^\d+$/.test(answer) ? `${new URL(destination.url).origin}:${answer}` : answer;
+    const port = Number(new URL(candidate).port || (candidate.startsWith('http:') ? 80 : 443));
+    detected = await detectAdtUrl({ url: candidate, client, ports: [port] }).catch(() => '');
+    if (!detected && await confirmPrompt(`${candidate} did not answer as ADT. Use it anyway? (y/Enter=yes, n=try another)`, { input, output })) {
+      destination.url = candidate;
+      return;
+    }
+  }
+  destination.url = detected;
+  print(output, formatStatus(`ADT answers at ${detected}; SSO signs in there.`, 'success', output, 'SSO'));
 }
 
 async function confirmPrompt(message, { input = stdin, output = stdout } = {}) {
@@ -246,7 +266,7 @@ async function runManualEntryWizard({ env = process.env, input = stdin, output =
     await maybeConfigureTlsSelfHeal(destination, name, { input, output });
     const clients = await promptSapClients(destination, { input, output });
     const authMode = await chooseLocalAuthMode(destination, { input, output, env });
-    if (authMode === 'sso') await detectSsoAdtPort(destination, name, clients[0], { output, env, detectAdtUrl });
+    if (authMode === 'sso') await detectSsoAdtPort(destination, name, clients[0], { input, output, env, detectAdtUrl });
     destination.authentication = localAuthenticationLabel(authMode);
     destination.authMode = authMode;
     for (const client of clients) {
@@ -398,6 +418,7 @@ async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin
     message: colorText('🧭 Select destinations', 'cyan', output),
     choices,
     required: false,
+    searchable: true,
     shortcuts: { all: 'a' },
     actions: { m: addManually },
     confirmEmpty: 'Press Enter again to continue with none (removes this add-on’s MCP entries).'
@@ -435,7 +456,7 @@ async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin
       destination.url = url || fallback;
       await maybeConfigureTlsSelfHeal(destination, promptLabel, { input, output });
       const authMode = await chooseLocalAuthMode({ ...destination, name: promptLabel }, { input, output, env });
-      if (authMode === 'sso') await detectSsoAdtPort(destination, promptLabel, clients[0], { output, env, detectAdtUrl });
+      if (authMode === 'sso') await detectSsoAdtPort(destination, promptLabel, clients[0], { input, output, env, detectAdtUrl });
       destination.authentication = localAuthenticationLabel(authMode);
       destination.authMode = authMode;
       for (const client of clients) {

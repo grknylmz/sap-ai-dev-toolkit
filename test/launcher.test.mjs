@@ -486,7 +486,8 @@ test('runtime detects the ADT port for an SSO destination whose SAP_URL has none
     const init = entries.find(entry => entry.event === 'initialize');
     assert.equal(init.argv[init.argv.indexOf('--url') + 1], 'https://abap.example.com:44310');
     assert.equal(init.env.ssoSystem, 's4h-100');
-    assert.match(result.stderr, /SAP_URL has no port; ADT answers at https:\/\/abap\.example\.com:44310/);
+    assert.match(result.stderr, /SAP_URL has no port; port scan in progress on abap\.example\.com/);
+    assert.match(result.stderr, /port scan finished; ADT answers at https:\/\/abap\.example\.com:44310/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -514,7 +515,8 @@ test('runtime maps legacy browser-saml and windows-sso entries to VSP browser SS
       assert.equal(result.code, 0, result.stderr);
       const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
       const init = entries.find(entry => entry.event === 'initialize');
-      // Nothing answered the port scan, so the configured URL stays.
+      // Nothing answered the shortlist or the full sweep, so the configured URL stays.
+      assert.deepEqual(entries.filter(entry => entry.event === 'detect').map(entry => entry.argv.includes('--all')), [false, true]);
       assert.equal(init.argv[init.argv.indexOf('--url') + 1], 'https://abap.example.com');
       assert.equal(init.env.sso, 'true', legacy.SAP_AUTH_MODE);
       assert.equal(init.env.ssoSystem, 'abap.example.com-100');

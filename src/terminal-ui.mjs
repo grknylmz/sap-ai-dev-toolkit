@@ -213,11 +213,13 @@ export async function selectPrompt({ message, choices, defaultValue } = {}, { in
   });
 }
 
-export async function checkboxPrompt({ message, choices: initialChoices, required = false, shortcuts = { all: 'a' }, actions = {}, validate, confirmEmpty = '' } = {}, { input = process.stdin, output = process.stdout } = {}) {
+export async function checkboxPrompt({ message, choices: initialChoices, required = false, shortcuts = { all: 'a' }, actions = {}, validate, confirmEmpty = '', searchable = false } = {}, { input = process.stdin, output = process.stdout } = {}) {
   if (!Array.isArray(initialChoices) || !initialChoices.length) return [];
   // Action shortcuts (for example 'm' → manual entry wizard) may append new
   // choices while the picker is open, so the list itself stays mutable.
   let choices = initialChoices;
+  let searchQuery = '';
+  let searchMode = false;
   const selectable = enabledChoices(choices);
   const selected = new Set(choices.flatMap((choice, index) => choice.checked && !choice.disabled ? [index] : []));
   let cursor = firstEnabledIndex(choices);
@@ -228,40 +230,70 @@ export async function checkboxPrompt({ message, choices: initialChoices, require
   // With confirmEmpty set, Enter on an empty selection shows it and waits for a second Enter.
   let awaitingEmptyConfirm = false;
 
+  const matchingIndexes = () => choices
+    .map((choice, index) => ({ choice, index }))
+    .filter(({ choice }) => !searchQuery || String(choice.name || '').toLowerCase().startsWith(searchQuery.toLowerCase()))
+    .map(({ index }) => index);
+  const visibleIndexes = () => {
+    const indexes = matchingIndexes();
+    if (searchable && (!indexes.includes(cursor) || choices[cursor]?.disabled)) {
+      cursor = indexes.find(index => !choices[index]?.disabled) ?? -1;
+    }
+    return indexes;
+  };
+  const moveCursor = step => {
+    if (!searchable) {
+      cursor = nextEnabledIndex(choices, cursor, step);
+      return;
+    }
+    const indexes = visibleIndexes();
+    const visibleChoices = indexes.map(index => choices[index]);
+    if (!visibleChoices.some(choice => !choice.disabled)) return;
+    const position = nextEnabledIndex(visibleChoices, indexes.indexOf(cursor), step);
+    cursor = indexes[position] ?? -1;
+  };
+
   const write = text => output.write(text);
   const clearRendered = () => {
     if (!renderedLines) return;
     write(`\u001b[${renderedLines}A\u001b[J`);
     renderedLines = 0;
   };
-  const ensureVisible = pageSize => {
-    if (cursor < top) top = cursor;
-    if (cursor >= top + pageSize) top = cursor - pageSize + 1;
-    top = clamp(top, 0, Math.max(0, choices.length - pageSize));
+  const ensureVisible = (pageSize, visibleCount, cursorPosition) => {
+    if (cursorPosition >= 0 && cursorPosition < top) top = cursorPosition;
+    if (cursorPosition >= top + pageSize) top = cursorPosition - pageSize + 1;
+    top = clamp(top, 0, Math.max(0, visibleCount - pageSize));
   };
   const footer = error => {
     if (error) return [[error, 'red']];
     if (awaitingEmptyConfirm) return [['Nothing is selected yet. Press Space to select the highlighted item (❯).', 'yellow'], [confirmEmpty, 'yellow']];
+    if (searchable && matchingIndexes().length === 0) return [['No choices match. Backspace or Esc clears search.', 'yellow']];
     if (!selected.size) return [['Press Space to select the highlighted item (❯), then Enter to confirm.', 'cyan']];
     return [[`${selected.size} selected. Press Enter to confirm, or Space to change.`, 'green']];
   };
   const render = (error = '') => {
     const columns = Number.isFinite(output?.columns) ? output.columns : 80;
-    const pageSize = checkboxPageSize(output, choices.length);
-    ensureVisible(pageSize);
+    const indexes = visibleIndexes();
+    const pageSize = searchable
+      ? Math.max(1, checkboxPageSize(output, indexes.length + 1) - 1)
+      : checkboxPageSize(output, indexes.length);
+    const cursorPosition = indexes.indexOf(cursor);
+    ensureVisible(pageSize, indexes.length, cursorPosition);
     const lines = [];
     lines.push(truncateToColumns(`${message} (Space: select, ${shortcuts?.all || 'a'}: toggle all, Enter: confirm)`, columns));
-    const end = Math.min(choices.length, top + pageSize);
+    if (searchable) lines.push(truncateToColumns(`Search: ${searchQuery || (searchMode ? '' : 'type a prefix; / for a or m')}`, columns));
+    const end = Math.min(indexes.length, top + pageSize);
     for (let index = top; index < end; index += 1) {
-      const choice = choices[index];
-      const pointer = index === cursor ? '❯' : ' ';
+      const choiceIndex = indexes[index];
+      const choice = choices[choiceIndex];
+      const pointer = choiceIndex === cursor ? '❯' : ' ';
       // A red ✗ for "not selected yet" was read as an error, so unselected rows show an empty box.
-      const box = choice.disabled ? '[-]' : (selected.has(index) ? colorText('[✓]', 'green', output) : '[ ]');
+      const box = choice.disabled ? '[-]' : (selected.has(choiceIndex) ? colorText('[✓]', 'green', output) : '[ ]');
       const disabled = choice.disabled ? ` — ${choice.disabled}` : '';
       lines.push(truncateToColumns(`${pointer} ${box} ${choice.name}${disabled}`, columns));
     }
-    if (choices.length > pageSize) {
-      lines.push(truncateToColumns(colorText(`  Showing ${top + 1}-${end} of ${choices.length}; use ↑/↓ to scroll.`, 'cyan', output), columns));
+    if (indexes.length > pageSize) {
+      lines.push(truncateToColumns(colorText(`  Showing ${top + 1}-${end} of ${indexes.length}; use ↑/↓ to scroll.`, 'cyan', output), columns));
     }
     for (const [text, color] of footer(error)) lines.push(truncateToColumns(colorText(`  ${text}`, color, output), columns));
     clearRendered();
@@ -328,16 +360,25 @@ export async function checkboxPrompt({ message, choices: initialChoices, require
     };
     const onKeypress = (_chunk, key = {}) => {
       if (key.ctrl && key.name === 'c') return fail(new Error('Prompt interrupted'));
-      if (key.name === 'up' || key.name === 'k') cursor = nextEnabledIndex(choices, cursor, -1);
-      else if (key.name === 'down' || key.name === 'j') cursor = nextEnabledIndex(choices, cursor, 1);
-      else if (key.name === 'space' && !choices[cursor]?.disabled) {
+      else if (searchable && key.name === 'escape') {
+        searchQuery = '';
+        searchMode = false;
+        top = 0;
+      } else if (searchable && searchMode && (key.name === 'backspace' || key.name === 'delete')) {
+        searchQuery = Array.from(searchQuery).slice(0, -1).join('');
+        if (!searchQuery) searchMode = false;
+        top = 0;
+      } else if (searchable && !searchMode && String(_chunk ?? '') === '/' && !key.ctrl && !key.meta) searchMode = true;
+      else if (key.name === 'up' || (!searchable && key.name === 'k')) moveCursor(-1);
+      else if (key.name === 'down' || (!searchable && key.name === 'j')) moveCursor(1);
+      else if (key.name === 'space' && cursor >= 0 && !choices[cursor]?.disabled) {
         if (selected.has(cursor)) selected.delete(cursor);
         else selected.add(cursor);
-      } else if (shortcuts?.all && key.name === shortcuts.all) {
+      } else if ((!searchable || !searchMode) && shortcuts?.all && key.name === shortcuts.all) {
         const allSelected = enabledChoices(choices).every(choice => selected.has(choices.indexOf(choice)));
         selected.clear();
         if (!allSelected) for (const choice of enabledChoices(choices)) selected.add(choices.indexOf(choice));
-      } else if (actionShortcutFor(_chunk, key)) {
+      } else if ((!searchable || !searchMode) && actionShortcutFor(_chunk, key)) {
         awaitingEmptyConfirm = false;
         void runAction(actionShortcutFor(_chunk, key));
         return;
@@ -351,6 +392,10 @@ export async function checkboxPrompt({ message, choices: initialChoices, require
           return render();
         }
         return finish(values);
+      } else if (searchable && !key.ctrl && !key.meta && Array.from(String(_chunk ?? '')).length === 1 && !/[\u0000-\u001f\u007f]/u.test(String(_chunk))) {
+        searchMode = true;
+        searchQuery += String(_chunk);
+        top = 0;
       } else {
         return;
       }
