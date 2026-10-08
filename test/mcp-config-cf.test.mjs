@@ -156,7 +156,7 @@ test('writes local SAP GUI entries with VS Code login inputs and no BAS dependen
   assert.deepEqual(config.inputs, [{ id: 'keep-me', type: 'promptString' }]);
 });
 
-test('writes local SAP GUI Windows SSO entries without username or password inputs', async t => {
+test('writes local SAP GUI SSO entries without username or password inputs', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'sap-gui-sso-mcp-config-'));
   const path = join(directory, 'mcp.json');
   const command = join(directory, 'sap-ai-dev');
@@ -170,136 +170,16 @@ test('writes local SAP GUI Windows SSO entries without username or password inpu
     url: 'https://sso.example.com:44300',
     client: '100',
     systemId: 'S4H',
-    authentication: 'WindowsSSO',
-    childEnv: { SAP_AUTH_MODE: 'windows-sso' },
+    authentication: 'SSO',
+    childEnv: { SAP_AUTH_MODE: 'sso' },
     inputs: []
   }], { env: { PATH: directory }, path });
 
-  assert.equal(installed.servers['s4h-100'].env.SAP_AUTH_MODE, 'windows-sso');
+  assert.equal(installed.servers['s4h-100'].env.SAP_AUTH_MODE, 'sso');
   assert.equal(installed.servers['s4h-100'].env.SAP_USER, undefined);
   assert.equal(installed.servers['s4h-100'].env.SAP_PASSWORD, undefined);
   const config = await readMcpConfig(path);
   assert.deepEqual(config.inputs || [], []);
-});
-
-test('writes local SAP GUI Windows SSO entries with Basic fallback inputs', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-sso-fallback-mcp-config-'));
-  const path = join(directory, 'mcp.json');
-  const command = join(directory, 'sap-ai-dev');
-  await writeFile(command, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  t.after(() => rm(directory, { recursive: true, force: true }));
-
-  await installMcpConfig([{
-    source: 'sap-gui-local',
-    name: 'SSO ABAP',
-    serverName: 'SSO ABAP',
-    url: 'https://sso.example.com:44300',
-    client: '100',
-    systemId: 'S4H',
-    authentication: 'WindowsSSO',
-    childEnv: {
-      SAP_AUTH_MODE: 'windows-sso',
-      SAP_AUTH_FALLBACK_MODE: 'basic',
-      SAP_USER: '${input:sap-ai-dev-sso-abap-user}',
-      SAP_PASSWORD: '${input:sap-ai-dev-sso-abap-password}'
-    },
-    inputs: [
-      { id: 'sap-ai-dev-sso-abap-user', type: 'promptString', description: 'SAP user for SSO ABAP' },
-      { id: 'sap-ai-dev-sso-abap-password', type: 'promptString', description: 'SAP password for SSO ABAP', password: true }
-    ]
-  }], { env: { PATH: directory }, path });
-
-  const config = await readMcpConfig(path);
-  assert.equal(config.servers['s4h-100'].env.SAP_AUTH_MODE, 'windows-sso');
-  assert.equal(config.servers['s4h-100'].env.SAP_AUTH_FALLBACK_MODE, 'basic');
-  assert.equal(config.servers['s4h-100'].env.SAP_USER, '${input:sap-ai-dev-sso-abap-user}');
-  assert.deepEqual(config.inputs.map(input => input.id), ['sap-ai-dev-sso-abap-user', 'sap-ai-dev-sso-abap-password']);
-});
-
-test('writes local SAP GUI Windows credential UI entries without password inputs', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-win-ui-mcp-config-'));
-  const path = join(directory, 'mcp.json');
-  const command = join(directory, 'sap-ai-dev');
-  await writeFile(command, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  t.after(() => rm(directory, { recursive: true, force: true }));
-
-  await installMcpConfig([{
-    source: 'sap-gui-local',
-    name: 'SSO ABAP',
-    serverName: 'SSO ABAP',
-    url: 'https://sso.example.com:44300',
-    client: '100',
-    systemId: 'S4H',
-    authentication: 'WindowsSSO',
-    childEnv: { SAP_AUTH_MODE: 'windows-sso', SAP_AI_DEV_TOOLKIT_WINDOWS_CREDENTIAL_UI: 'true' },
-    inputs: []
-  }], { env: { PATH: directory }, path });
-
-  const config = await readMcpConfig(path);
-  assert.equal(config.servers['s4h-100'].env.SAP_AUTH_MODE, 'windows-sso');
-  assert.equal(config.servers['s4h-100'].env.SAP_AI_DEV_TOOLKIT_WINDOWS_CREDENTIAL_UI, 'true');
-  assert.equal(config.servers['s4h-100'].env.SAP_USER, undefined);
-  assert.deepEqual(config.inputs || [], []);
-});
-
-test('writes local SAP GUI browser SAML entries without credential inputs', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-browser-saml-mcp-config-'));
-  const path = join(directory, 'mcp.json');
-  const command = join(directory, 'sap-ai-dev');
-  await writeFile(command, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  t.after(() => rm(directory, { recursive: true, force: true }));
-
-  await installMcpConfig([{
-    source: 'sap-gui-local',
-    name: 'Browser ABAP',
-    serverName: 'Browser ABAP',
-    url: 'https://browser.example.com:44300',
-    client: '100',
-    systemId: 'B4H',
-    authentication: 'BrowserSAML',
-    childEnv: { SAP_AUTH_MODE: 'browser-saml', SAP_BROWSER_AUTH: 'true', SAP_SAML_AUTH: 'true' },
-    inputs: []
-  }], { env: { PATH: directory }, path });
-
-  const config = await readMcpConfig(path);
-  assert.equal(config.servers['b4h-100'].env.SAP_AUTH_MODE, 'browser-saml');
-  assert.equal(config.servers['b4h-100'].env.SAP_BROWSER_AUTH, 'true');
-  assert.equal(config.servers['b4h-100'].env.SAP_SAML_AUTH, 'true');
-  assert.deepEqual(config.inputs || [], []);
-});
-
-test('writes local SAP GUI SAML password entries with SAML-only input ids', async t => {
-  const directory = await mkdtemp(join(tmpdir(), 'sap-gui-saml-password-mcp-config-'));
-  const path = join(directory, 'mcp.json');
-  const command = join(directory, 'sap-ai-dev');
-  await writeFile(command, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
-  t.after(() => rm(directory, { recursive: true, force: true }));
-
-  await installMcpConfig([{
-    source: 'sap-gui-local',
-    name: 'SAML ABAP',
-    serverName: 'SAML ABAP',
-    url: 'https://saml.example.com:44300',
-    client: '100',
-    systemId: 'M4H',
-    authentication: 'SAML',
-    childEnv: {
-      SAP_AUTH_MODE: 'saml-password',
-      SAP_SAML_AUTH: 'true',
-      SAP_SAML_USER: '${input:sap-ai-dev-saml-abap-user}',
-      SAP_SAML_PASSWORD: '${input:sap-ai-dev-saml-abap-password}'
-    },
-    inputs: [
-      { id: 'sap-ai-dev-saml-abap-user', type: 'promptString', description: 'SAP user for SAML ABAP' },
-      { id: 'sap-ai-dev-saml-abap-password', type: 'promptString', description: 'SAP password for SAML ABAP', password: true }
-    ]
-  }], { env: { PATH: directory }, path });
-
-  const config = await readMcpConfig(path);
-  assert.equal(config.servers['m4h-100'].env.SAP_AUTH_MODE, 'saml-password');
-  assert.equal(config.servers['m4h-100'].env.SAP_SAML_USER, '${input:sap-ai-dev-saml-abap-user}');
-  assert.equal(config.servers['m4h-100'].env.SAP_USER, undefined);
-  assert.deepEqual(config.inputs.map(input => input.id), ['sap-ai-dev-saml-abap-user', 'sap-ai-dev-saml-abap-password']);
 });
 
 test('stores and reconciles the MCP launcher executable location', async t => {

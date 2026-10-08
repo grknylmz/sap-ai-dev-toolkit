@@ -60,7 +60,7 @@ function runLauncherTty(env, input, args = ['--setup'], wizardAnswer = 'e\r') {
 // On Windows the local setup flow asks for the authentication mode after the
 // ADT URL prompt (Windows SSO is offered there); Unix never shows that prompt.
 function windowsAuthStep(label, options = {}) {
-  return { when: `Authentication for ${label}`, input: '\r', ...options };
+  return { when: `Authentication for ${label}`, input: 'p\r', ...options };
 }
 
 function runLauncherTtyScripted(env, steps, args = ['--setup']) {
@@ -332,7 +332,7 @@ test('runtime starts a configured local SAP GUI destination through TLS server-n
   }
 });
 
-test('runtime starts a configured local SAP GUI Windows SSO destination through loopback proxy without credentials', async () => {
+test('runtime starts a configured local SAP GUI SSO destination with VSP browser SSO and no credentials', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-sso-runtime-'));
   const log = join(directory, 'children.log');
   try {
@@ -343,8 +343,8 @@ test('runtime starts a configured local SAP GUI Windows SSO destination through 
       SAP_AI_DEV_TOOLKIT_DESTINATION: 'Local SSO',
       SAP_URL: 'https://abap.example.com:44300',
       SAP_CLIENT: '100',
-      SAP_AUTH_MODE: 'windows-sso',
-      SAP_AI_DEV_TOOLKIT_ALLOW_SSO_PROXY_ON_NON_WINDOWS: 'true',
+      SAP_SYSTEM_ID: 'S4H',
+      SAP_AUTH_MODE: 'sso',
       SAP_USER: 'must-not-pass',
       SAP_PASSWORD: 'must-not-pass',
       H2O_URL: '',
@@ -352,74 +352,48 @@ test('runtime starts a configured local SAP GUI Windows SSO destination through 
     });
     assert.equal(result.code, 0, result.stderr);
     assert.equal(JSON.parse(result.stdout).ok, true);
-    assert.match(result.stderr, /\[Local SSO\] starting VSP child \(client=100\)/);
     const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
     const init = entries.find(entry => entry.event === 'initialize');
-    assert.ok(init, 'fake VSP initialize log is present');
-    const url = init.argv[init.argv.indexOf('--url') + 1];
-    assert.match(url, /^http:\/\/127\.0\.0\.1:\d+$/);
-    assert.ok(init.argv.includes('--proxy-auth'), 'SSO proxy owns authentication; VSP must not prompt or load .env credentials');
-    assert.equal(init.env.user, '');
-    assert.equal(init.env.password, '');
+    assert.equal(init.argv[init.argv.indexOf('--url') + 1], 'https://abap.example.com:44300');
+    assert.equal(init.argv.includes('--proxy-auth'), false);
+    assert.equal(init.env.sso, 'true');
+    assert.equal(init.env.ssoSystem, 's4h-100');
     assert.equal(JSON.stringify(init).includes('must-not-pass'), false);
-    assert.equal(JSON.stringify(init).includes('abap.example.com'), false);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
 });
 
-test('runtime starts a configured local SAP GUI browser SAML destination with VSP browser auth env', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-browser-saml-runtime-'));
-  const log = join(directory, 'children.log');
-  try {
-    const result = await runLauncher(['--doctor', '--json'], {
-      ...process.env,
-      SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
-      SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
-      SAP_AI_DEV_TOOLKIT_DESTINATION: 'Local Browser SAML',
-      SAP_URL: 'https://abap.example.com:44300',
-      SAP_CLIENT: '100',
-      SAP_AUTH_MODE: 'browser-saml',
-      H2O_URL: '',
-      FAKE_LOG: log
-    });
-    assert.equal(result.code, 0, result.stderr);
-    const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
-    const init = entries.find(entry => entry.event === 'initialize');
-    assert.equal(init.env.browserAuth, 'true');
-    assert.equal(init.env.samlAuth, 'true');
-    assert.equal(init.argv.includes('--proxy-auth'), false);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
-  }
-});
-
-test('runtime starts a configured local SAP GUI SAML password destination with SAML env', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-saml-password-runtime-'));
-  const log = join(directory, 'children.log');
-  try {
-    const result = await runLauncher(['--doctor', '--json'], {
-      ...process.env,
-      SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
-      SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
-      SAP_AI_DEV_TOOLKIT_DESTINATION: 'Local SAML',
-      SAP_URL: 'https://abap.example.com:44300',
-      SAP_CLIENT: '100',
-      SAP_AUTH_MODE: 'saml-password',
-      SAP_SAML_USER: 'saml-user',
-      SAP_SAML_PASSWORD: 'saml-password',
-      H2O_URL: '',
-      FAKE_LOG: log
-    });
-    assert.equal(result.code, 0, result.stderr);
-    const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
-    const init = entries.find(entry => entry.event === 'initialize');
-    assert.equal(init.env.samlAuth, 'true');
-    assert.equal(init.env.samlUser, 'saml-user');
-    assert.equal(init.env.samlPassword, 'saml-password');
-    assert.equal(init.argv.includes('--proxy-auth'), false);
-  } finally {
-    await rm(directory, { recursive: true, force: true });
+test('runtime maps legacy browser-saml and windows-sso entries to VSP browser SSO', async () => {
+  for (const legacy of [
+    { SAP_AUTH_MODE: 'browser-saml', SAP_BROWSER_AUTH: 'true', SAP_SAML_AUTH: 'true' },
+    { SAP_AUTH_MODE: 'windows-sso', SAP_AI_DEV_TOOLKIT_WINDOWS_CREDENTIAL_UI: 'true' }
+  ]) {
+    const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-legacy-sso-'));
+    const log = join(directory, 'children.log');
+    try {
+      const result = await runLauncher(['--doctor', '--json'], {
+        ...process.env,
+        SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
+        SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
+        SAP_AI_DEV_TOOLKIT_DESTINATION: 'Legacy SSO',
+        SAP_URL: 'https://abap.example.com',
+        SAP_CLIENT: '100',
+        ...legacy,
+        H2O_URL: '',
+        FAKE_LOG: log
+      });
+      assert.equal(result.code, 0, result.stderr);
+      const entries = (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
+      const init = entries.find(entry => entry.event === 'initialize');
+      assert.equal(init.env.sso, 'true', legacy.SAP_AUTH_MODE);
+      assert.equal(init.env.ssoSystem, 'abap.example.com-100');
+      assert.equal(init.env.browserAuth, undefined);
+      assert.equal(init.env.samlAuth, '');
+      assert.equal(init.argv.includes('--proxy-auth'), false);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
   }
 });
 
@@ -517,7 +491,7 @@ test('interactive local launcher starts the manual entry wizard when no SAP GUI 
       { when: 'System name', input: 'Q7C\r' },
       { when: 'ADT URL for Q7C', input: 'https://q7c.example:44300\r' },
       { when: 'SAP client(s) for Q7C', input: '\r' },
-      ...(isWindows ? [{ when: 'Authentication for Q7C', input: '\r' }] : []),
+      ...(isWindows ? [{ when: 'Authentication for Q7C', input: 'p\r' }] : []),
       { when: 'Add another system?', input: 'n\r' }
     ], ['--setup']);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
@@ -698,7 +672,7 @@ test('local setup auto-discovers TLS certificate DNS names when ADT URL uses an 
   }
 });
 
-test('local setup can write Windows SSO auth mode without login inputs', async () => {
+test('local setup can write SSO auth mode without login inputs', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-sso-setup-'));
   const appData = join(directory, 'AppData', 'Roaming');
   const sapCommon = join(appData, 'SAP', 'Common');
@@ -720,12 +694,12 @@ test('local setup can write Windows SSO auth mode without login inputs', async (
       { when: 'Select destinations', input: ' \r', end: false },
       { when: 'SAP client(s) for SSO ABAP', input: '\r', end: false },
       { when: 'ADT URL for SSO ABAP', input: '\r', end: false },
-      { when: 'Authentication for SSO ABAP', input: 'sso\r' }
+      { when: 'Authentication for SSO ABAP', input: '\r' }
     ], ['--setup', '--npx']);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
     assert.equal(result.sent, 4);
     const current = JSON.parse(await readFile(config, 'utf8'));
-    assert.equal(current.servers['s4h-100'].env.SAP_AUTH_MODE, 'windows-sso');
+    assert.equal(current.servers['s4h-100'].env.SAP_AUTH_MODE, 'sso');
     assert.equal(current.servers['s4h-100'].env.SAP_USER, undefined);
     assert.equal(current.servers['s4h-100'].env.SAP_PASSWORD, undefined);
     assert.equal(current.servers['s4h-100'].env.SAP_URL, 'https://sso.example.com:44300');
@@ -733,63 +707,6 @@ test('local setup can write Windows SSO auth mode without login inputs', async (
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
-});
-
-test('local setup writes browser SAML, SAML password, and Windows credential UI auth modes', async () => {
-  async function runMode({ shortcut, directoryPrefix, expectedEnv, expectedInputIds = [] }) {
-    const directory = await mkdtemp(join(tmpdir(), directoryPrefix));
-    const appData = join(directory, 'AppData', 'Roaming');
-    const sapCommon = join(appData, 'SAP', 'Common');
-    await mkdir(sapCommon, { recursive: true });
-    await writeFile(join(sapCommon, 'SAPUILandscape.xml'), `<?xml version="1.0"?><Landscape><Services><Service type="SAPGUI" name="Auth ABAP" server="auth.example.com" systemid="A9H" instancenumber="00" client="100" /></Services></Landscape>`);
-    const config = join(directory, 'mcp.json');
-    await writeFile(config, JSON.stringify({ inputs: [], servers: {} }));
-    try {
-      const result = await runLauncherTtyScripted({
-        ...process.env,
-        ...isolatedWindowsEnv(directory),
-        HOME: directory,
-        USERPROFILE: directory,
-        APPDATA: appData,
-        H2O_URL: '',
-        SAP_AI_DEV_TOOLKIT_ENABLE_WINDOWS_SSO_SETUP: 'true',
-        SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config
-      }, [
-        { when: 'Select destinations', input: ' \r', end: false },
-        { when: 'SAP client(s) for Auth ABAP', input: '\r', end: false },
-        { when: 'ADT URL for Auth ABAP', input: '\r', end: false },
-        { when: 'Authentication for Auth ABAP', input: `${shortcut}\r` }
-      ], ['--setup', '--npx']);
-      assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
-      const current = JSON.parse(await readFile(config, 'utf8'));
-      for (const [key, value] of Object.entries(expectedEnv)) assert.equal(current.servers['a9h-100'].env[key], value, key);
-      assert.deepEqual((current.inputs || []).map(input => input.id), expectedInputIds);
-    } finally {
-      await rm(directory, { recursive: true, force: true });
-    }
-  }
-
-  await runMode({
-    shortcut: 'w',
-    directoryPrefix: 'sap-ai-local-win-ui-setup-',
-    expectedEnv: { SAP_AUTH_MODE: 'windows-sso', SAP_AI_DEV_TOOLKIT_WINDOWS_CREDENTIAL_UI: 'true' }
-  });
-  await runMode({
-    shortcut: 'b',
-    directoryPrefix: 'sap-ai-local-browser-saml-setup-',
-    expectedEnv: { SAP_AUTH_MODE: 'browser-saml', SAP_BROWSER_AUTH: 'true', SAP_SAML_AUTH: 'true' }
-  });
-  await runMode({
-    shortcut: 'm',
-    directoryPrefix: 'sap-ai-local-saml-password-setup-',
-    expectedEnv: {
-      SAP_AUTH_MODE: 'saml-password',
-      SAP_SAML_AUTH: 'true',
-      SAP_SAML_USER: '${input:sap-ai-dev-auth-abap-user}',
-      SAP_SAML_PASSWORD: '${input:sap-ai-dev-auth-abap-password}'
-    },
-    expectedInputIds: ['sap-ai-dev-auth-abap-user', 'sap-ai-dev-auth-abap-password']
-  });
 });
 
 test('non-BAS list mode reports the required discovery boundary', async t => {

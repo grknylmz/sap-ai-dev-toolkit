@@ -10,7 +10,6 @@ import { MCPProxy } from './mcp-proxy.mjs';
 import { installMcpConfig, npxMcpLauncher, repairManagedMcpConfig } from './mcp-config.mjs';
 import { runSetup } from './setup.mjs';
 import { resolveConfiguredCloudFoundryDestination } from './cf-destination.mjs';
-import { createWindowsSsoAdtProxy } from './windows-sso-adt-proxy.mjs';
 import { createTlsServerNameAdtProxy } from './tls-adt-proxy.mjs';
 import { withBrandedEnvironment } from './branding.mjs';
 import { redactText } from './redact.mjs';
@@ -184,57 +183,41 @@ async function discoverForCommand() {
 async function configuredLocalSapGuiDestination(env) {
   const name = env.SAP_AI_DEV_TOOLKIT_DESTINATION || env.SAP_SYSTEM_ID || 'local-sap';
   if (!env.SAP_URL) throw new Error('SAP_URL is required for local SAP GUI MCP entries. Rerun sap-ai-dev --setup and enter the ADT URL.');
-  const authMode = String(env.SAP_AUTH_MODE || '').toLowerCase();
+  const client = env.SAP_CLIENT || '001';
+  const systemId = env.SAP_SYSTEM_ID || '';
+  // Older entries used windows-sso, browser-saml or saml-password; all of them now mean browser SSO.
+  if (!['', 'basic'].includes(String(env.SAP_AUTH_MODE || '').toLowerCase())) {
+    const cacheKey = `${systemId || new URL(env.SAP_URL).hostname}-${client}`.toLowerCase().replace(/[^a-z0-9.-]+/g, '-');
+    return {
+      source: 'sap-gui-local',
+      name,
+      url: env.SAP_URL,
+      client,
+      systemId,
+      authentication: 'SSO',
+      // SAP_SAML_AUTH survives sanitizeChildEnv and would make VSP demand SAML credentials.
+      childEnv: { SAP_SSO: 'true', SAP_SSO_SYSTEM: cacheKey, SAP_SAML_AUTH: '' },
+      probe: { status: 'configured', available: true }
+    };
+  }
   const tlsServerName = String(env.SAP_TLS_SERVER_NAME || env.SAP_AI_DEV_TOOLKIT_TLS_SERVER_NAME || '').trim();
   const tlsServerNames = String(env.SAP_TLS_SERVER_NAMES || env.SAP_AI_DEV_TOOLKIT_TLS_SERVER_NAMES || tlsServerName).split(',').map(value => value.trim()).filter(Boolean);
   const tlsCaFile = String(env.SAP_TLS_CA_FILE || env.SAP_AI_DEV_TOOLKIT_TLS_CA_FILE || '').trim();
   const tlsRoute = tlsServerNames.length
     ? await createTlsServerNameAdtProxy({ destinationUrl: env.SAP_URL, tlsServerNames, caFile: tlsCaFile || undefined })
     : null;
-  const adtUrl = tlsRoute?.url || env.SAP_URL;
-  const closeRoute = async route => {
-    await Promise.all([route?.close?.(), tlsRoute?.close?.()].filter(Boolean).map(close => Promise.resolve().then(close).catch(() => {})));
-  };
-  if (authMode === 'windows-sso') {
-    const route = await createWindowsSsoAdtProxy({ destinationUrl: adtUrl, env });
-    return {
-      source: 'sap-gui-local',
-      name,
-      url: route.url,
-      backendUrl: env.SAP_URL,
-      client: env.SAP_CLIENT || '001',
-      systemId: env.SAP_SYSTEM_ID || '',
-      authentication: 'WindowsSSO',
-      childEnv: {},
-      close: () => closeRoute(route),
-      probe: { status: tlsRoute ? 'configured-tls-server-name' : 'configured', available: true }
-    };
-  }
-  const childEnv = (() => {
-    if (authMode === 'browser-saml') {
-      return { SAP_BROWSER_AUTH: 'true', SAP_SAML_AUTH: 'true' };
-    }
-    if (authMode === 'saml-password') {
-      return {
-        SAP_SAML_AUTH: 'true',
-        SAP_SAML_USER: env.SAP_SAML_USER || env.SAP_USER || env.SAP_USERNAME || '',
-        SAP_SAML_PASSWORD: env.SAP_SAML_PASSWORD || env.SAP_PASSWORD || env.SAP_PASS || ''
-      };
-    }
-    return {
-      SAP_USER: env.SAP_USER || env.SAP_USERNAME || '',
-      SAP_PASSWORD: env.SAP_PASSWORD || env.SAP_PASS || ''
-    };
-  })();
   return {
     source: 'sap-gui-local',
     name,
-    url: adtUrl,
+    url: tlsRoute?.url || env.SAP_URL,
     backendUrl: tlsRoute ? env.SAP_URL : undefined,
-    client: env.SAP_CLIENT || '001',
-    systemId: env.SAP_SYSTEM_ID || '',
-    authentication: authMode === 'browser-saml' ? 'BrowserSAML' : authMode === 'saml-password' ? 'SAML' : 'Basic',
-    childEnv,
+    client,
+    systemId,
+    authentication: 'Basic',
+    childEnv: {
+      SAP_USER: env.SAP_USER || env.SAP_USERNAME || '',
+      SAP_PASSWORD: env.SAP_PASSWORD || env.SAP_PASS || ''
+    },
     close: tlsRoute?.close,
     probe: { status: tlsRoute ? 'configured-tls-server-name' : 'configured', available: true }
   };

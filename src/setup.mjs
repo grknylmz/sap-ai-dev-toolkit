@@ -58,14 +58,10 @@ async function chooseLocalAuthMode(destination, { input = stdin, output = stdout
   if (!windowsSsoSetupAvailable(env)) return 'basic';
   return await selectPrompt({
     message: `Authentication for ${destination.name}`,
-    defaultValue: 'basic',
+    defaultValue: 'sso',
     choices: [
-      { name: 'password', value: 'basic', shortcut: 'p' },
-      { name: 'windows-sso (Kerberos/SPNEGO, silent current Windows logon)', value: 'windows-sso', shortcut: 's' },
-      { name: 'windows-sso with native Windows credential UI / smartcard PIN', value: 'windows-credential-ui', shortcut: 'w' },
-      { name: 'windows-sso with password fallback (self-heal when Negotiate/PIN is unavailable)', value: 'windows-sso-basic-fallback', shortcut: 'f' },
-      { name: 'browser SAML / web SSO (opens browser if supported by VSP)', value: 'browser-saml', shortcut: 'b' },
-      { name: 'SAML username/password', value: 'saml-password', shortcut: 'm' }
+      { name: 'Windows / smart card SSO (Edge signs in automatically)', value: 'sso', shortcut: 's' },
+      { name: 'Username/password', value: 'basic', shortcut: 'p' }
     ]
   }, { input, output });
 }
@@ -125,7 +121,7 @@ function validateAdtUrlCandidate(candidate) {
 }
 
 function localAuthenticationLabel(authMode) {
-  return ['windows-sso', 'windows-credential-ui', 'windows-sso-basic-fallback'].includes(authMode) ? 'WindowsSSO' : 'Basic';
+  return authMode === 'sso' ? 'SSO' : 'Basic';
 }
 
 async function confirmPrompt(message, { input = stdin, output = stdout } = {}) {
@@ -147,38 +143,9 @@ function buildLocalClientDestination(destination, client, authMode, { multipleCl
     { id: userInputId, type: 'promptString', description: `SAP user for ${localDestination.name}` },
     { id: passwordInputId, type: 'promptString', description: `SAP password for ${localDestination.name}`, password: true }
   ];
-  if (authMode === 'windows-sso') {
-    localDestination.childEnv = { SAP_AUTH_MODE: 'windows-sso' };
+  if (authMode === 'sso') {
+    localDestination.childEnv = { SAP_AUTH_MODE: 'sso' };
     localDestination.inputs = [];
-  } else if (authMode === 'windows-credential-ui') {
-    localDestination.childEnv = {
-      SAP_AUTH_MODE: 'windows-sso',
-      SAP_AI_DEV_TOOLKIT_WINDOWS_CREDENTIAL_UI: 'true'
-    };
-    localDestination.inputs = [];
-  } else if (authMode === 'windows-sso-basic-fallback') {
-    localDestination.childEnv = {
-      SAP_AUTH_MODE: 'windows-sso',
-      SAP_AUTH_FALLBACK_MODE: 'basic',
-      SAP_USER: `\${input:${userInputId}}`,
-      SAP_PASSWORD: `\${input:${passwordInputId}}`
-    };
-    localDestination.inputs = credentialInputs;
-  } else if (authMode === 'browser-saml') {
-    localDestination.childEnv = {
-      SAP_AUTH_MODE: 'browser-saml',
-      SAP_BROWSER_AUTH: 'true',
-      SAP_SAML_AUTH: 'true'
-    };
-    localDestination.inputs = [];
-  } else if (authMode === 'saml-password') {
-    localDestination.childEnv = {
-      SAP_AUTH_MODE: 'saml-password',
-      SAP_SAML_AUTH: 'true',
-      SAP_SAML_USER: `\${input:${userInputId}}`,
-      SAP_SAML_PASSWORD: `\${input:${passwordInputId}}`
-    };
-    localDestination.inputs = credentialInputs;
   } else {
     localDestination.childEnv = {
       SAP_AUTH_MODE: 'basic',
@@ -422,7 +389,7 @@ async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin
     print(output, '');
     print(output, formatStatus('SAP GUI landscapes do not contain ADT HTTP(S) endpoints or a complete client catalog. Confirm the SAP client(s), ADT URL, and authentication for each selected system.', 'step', output, 'Local SAP GUI'));
     print(output, '  Enter multiple clients as comma-separated 3-digit values, for example 100,200. Setup creates one isolated MCP server per system/client pair.');
-    if (windowsSsoSetupAvailable(env)) print(output, '  Windows SSO is experimental and only applies to ADT systems configured for HTTP Integrated Authentication (Negotiate/SPNEGO). It uses the current Windows logon session, including smart-card-backed Windows logon; the toolkit cannot prompt for or accept manual bearer/SAML tokens. Username/password remains the default.');
+    if (windowsSsoSetupAvailable(env)) print(output, '  Windows / smart card SSO signs in through Microsoft Edge (smart card, Kerberos or company login) and keeps the session refreshed; no password is stored.');
     const selectedNameCounts = selected.reduce((counts, destination) => {
       const key = String(destination.name).toLowerCase();
       counts.set(key, (counts.get(key) || 0) + 1);

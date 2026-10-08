@@ -168,7 +168,7 @@ function closeDestinationRoute(destination) {
 
 
 function useProxyAuthentication(destination) {
-  if (destination.source === 'sap-gui-local') return destination.authentication === 'WindowsSSO';
+  if (destination.source === 'sap-gui-local') return false;
   return destination.source !== 'cloud-foundry' || destination.authentication === 'PrincipalPropagation';
 }
 
