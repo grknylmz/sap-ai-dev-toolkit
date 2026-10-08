@@ -12,6 +12,7 @@ import { installMcpConfig, npxMcpLauncher, repairManagedMcpConfig } from './mcp-
 import { runSetup } from './setup.mjs';
 import { resolveConfiguredCloudFoundryDestination } from './cf-destination.mjs';
 import { createTlsServerNameAdtProxy } from './tls-adt-proxy.mjs';
+import { findSsoBrowsers } from './sso-browsers.mjs';
 import { withBrandedEnvironment } from './branding.mjs';
 import { redactText } from './redact.mjs';
 import { startProgress } from './terminal-ui.mjs';
@@ -301,6 +302,8 @@ async function configuredLocalSapGuiDestination(env) {
   if (sso) {
     const cacheKey = `${systemId || new URL(configuredUrl).hostname}-${client}`.toLowerCase().replace(/[^a-z0-9.-]+/g, '-');
     if (isIP(new URL(adt.url).hostname.replace(/^\[(.*)\]$/, '$1'))) logLine(`[sap-ai-dev] ${name}: SSO is configured for an IP address; Kerberos and the browser certificate check need the DNS host name`);
+    const ssoBrowsers = await findSsoBrowsers({ env });
+    logLine(`[sap-ai-dev] ${name}: ${ssoBrowsers.length ? `SSO browsers: ${ssoBrowsers.map(browser => `${browser.name} (${browser.path})`).join(', ')}` : 'no Chromium-based browser found for SSO; install Microsoft Edge or set SAP_BROWSER_EXEC'}`);
     return {
       source: 'sap-gui-local',
       name,
@@ -308,9 +311,10 @@ async function configuredLocalSapGuiDestination(env) {
       client,
       systemId,
       authentication: 'SSO',
+      ssoBrowsers,
       // SAP_SAML_AUTH survives sanitizeChildEnv and would make VSP demand SAML credentials.
       // A first sign-in has no session a hidden browser could renew, so its window opens at once.
-      childEnv: { SAP_SSO: 'true', SAP_SSO_SYSTEM: cacheKey, SAP_SAML_AUTH: '', SAP_SSO_FIRST_LOGIN: env.SAP_SSO_FIRST_LOGIN || 'window', SAP_SSO_SILENT_TIMEOUT: env.SAP_SSO_SILENT_TIMEOUT || '15s', ...direct },
+      childEnv: { SAP_SSO: 'true', SAP_SSO_SYSTEM: cacheKey, SAP_SAML_AUTH: '', SAP_SSO_FIRST_LOGIN: env.SAP_SSO_FIRST_LOGIN || 'window', SAP_SSO_SILENT_TIMEOUT: env.SAP_SSO_SILENT_TIMEOUT || '15s', ...(ssoBrowsers.length ? { SAP_BROWSER_EXEC: ssoBrowsers[0].path } : {}), ...direct },
       probe
     };
   }

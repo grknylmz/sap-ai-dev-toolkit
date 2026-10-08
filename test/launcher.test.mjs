@@ -444,6 +444,7 @@ test('runtime starts a configured local SAP GUI SSO destination with VSP browser
       SAP_CLIENT: '100',
       SAP_SYSTEM_ID: 'S4H',
       SAP_AUTH_MODE: 'sso',
+      SAP_BROWSER_EXEC: '/opt/browsers/msedge',
       SAP_USER: 'must-not-pass',
       SAP_PASSWORD: 'must-not-pass',
       H2O_URL: '',
@@ -464,6 +465,8 @@ test('runtime starts a configured local SAP GUI SSO destination with VSP browser
     assert.equal(init.env.ssoSystem, 's4h-100');
     assert.equal(init.env.ssoFirstLogin, 'window');
     assert.equal(init.env.ssoSilentTimeout, '15s');
+    assert.equal(init.env.browserExec, '/opt/browsers/msedge');
+    assert.ok(result.stderr.includes('Local SSO: SSO browsers: Microsoft Edge (/opt/browsers/msedge)'), result.stderr);
     assert.equal(JSON.stringify(init).includes('must-not-pass'), false);
   } finally {
     await rm(directory, { recursive: true, force: true });

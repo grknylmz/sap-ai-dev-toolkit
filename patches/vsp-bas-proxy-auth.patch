@@ -1,5 +1,5 @@
 diff --git a/cmd/vsp/main.go b/cmd/vsp/main.go
-index 5007935..715c0e9 100755
+index 5007935..3b1fdd8 100755
 --- a/cmd/vsp/main.go
 +++ b/cmd/vsp/main.go
 @@ -100,6 +100,7 @@ func init() {
@@ -89,7 +89,7 @@ index 5007935..715c0e9 100755
  	if !ssoRequested(cmd) {
  		return nil
  	}
-@@ -626,22 +657,27 @@ func processSSOAuth(cmd *cobra.Command) error {
+@@ -626,22 +657,28 @@ func processSSOAuth(cmd *cobra.Command) error {
  	}
  
  	onExpiry := stringOpt("sso-on-expiry", "SSO_ON_EXPIRY")
@@ -113,6 +113,7 @@ index 5007935..715c0e9 100755
 +		TriggerURL:    stringOpt("sso-trigger-url", "SSO_TRIGGER_URL"),
 +		Profile:       stringOpt("sso-profile", "SSO_PROFILE"),
 +		HelperPath:    stringOpt("sso-helper", "SSO_HELPER"),
++		BrowserPath:   stringOpt("browser-exec", "BROWSER_EXEC"),
 +		Interactive:   !strings.EqualFold(onExpiry, "error"),
 +		SilentTimeout: silentTimeout,
 +		Insecure:      cfg.InsecureSkipVerify,
@@ -127,7 +128,7 @@ index 5007935..715c0e9 100755
  	if err != nil {
  		return fmt.Errorf("browser SSO: %w", err)
  	}
-@@ -657,6 +693,9 @@ func processSSOAuth(cmd *cobra.Command) error {
+@@ -657,6 +694,9 @@ func processSSOAuth(cmd *cobra.Command) error {
  }
  
  func processSAMLAuth(cmd *cobra.Command) error {
@@ -137,7 +138,7 @@ index 5007935..715c0e9 100755
  	samlAuth, _ := cmd.Flags().GetBool("saml-auth")
  	if !samlAuth && !viper.GetBool("SAML_AUTH") {
  		return nil
-@@ -752,6 +791,9 @@ func processSAMLAuth(cmd *cobra.Command) error {
+@@ -752,6 +792,9 @@ func processSAMLAuth(cmd *cobra.Command) error {
  }
  
  func processCookieAuth(cmd *cobra.Command) error {
@@ -312,6 +313,19 @@ index dd433d6..5553b7f 100644
  			),
  		), s.handleActivateMultiple)
  	}
+diff --git a/pkg/adt/browser_auth.go b/pkg/adt/browser_auth.go
+index ea3c1a9..5bc7a01 100644
+--- a/pkg/adt/browser_auth.go
++++ b/pkg/adt/browser_auth.go
+@@ -86,6 +86,8 @@ func friendlyBrowserName(path string) string {
+ 		return "Microsoft Edge"
+ 	case strings.Contains(lower, "brave"):
+ 		return "Brave"
++	case strings.Contains(lower, "vivaldi"):
++		return "Vivaldi"
+ 	case strings.Contains(lower, "chromium"):
+ 		return "Chromium"
+ 	default:
 diff --git a/pkg/adt/client.go b/pkg/adt/client.go
 index 979e908..c7e9501 100755
 --- a/pkg/adt/client.go
@@ -549,19 +563,31 @@ index 0000000..80741da
 +}
 +
 diff --git a/pkg/adt/sso.go b/pkg/adt/sso.go
-index d67c4e8..4e9dc45 100644
+index d67c4e8..a03f740 100644
 --- a/pkg/adt/sso.go
 +++ b/pkg/adt/sso.go
-@@ -155,7 +155,7 @@ func CaptureSSOCookies(ctx context.Context, opts SSOOptions) (map[string]string,
+@@ -7,6 +7,7 @@ import (
+ 	"net/url"
+ 	"os"
+ 	"path/filepath"
++	"strings"
+ 	"time"
+ 
+ 	"github.com/chromedp/cdproto/network"
+@@ -154,8 +155,11 @@ func CaptureSSOCookies(ctx context.Context, opts SSOOptions) (map[string]string,
+ 	// regardless, so a navigation error here is not fatal — the cookie poll
  	// below is the real verdict.
  	if err := chromedp.Run(timeoutCtx, chromedp.Navigate(opts.TriggerURL)); err != nil {
++		if chromedp.FromContext(timeoutCtx).Browser == nil {
++			return nil, browserStartFailure(opts.Headless, browserName, execPath, err)
++		}
  		if timeoutCtx.Err() != nil {
 -			return nil, fmt.Errorf("SSO capture timed out after %s", timeout)
 +			return nil, navigationTimeout(opts.Headless, timeout)
  		}
  		if opts.Verbose {
  			fmt.Fprintf(os.Stderr, "[SSO] navigation reported %v (normal during SSO)\n", err)
-@@ -174,6 +174,17 @@ func CaptureSSOCookies(ctx context.Context, opts SSOOptions) (map[string]string,
+@@ -174,6 +178,26 @@ func CaptureSSOCookies(ctx context.Context, opts SSOOptions) (map[string]string,
  	return cookies, nil
  }
  
@@ -576,9 +602,65 @@ index d67c4e8..4e9dc45 100644
 +	return fmt.Errorf("SSO capture timed out after %s", timeout)
 +}
 +
++// browserStartFailure ends a capture whose browser never came up; a silent one still escalates to a window.
++func browserStartFailure(headless bool, name, path string, err error) error {
++	detail := strings.Join(strings.Fields(err.Error()), " ")
++	if headless {
++		return fmt.Errorf("%w: %s did not start without a window (%s): %s", ErrSSOInteractiveRequired, name, path, detail)
++	}
++	return fmt.Errorf("%s could not be started from %s: %s", name, path, detail)
++}
++
  // DefaultSSOProfileDir returns a per-host browser profile directory under the
  // user's cache location. Keeping one profile per host means a silent refresh
  // for one system is never disturbed by a login to another.
+diff --git a/pkg/adt/sso_browser_start_test.go b/pkg/adt/sso_browser_start_test.go
+new file mode 100644
+index 0000000..88a9dbe
+--- /dev/null
++++ b/pkg/adt/sso_browser_start_test.go
+@@ -0,0 +1,41 @@
++package adt
++
++import (
++	"context"
++	"errors"
++	"os"
++	"path/filepath"
++	"runtime"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestBrowserThatCannotStartFailsFast(t *testing.T) {
++	if runtime.GOOS == "windows" {
++		t.Skip("the stand-in browser is a shell script")
++	}
++	browser := filepath.Join(t.TempDir(), "blocked-browser")
++	if err := os.WriteFile(browser, []byte("#!/bin/sh\necho 'blocked by policy' >&2\nexit 3\n"), 0o755); err != nil {
++		t.Fatal(err)
++	}
++	for _, headless := range []bool{true, false} {
++		started := time.Now()
++		_, err := CaptureSSOCookies(context.Background(), SSOOptions{
++			TriggerURL:  "https://sap.example/sap/bc/adt/",
++			BrowserPath: browser,
++			Headless:    headless,
++			Timeout:     45 * time.Second,
++		})
++		if elapsed := time.Since(started); elapsed > 15*time.Second {
++			t.Fatalf("headless=%v waited %v; a browser that never starts must not wait out the budget", headless, elapsed)
++		}
++		if err == nil || !strings.Contains(err.Error(), browser) || !strings.Contains(err.Error(), "blocked by policy") {
++			t.Fatalf("headless=%v err = %v, want the browser path and its output", headless, err)
++		}
++		// A silent start failure must still escalate to a visible window.
++		if errors.Is(err, ErrSSOInteractiveRequired) != headless {
++			t.Fatalf("headless=%v err = %v, want ErrSSOInteractiveRequired only when silent", headless, err)
++		}
++	}
++}
 diff --git a/pkg/adt/sso_first_login_test.go b/pkg/adt/sso_first_login_test.go
 new file mode 100644
 index 0000000..f8efda4
@@ -660,10 +742,20 @@ index 0000000..c851021
 +	}
 +}
 diff --git a/pkg/adt/sso_provider.go b/pkg/adt/sso_provider.go
-index 8e5bed4..6977a33 100644
+index 8e5bed4..544b873 100644
 --- a/pkg/adt/sso_provider.go
 +++ b/pkg/adt/sso_provider.go
-@@ -180,6 +180,27 @@ func (p *SSOProvider) Login(ctx context.Context) (map[string]string, error) {
+@@ -42,6 +42,9 @@ type SSOConfig struct {
+ 	// HelperPath points at the Windows capture helper. Empty auto-discovers it.
+ 	HelperPath string
+ 
++	// BrowserPath is the Chromium-based browser to drive. Empty auto-detects one.
++	BrowserPath string
++
+ 	// Interactive permits escalating to a visible browser window when a silent
+ 	// capture cannot finish. Off means such a case is reported as an error
+ 	// naming the command to run, which is the right behaviour where no one is
+@@ -180,6 +183,27 @@ func (p *SSOProvider) Login(ctx context.Context) (map[string]string, error) {
  	return p.acquire(ctx, true)
  }
  
@@ -691,3 +783,11 @@ index 8e5bed4..6977a33 100644
  // Clear removes the cached session, so the next call captures a fresh one.
  func (p *SSOProvider) Clear() error {
  	p.mu.Lock()
+@@ -240,6 +264,7 @@ func (p *SSOProvider) capture(ctx context.Context, trigger string, headed bool)
+ 	return CaptureSSOCookies(ctx, SSOOptions{
+ 		TriggerURL:  trigger,
+ 		UserDataDir: p.cfg.Profile,
++		BrowserPath: p.cfg.BrowserPath,
+ 		Headless:    !headed,
+ 		Timeout:     p.timeout(headed),
+ 		Insecure:    p.cfg.Insecure,

@@ -537,6 +537,8 @@ test('keeps healthy children when one destination fails initialization', async t
   assert.ok(listed.result.tools.length > 0);
   assert.ok(listed.result.tools.every(tool => !tool.name.startsWith('healthy_')), 'a single surviving child must publish unprefixed names');
   assert.ok(listed.result.tools.some(tool => tool.name === 'get_source'));
+  const brokenStarts = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(entry => entry.event === 'initialize' && entry.destination === 'broken');
+  assert.equal(brokenStarts.length, 1, 'only a failed browser sign-in is retried');
 });
 
 test('reports a pending SSO sign-in until the VSP child answers initialize', async t => {
@@ -557,6 +559,36 @@ test('reports a pending SSO sign-in until the VSP child answers initialize', asy
   const settled = logs.length;
   await new Promise(resolve => setTimeout(resolve, 120));
   assert.equal(logs.slice(settled).some(message => message.includes('still waiting')), false, 'the reminder stops once initialize settles');
+});
+
+async function signInProxy(t, ssoBrowsers, failingBrowsers) {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-vsp-test-'));
+  const log = join(directory, 'children.log');
+  const logs = [];
+  const destination = { source: 'sap-gui-local', name: 'sso', url: 'http://sso.dest', client: '001', authentication: 'SSO', ssoBrowsers, childEnv: { SAP_SSO: 'true', SAP_BROWSER_EXEC: ssoBrowsers[0].path } };
+  const proxy = new MCPProxy({ binary: fixture, destinations: [destination], env: { ...process.env, FAKE_LOG: log, FAKE_SSO_FAIL_BROWSERS: failingBrowsers.join(',') }, log: message => logs.push(message) });
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+  proxy.start();
+  const initialized = await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  const attempts = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(entry => entry.event === 'initialize').map(entry => entry.env.browserExec);
+  return { destination, initialized, attempts, logs };
+}
+
+test('self-heals a failed SSO sign-in by moving on to the next browser', async t => {
+  const browsers = [{ name: 'Microsoft Edge', path: '/browsers/msedge' }, { name: 'Google Chrome', path: '/browsers/chrome' }];
+  const { destination, initialized, attempts, logs } = await signInProxy(t, browsers, ['/browsers/msedge']);
+  assert.equal(initialized.error, undefined, logs.join('\n'));
+  assert.deepEqual(attempts, ['/browsers/msedge', '/browsers/chrome']);
+  assert.ok(logs.some(message => message.includes('SSO sign-in failed (child exited (1): browser SSO: /browsers/msedge could not be started') && message.includes('retrying with Google Chrome (attempt 2 of 2)')), logs.join('\n'));
+  assert.equal(destination.childEnv.SAP_BROWSER_EXEC, '/browsers/chrome', 'later child restarts keep the browser that signed in');
+});
+
+test('retries a single SSO browser once, then reports why the sign-in failed', async t => {
+  const { initialized, attempts, logs } = await signInProxy(t, [{ name: 'Microsoft Edge', path: '/browsers/msedge' }], ['/browsers/msedge']);
+  assert.match(initialized.error.message, /No destination child initialized successfully/);
+  assert.deepEqual(attempts, ['/browsers/msedge', '/browsers/msedge']);
+  assert.ok(logs.some(message => message.includes('retrying with Microsoft Edge (attempt 2 of 2)')), logs.join('\n'));
+  assert.ok(logs.some(message => message.includes('initialization failed: child exited (1): browser SSO: /browsers/msedge could not be started: chrome failed to start: blocked by policy')), logs.join('\n'));
 });
 
 test('converts upstream tool names to lowercase snake_case for chat binding', () => {

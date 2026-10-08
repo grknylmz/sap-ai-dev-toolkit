@@ -228,8 +228,11 @@ class Child {
     this.process.stdout.on('data', chunk => this.onData(chunk));
     this.process.stderr.setEncoding('utf8');
     this.process.stderr.on('data', chunk => {
-      if (options.log) options.log(`[${destination.name}] ${redactText(chunk).trimEnd()}`);
+      const text = redactText(chunk).trimEnd();
+      this.lastError = text.split(/\r?\n/).filter(line => line.startsWith('Error: ')).pop()?.slice(7) ?? this.lastError;
+      if (options.log) options.log(`[${destination.name}] ${text}`);
     });
+    this.stderrClosed = once(this.process.stderr, 'close').catch(() => {});
     // A write racing child death surfaces as an EPIPE 'error' event on stdin.
     // Without a listener that is an uncaught exception that kills the whole
     // MCP server — exactly the crash window self-healing is meant to cover.
@@ -322,6 +325,14 @@ class Child {
   notify(method, params) {
     if (this.exited || !this.process.stdin.writable) return;
     try { this.process.stdin.write(`${JSON.stringify({ jsonrpc: JSONRPC, method, ...(params === undefined ? {} : { params })})}\n`); } catch {}
+  }
+
+  // VSP's own "Error:" line explains an exit, and stderr can still be draining when 'exit' fires.
+  async stopReason(waitMs = 1000) {
+    let timer;
+    await Promise.race([this.stderrClosed, new Promise(resolve => { timer = setTimeout(resolve, waitMs); })]);
+    clearTimeout(timer);
+    return this.lastError;
   }
 
   async initialize(params) {
@@ -531,21 +542,33 @@ export class MCPProxy {
     // Children initialize concurrently; healthy entries keep destination
     // order so tool naming stays deterministic.
     const initialized = await Promise.all(this.children.map(async entry => {
+      const { destination } = entry;
       const startedAt = Date.now();
-      this.eventSink(`[${entry.destination.name}] initializing VSP MCP session`);
-      // VSP answers initialize only after its browser sign-in, which waits on a person.
-      const signIn = entry.destination.authentication === 'SSO'
-        ? setInterval(() => this.eventSink(`[${entry.destination.name}] still waiting for the SSO sign-in (${Math.round((Date.now() - startedAt) / 1000)} s): finish it in the browser window (it may be behind other windows); restarting the server cancels it`), this.ssoHeartbeatMs)
-        : undefined;
-      try {
-        entry.server = await entry.child.initialize(params).finally(() => clearInterval(signIn));
-        this.eventSink(`[${entry.destination.name}] VSP MCP session initialized (${Date.now() - startedAt}ms)`);
-        return entry;
-      } catch (error) {
-        this.eventSink(`[${entry.destination.name}] initialization failed: ${diagnosticText(error.message)}`, 'error');
-        await entry.child.close();
-        await closeDestinationRoute(entry.destination);
-        return null;
+      this.eventSink(`[${destination.name}] initializing VSP MCP session`);
+      for (let attempt = 1; ; attempt += 1) {
+        const attemptStartedAt = Date.now();
+        // VSP answers initialize only after its browser sign-in, which waits on a person.
+        const signIn = destination.authentication === 'SSO'
+          ? setInterval(() => this.eventSink(`[${destination.name}] still waiting for the SSO sign-in (${Math.round((Date.now() - attemptStartedAt) / 1000)} s): finish it in the browser window (it may be behind other windows); restarting the server cancels it`), this.ssoHeartbeatMs)
+          : undefined;
+        try {
+          entry.server = await entry.child.initialize(params).finally(() => clearInterval(signIn));
+          this.eventSink(`[${destination.name}] VSP MCP session initialized (${Date.now() - startedAt}ms)`);
+          return entry;
+        } catch (error) {
+          const reason = await entry.child.stopReason();
+          const failure = `${diagnosticText(error.message)}${reason ? `: ${diagnosticText(reason)}` : ''}`;
+          const next = this.signInRetry(destination, attempt, reason);
+          await entry.child.close();
+          if (!next) {
+            this.eventSink(`[${destination.name}] initialization failed: ${failure}`, 'error');
+            await closeDestinationRoute(destination);
+            return null;
+          }
+          this.eventSink(`[${destination.name}] SSO sign-in failed (${failure}); self-healing: retrying with ${next.name} (attempt ${attempt + 1} of ${next.attempts})`, 'warning');
+          destination.childEnv = { ...destination.childEnv, SAP_BROWSER_EXEC: next.path };
+          entry.child = new Child(this.binary, destination, this.childSpawnOptions(destination));
+        }
       }
     }));
     const healthy = initialized.filter(Boolean);
@@ -559,6 +582,15 @@ export class MCPProxy {
       .then(tools => this.eventSink(`[MCP] tools cache warmed (${tools.length} tools, ${Date.now() - warmedAt}ms)`))
       .catch(() => {});
     return healthy;
+  }
+
+  // A failed browser sign-in moves on to the next discovered browser, or tries the only one once more.
+  signInRetry(destination, attempt, reason) {
+    // A client that hung up gets no new sign-in windows.
+    if (destination.authentication !== 'SSO' || !/browser SSO/i.test(String(reason)) || this.inputEnded || this.shuttingDown) return null;
+    const browsers = destination.ssoBrowsers || [];
+    const plan = browsers.length === 1 ? [browsers[0], browsers[0]] : browsers;
+    return attempt < plan.length ? { ...plan[attempt], attempts: plan.length } : null;
   }
 
   toolsCacheValid() {
@@ -822,6 +854,7 @@ export class MCPProxy {
     input.on('data', onData);
     try {
       await once(input, 'end');
+      this.inputEnded = true;
       await Promise.allSettled([...inFlight]);
     } finally {
       input.off('data', onData);
