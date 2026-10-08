@@ -1,5 +1,5 @@
 diff --git a/cmd/vsp/main.go b/cmd/vsp/main.go
-index 5007935..b2bc6be 100755
+index 5007935..715c0e9 100755
 --- a/cmd/vsp/main.go
 +++ b/cmd/vsp/main.go
 @@ -100,6 +100,7 @@ func init() {
@@ -10,7 +10,16 @@ index 5007935..b2bc6be 100755
  	rootCmd.Flags().StringVarP(&cfg.Username, "user", "u", "", "SAP username")
  	rootCmd.Flags().StringVarP(&cfg.Password, "password", "p", "", "SAP password")
  	rootCmd.Flags().StringVar(&cfg.Password, "pass", "", "SAP password (alias for --password)")
-@@ -170,6 +171,7 @@ func init() {
+@@ -126,6 +127,8 @@ func init() {
+ 	rootCmd.Flags().String("sso-profile", "", "Browser profile directory for SSO (a Windows path when running under WSL)")
+ 	rootCmd.Flags().String("sso-helper", "", "Path to the Windows SSO capture helper (vsp-sso.exe), used under WSL")
+ 	rootCmd.Flags().String("sso-on-expiry", "window", "When a silent SSO refresh needs a human: 'window' opens a browser, 'error' reports what to run")
++	rootCmd.Flags().String("sso-first-login", "", "With no cached SSO session: 'window' signs in through a visible browser window at once (default: try silently first)")
++	rootCmd.Flags().String("sso-silent-timeout", "", "Budget for a silent SSO capture, as a Go duration (default 45s)")
+ 	rootCmd.Flags().Bool("saml-auth", false, "Authenticate via programmatic SAML SSO (no browser, no MFA)")
+ 	rootCmd.Flags().String("saml-user", "", "SAML/IAS username (email)")
+ 	rootCmd.Flags().String("saml-password", "", "SAML/IAS password")
+@@ -170,6 +173,7 @@ func init() {
  	rootCmd.PersistentFlags().BoolVarP(&cfg.Verbose, "verbose", "v", false, "Enable verbose output to stderr")
  
  	// Bind flags to viper for environment variable support
@@ -18,7 +27,16 @@ index 5007935..b2bc6be 100755
  	viper.BindPFlag("url", rootCmd.Flags().Lookup("url"))
  	viper.BindPFlag("user", rootCmd.Flags().Lookup("user"))
  	viper.BindPFlag("password", rootCmd.Flags().Lookup("password"))
-@@ -233,6 +235,9 @@ func runServer(cmd *cobra.Command, args []string) error {
+@@ -186,6 +190,8 @@ func init() {
+ 	viper.BindPFlag("sso-profile", rootCmd.Flags().Lookup("sso-profile"))
+ 	viper.BindPFlag("sso-helper", rootCmd.Flags().Lookup("sso-helper"))
+ 	viper.BindPFlag("sso-on-expiry", rootCmd.Flags().Lookup("sso-on-expiry"))
++	viper.BindPFlag("sso-first-login", rootCmd.Flags().Lookup("sso-first-login"))
++	viper.BindPFlag("sso-silent-timeout", rootCmd.Flags().Lookup("sso-silent-timeout"))
+ 	viper.BindPFlag("saml-auth", rootCmd.Flags().Lookup("saml-auth"))
+ 	viper.BindPFlag("saml-user", rootCmd.Flags().Lookup("saml-user"))
+ 	viper.BindPFlag("saml-password", rootCmd.Flags().Lookup("saml-password"))
+@@ -233,6 +239,9 @@ func runServer(cmd *cobra.Command, args []string) error {
  	}
  
  	// Browser-based SSO authentication (must run before processCookieAuth)
@@ -28,7 +46,7 @@ index 5007935..b2bc6be 100755
  	if err := processBrowserAuth(cmd); err != nil {
  		return err
  	}
-@@ -346,6 +351,7 @@ func runServer(cmd *cobra.Command, args []string) error {
+@@ -346,6 +355,7 @@ func runServer(cmd *cobra.Command, args []string) error {
  }
  
  func resolveConfig(cmd *cobra.Command) {
@@ -36,7 +54,7 @@ index 5007935..b2bc6be 100755
  	// Check if cookie auth is explicitly requested via CLI flags OR env vars
  	// If so, we should NOT load user/password from env/.env to avoid conflicts
  	// Cookie auth takes precedence over basic auth since it's more explicit
-@@ -530,6 +536,24 @@ func validateConfig() error {
+@@ -530,6 +540,24 @@ func validateConfig() error {
  	return nil
  }
  
@@ -61,7 +79,7 @@ index 5007935..b2bc6be 100755
  func processBrowserAuth(cmd *cobra.Command) error {
  	browserAuth, _ := cmd.Flags().GetBool("browser-auth")
  	if !browserAuth && !viper.GetBool("BROWSER_AUTH") {
-@@ -599,6 +623,9 @@ func ssoRequested(cmd *cobra.Command) bool {
+@@ -599,6 +627,9 @@ func ssoRequested(cmd *cobra.Command) bool {
  // days will outlive any session it starts with, and the point of the exercise
  // is that nobody has to notice when it does.
  func processSSOAuth(cmd *cobra.Command) error {
@@ -71,7 +89,45 @@ index 5007935..b2bc6be 100755
  	if !ssoRequested(cmd) {
  		return nil
  	}
-@@ -657,6 +684,9 @@ func processSSOAuth(cmd *cobra.Command) error {
+@@ -626,22 +657,27 @@ func processSSOAuth(cmd *cobra.Command) error {
+ 	}
+ 
+ 	onExpiry := stringOpt("sso-on-expiry", "SSO_ON_EXPIRY")
++	silentTimeout, err := parseOptionalDuration(stringOpt("sso-silent-timeout", "SSO_SILENT_TIMEOUT"), "--sso-silent-timeout")
++	if err != nil {
++		return err
++	}
+ 	provider, err := adt.NewSSOProvider(adt.SSOConfig{
+-		System:      stringOpt("sso-system", "SSO_SYSTEM"),
+-		BaseURL:     cfg.BaseURL,
+-		Client:      cfg.Client,
+-		TriggerURL:  stringOpt("sso-trigger-url", "SSO_TRIGGER_URL"),
+-		Profile:     stringOpt("sso-profile", "SSO_PROFILE"),
+-		HelperPath:  stringOpt("sso-helper", "SSO_HELPER"),
+-		Interactive: !strings.EqualFold(onExpiry, "error"),
+-		Insecure:    cfg.InsecureSkipVerify,
+-		Verbose:     cfg.Verbose,
++		System:        stringOpt("sso-system", "SSO_SYSTEM"),
++		BaseURL:       cfg.BaseURL,
++		Client:        cfg.Client,
++		TriggerURL:    stringOpt("sso-trigger-url", "SSO_TRIGGER_URL"),
++		Profile:       stringOpt("sso-profile", "SSO_PROFILE"),
++		HelperPath:    stringOpt("sso-helper", "SSO_HELPER"),
++		Interactive:   !strings.EqualFold(onExpiry, "error"),
++		SilentTimeout: silentTimeout,
++		Insecure:      cfg.InsecureSkipVerify,
++		Verbose:       cfg.Verbose,
+ 	})
+ 	if err != nil {
+ 		return err
+ 	}
+ 
+-	cookies, err := provider.Cookies(cmd.Context())
++	cookies, err := provider.Start(cmd.Context(), strings.EqualFold(stringOpt("sso-first-login", "SSO_FIRST_LOGIN"), "window"))
+ 	if err != nil {
+ 		return fmt.Errorf("browser SSO: %w", err)
+ 	}
+@@ -657,6 +693,9 @@ func processSSOAuth(cmd *cobra.Command) error {
  }
  
  func processSAMLAuth(cmd *cobra.Command) error {
@@ -81,7 +137,7 @@ index 5007935..b2bc6be 100755
  	samlAuth, _ := cmd.Flags().GetBool("saml-auth")
  	if !samlAuth && !viper.GetBool("SAML_AUTH") {
  		return nil
-@@ -752,6 +782,9 @@ func processSAMLAuth(cmd *cobra.Command) error {
+@@ -752,6 +791,9 @@ func processSAMLAuth(cmd *cobra.Command) error {
  }
  
  func processCookieAuth(cmd *cobra.Command) error {
@@ -523,6 +579,64 @@ index d67c4e8..4e9dc45 100644
  // DefaultSSOProfileDir returns a per-host browser profile directory under the
  // user's cache location. Keeping one profile per host means a silent refresh
  // for one system is never disturbed by a login to another.
+diff --git a/pkg/adt/sso_first_login_test.go b/pkg/adt/sso_first_login_test.go
+new file mode 100644
+index 0000000..f8efda4
+--- /dev/null
++++ b/pkg/adt/sso_first_login_test.go
+@@ -0,0 +1,52 @@
++package adt
++
++import (
++	"context"
++	"os"
++	"testing"
++)
++
++func TestStartWithWindowFirstReusesACachedSession(t *testing.T) {
++	t.Setenv("HOME", t.TempDir())
++	p, err := NewSSOProvider(SSOConfig{System: "devsys", BaseURL: "https://sap.example"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if err := SaveSSOSession(p.CachePath(), "sap.example", map[string]string{"SAP_SESSIONID_X": "live"}); err != nil {
++		t.Fatal(err)
++	}
++	// A browser launch here would fail the test on a build machine.
++	got, err := p.Start(context.Background(), true)
++	if err != nil {
++		t.Fatalf("Start: %v", err)
++	}
++	if got["SAP_SESSIONID_X"] != "live" {
++		t.Errorf("cookies = %v, want the cached session", got)
++	}
++}
++
++func TestHasSessionDecidesWhetherTheFirstSignInNeedsAWindow(t *testing.T) {
++	t.Setenv("HOME", t.TempDir())
++	p, err := NewSSOProvider(SSOConfig{System: "devsys", BaseURL: "https://sap.example"})
++	if err != nil {
++		t.Fatal(err)
++	}
++	if p.hasSession() {
++		t.Fatal("an empty cache must send the first sign-in to a window")
++	}
++	if err := SaveSSOSession(p.CachePath(), "sap.example", map[string]string{"SAP_SESSIONID_X": "live"}); err != nil {
++		t.Fatal(err)
++	}
++	if !p.hasSession() {
++		t.Fatal("a cached session must be reused, not replaced by a window")
++	}
++	if err := os.Remove(p.CachePath()); err != nil {
++		t.Fatal(err)
++	}
++	if err := os.Mkdir(p.CachePath(), 0700); err != nil {
++		t.Fatal(err)
++	}
++	if !p.hasSession() {
++		t.Fatal("an unreadable cache must reach Cookies, which reports the read error")
++	}
++}
 diff --git a/pkg/adt/sso_navigation_test.go b/pkg/adt/sso_navigation_test.go
 new file mode 100644
 index 0000000..c851021
@@ -545,3 +659,35 @@ index 0000000..c851021
 +		t.Fatalf("headed timeout = %v, must not ask for yet another window", err)
 +	}
 +}
+diff --git a/pkg/adt/sso_provider.go b/pkg/adt/sso_provider.go
+index 8e5bed4..6977a33 100644
+--- a/pkg/adt/sso_provider.go
++++ b/pkg/adt/sso_provider.go
+@@ -180,6 +180,27 @@ func (p *SSOProvider) Login(ctx context.Context) (map[string]string, error) {
+ 	return p.acquire(ctx, true)
+ }
+ 
++// Start returns the session a server begins with; windowFirst skips the silent attempt when nothing is cached.
++func (p *SSOProvider) Start(ctx context.Context, windowFirst bool) (map[string]string, error) {
++	if windowFirst && !p.hasSession() {
++		fmt.Fprintf(os.Stderr, "[SSO] no cached session — opening a browser window to sign in\n")
++		return p.Login(ctx)
++	}
++	return p.Cookies(ctx)
++}
++
++// hasSession counts an unreadable cache as present so Cookies can report why.
++func (p *SSOProvider) hasSession() bool {
++	p.mu.Lock()
++	held := len(p.current) > 0
++	p.mu.Unlock()
++	if held {
++		return true
++	}
++	sess, err := LoadSSOSession(p.cachePath)
++	return err != nil || sess != nil
++}
++
+ // Clear removes the cached session, so the next call captures a fresh one.
+ func (p *SSOProvider) Clear() error {
+ 	p.mu.Lock()

@@ -309,7 +309,8 @@ async function configuredLocalSapGuiDestination(env) {
       systemId,
       authentication: 'SSO',
       // SAP_SAML_AUTH survives sanitizeChildEnv and would make VSP demand SAML credentials.
-      childEnv: { SAP_SSO: 'true', SAP_SSO_SYSTEM: cacheKey, SAP_SAML_AUTH: '', ...direct },
+      // A first sign-in has no session a hidden browser could renew, so its window opens at once.
+      childEnv: { SAP_SSO: 'true', SAP_SSO_SYSTEM: cacheKey, SAP_SAML_AUTH: '', SAP_SSO_FIRST_LOGIN: env.SAP_SSO_FIRST_LOGIN || 'window', SAP_SSO_SILENT_TIMEOUT: env.SAP_SSO_SILENT_TIMEOUT || '15s', ...direct },
       probe
     };
   }
@@ -408,12 +409,14 @@ async function main() {
   }
 
   if (['cloud-foundry', 'sap-gui-local'].includes(runtimeEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE)) {
+    logLine(`[sap-ai-dev] sap-ai-dev-toolkit v${pkg.version} (node ${process.version}, pid ${process.pid})`);
     const destination = runtimeEnv.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'cloud-foundry'
       ? await resolveConfiguredCloudFoundryDestination({ env: runtimeEnv })
       : await configuredLocalSapGuiDestination(runtimeEnv);
     let proxy;
     try {
       const binary = await binaryOrError();
+      logLine(`[sap-ai-dev] VSP binary: ${binary}`);
       proxy = new MCPProxy({ binary, destinations: [destination], env: runtimeEnv, log: logLine, version: pkg.version });
       const shutdown = signal => { void proxy.close().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143)); };
       process.once('SIGINT', () => shutdown('SIGINT'));

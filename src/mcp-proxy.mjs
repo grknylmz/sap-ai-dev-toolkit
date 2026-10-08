@@ -387,7 +387,7 @@ class Child {
 }
 
 export class MCPProxy {
-  constructor({ binary, destinations, env = process.env, spawn = nodeSpawn, childArgs, log = message => console.error(message), output = line => process.stdout.write(`${line}\n`), version = '0.0.0' }) {
+  constructor({ binary, destinations, env = process.env, spawn = nodeSpawn, childArgs, log = message => console.error(message), output = line => process.stdout.write(`${line}\n`), version = '0.0.0', ssoHeartbeatMs = 15_000 }) {
     this.binary = binary;
     this.destinations = destinations;
     this.env = env;
@@ -396,6 +396,7 @@ export class MCPProxy {
     this.log = log;
     this.output = output;
     this.version = version;
+    this.ssoHeartbeatMs = ssoHeartbeatMs;
     this.requestTimeoutMs = requestTimeoutMs(env);
     this.children = [];
     this.started = false;
@@ -532,8 +533,12 @@ export class MCPProxy {
     const initialized = await Promise.all(this.children.map(async entry => {
       const startedAt = Date.now();
       this.eventSink(`[${entry.destination.name}] initializing VSP MCP session`);
+      // VSP answers initialize only after its browser sign-in, which waits on a person.
+      const signIn = entry.destination.authentication === 'SSO'
+        ? setInterval(() => this.eventSink(`[${entry.destination.name}] still waiting for the SSO sign-in (${Math.round((Date.now() - startedAt) / 1000)} s): finish it in the browser window (it may be behind other windows); restarting the server cancels it`), this.ssoHeartbeatMs)
+        : undefined;
       try {
-        entry.server = await entry.child.initialize(params);
+        entry.server = await entry.child.initialize(params).finally(() => clearInterval(signIn));
         this.eventSink(`[${entry.destination.name}] VSP MCP session initialized (${Date.now() - startedAt}ms)`);
         return entry;
       } catch (error) {

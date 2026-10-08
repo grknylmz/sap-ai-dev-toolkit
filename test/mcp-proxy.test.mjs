@@ -539,6 +539,26 @@ test('keeps healthy children when one destination fails initialization', async t
   assert.ok(listed.result.tools.some(tool => tool.name === 'get_source'));
 });
 
+test('reports a pending SSO sign-in until the VSP child answers initialize', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-vsp-test-'));
+  const logs = [];
+  const destinations = [
+    { name: 'sso', url: 'http://sso.dest', client: '001', authentication: 'SSO' },
+    { name: 'basic', url: 'http://basic.dest', client: '001', authentication: 'Basic' }
+  ];
+  const proxy = new MCPProxy({ binary: fixture, destinations, env: { ...process.env, FAKE_LOG: join(directory, 'children.log'), FAKE_INIT_DELAY_MS: '200' }, log: message => logs.push(message), ssoHeartbeatMs: 40 });
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+  proxy.start();
+  const initialized = await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} });
+  assert.equal(initialized.error, undefined);
+  const waiting = logs.filter(message => message.includes('still waiting for the SSO sign-in'));
+  assert.ok(waiting.length > 0, logs.join('\n'));
+  assert.ok(waiting.every(message => message.startsWith('[sso] ')), 'only an SSO destination waits on a person');
+  const settled = logs.length;
+  await new Promise(resolve => setTimeout(resolve, 120));
+  assert.equal(logs.slice(settled).some(message => message.includes('still waiting')), false, 'the reminder stops once initialize settles');
+});
+
 test('converts upstream tool names to lowercase snake_case for chat binding', () => {
   const cases = new Map([
     ['GetTableContents', 'get_table_contents'],

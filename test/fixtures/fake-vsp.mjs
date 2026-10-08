@@ -216,9 +216,12 @@ process.stdin.on('data', async chunk => {
     if (!line) continue;
     const message = JSON.parse(line);
     if (message.method === 'initialize') {
-      log({ event: 'initialize', argv: args, env: { guard: process.env.SAP_PROXY_CONTEXTID_GUARD, authorization: process.env.Authorization, cookie: process.env.Cookie, user: process.env.SAP_USER, password: process.env.SAP_PASSWORD, browserAuth: process.env.SAP_BROWSER_AUTH, sso: process.env.SAP_SSO, ssoSystem: process.env.SAP_SSO_SYSTEM, samlAuth: process.env.SAP_SAML_AUTH, samlUser: process.env.SAP_SAML_USER, samlPassword: process.env.SAP_SAML_PASSWORD, verbose: process.env.SAP_VERBOSE, httpProxy: process.env.HTTP_PROXY, httpsProxy: process.env.HTTPS_PROXY, noProxy: process.env.NO_PROXY, allowTransportableEdits: process.env.SAP_ALLOW_TRANSPORTABLE_EDITS } });
+      log({ event: 'initialize', argv: args, env: { guard: process.env.SAP_PROXY_CONTEXTID_GUARD, authorization: process.env.Authorization, cookie: process.env.Cookie, user: process.env.SAP_USER, password: process.env.SAP_PASSWORD, browserAuth: process.env.SAP_BROWSER_AUTH, sso: process.env.SAP_SSO, ssoSystem: process.env.SAP_SSO_SYSTEM, ssoFirstLogin: process.env.SAP_SSO_FIRST_LOGIN, ssoSilentTimeout: process.env.SAP_SSO_SILENT_TIMEOUT, samlAuth: process.env.SAP_SAML_AUTH, samlUser: process.env.SAP_SAML_USER, samlPassword: process.env.SAP_SAML_PASSWORD, verbose: process.env.SAP_VERBOSE, httpProxy: process.env.HTTP_PROXY, httpsProxy: process.env.HTTPS_PROXY, noProxy: process.env.NO_PROXY, allowTransportableEdits: process.env.SAP_ALLOW_TRANSPORTABLE_EDITS } });
       if (destination === 'broken') process.exit(2);
-      reply(message.id, { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: destination, version: 'fixture' } });
+      const initialized = () => reply(message.id, { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: destination, version: 'fixture' } });
+      // A delayed answer stands in for VSP finishing a browser sign-in before it serves MCP.
+      if (process.env.FAKE_INIT_DELAY_MS) setTimeout(initialized, Number(process.env.FAKE_INIT_DELAY_MS));
+      else initialized();
     } else if (message.method === 'tools/list') {
       reply(message.id, message.params?.cursor
         ? { tools: toolNames.slice(15).map(toolDefinition) }

@@ -391,6 +391,9 @@ test('runtime starts a configured local SAP GUI destination without BAS discover
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stderr, /\[Local Dev\] starting VSP child \(client=100\)/);
     assert.equal(result.stderr.includes('H2O_URL is required'), false);
+    const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+    assert.ok(result.stderr.includes(`[sap-ai-dev] sap-ai-dev-toolkit v${version} (node ${process.version}, pid `), result.stderr);
+    assert.ok(result.stderr.includes(`[sap-ai-dev] VSP binary: ${fakeVsp}`), result.stderr);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -459,7 +462,41 @@ test('runtime starts a configured local SAP GUI SSO destination with VSP browser
     assert.equal(init.argv.includes('--proxy-auth'), false);
     assert.equal(init.env.sso, 'true');
     assert.equal(init.env.ssoSystem, 's4h-100');
+    assert.equal(init.env.ssoFirstLogin, 'window');
+    assert.equal(init.env.ssoSilentTimeout, '15s');
     assert.equal(JSON.stringify(init).includes('must-not-pass'), false);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('runtime keeps user SSO sign-in overrides and gives Basic entries no SSO settings', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-local-sso-overrides-'));
+  const childEnv = async (name, extra) => {
+    const log = join(directory, `${name}.log`);
+    const result = await runLauncher(['--doctor', '--json'], {
+      ...process.env,
+      SAP_AI_DEV_TOOLKIT_BINARY: fakeVsp,
+      SAP_AI_DEV_TOOLKIT_CACHE_DIR: directory,
+      SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
+      SAP_AI_DEV_TOOLKIT_DESTINATION: name,
+      SAP_URL: 'https://abap.example.com:44300',
+      SAP_CLIENT: '100',
+      H2O_URL: '',
+      FAKE_LOG: log,
+      ...extra
+    });
+    assert.equal(result.code, 0, result.stderr);
+    return (await readFile(log, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line)).find(entry => entry.event === 'initialize').env;
+  };
+  try {
+    const sso = await childEnv('Tuned SSO', { SAP_AUTH_MODE: 'sso', SAP_SSO_FIRST_LOGIN: 'silent', SAP_SSO_SILENT_TIMEOUT: '30s' });
+    assert.equal(sso.ssoFirstLogin, 'silent');
+    assert.equal(sso.ssoSilentTimeout, '30s');
+    const basic = await childEnv('Basic Dev', { SAP_USER: 'local-user', SAP_PASSWORD: 'local-password' });
+    assert.equal(basic.sso, undefined);
+    assert.equal(basic.ssoFirstLogin, undefined);
+    assert.equal(basic.ssoSilentTimeout, undefined);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
