@@ -6,7 +6,7 @@ import { spawn } from 'node:child_process';
 import { stripVTControlCharacters } from 'node:util';
 import { PassThrough } from 'node:stream';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { installMcpConfig, npxMcpLauncher } from '../src/mcp-config.mjs';
 import { adtCandidate, parseSapClientList, runSetup } from '../src/setup.mjs';
@@ -219,6 +219,33 @@ test('setup run through npx pins the npx launcher instead of the disposable npx 
     npxLauncher.command,
     [...npxLauncher.prefixArgs, '--yes', '--ignore-scripts', `--package=sap-ai-dev-toolkit@${version}`, 'sap-ai-dev']
   ]);
+});
+test('setup pins its version and keeps a global sap-ai-dev only when it is that version', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-global-version-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  // npm's Windows layout: the shim sits next to node_modules/<package>.
+  const command = join(directory, isWindows ? 'sap-ai-dev.cmd' : 'sap-ai-dev');
+  const manifest = join(directory, 'node_modules', 'sap-ai-dev-toolkit', 'package.json');
+  await mkdir(dirname(manifest), { recursive: true });
+  await writeFile(command, '', { mode: 0o755 });
+  const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const install = () => installMcpConfig(destinations.slice(0, 1), { env: { H2O_URL: 'http://new-h2o', PATH: directory }, path: join(directory, 'mcp.json') });
+
+  await writeFile(manifest, JSON.stringify({ name: 'sap-ai-dev-toolkit', version }));
+  const current = await install();
+  assert.equal(current.servers['alpha-system'].command, command);
+  assert.equal(current.servers['alpha-system'].env.SAP_AI_DEV_TOOLKIT_VERSION, version);
+  assert.deepEqual(current.warnings, []);
+
+  await writeFile(manifest, JSON.stringify({ name: 'sap-ai-dev-toolkit', version: '0.0.1' }));
+  const stale = await install();
+  const npxLauncher = npxMcpLauncher();
+  const entry = stale.servers['alpha-system'];
+  assert.deepEqual([entry.command, entry.args], [
+    npxLauncher.command,
+    [...npxLauncher.prefixArgs, '--yes', '--ignore-scripts', `--package=sap-ai-dev-toolkit@${version}`, 'sap-ai-dev']
+  ]);
+  assert.ok(stale.warnings.some(warning => warning.includes(`sap-ai-dev-toolkit 0.0.1, not ${version}`) && warning.includes(`npm install -g sap-ai-dev-toolkit@${version}`)), stale.warnings.join('\n'));
 });
 test('does not overwrite an unrelated server with the destination name', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-config-collision-'));

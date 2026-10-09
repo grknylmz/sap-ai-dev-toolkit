@@ -338,7 +338,7 @@ Some current npm versions also require install hooks to be approved. If npm repo
 
 The setup report uses icons and terminal colors; set `NO_COLOR=1` to disable ANSI colors. Long-running steps (BAS destination discovery, ADT probes, VSP runtime provisioning, `--doctor` checks) show an animated progress line so the terminal never looks stuck; it appears only on interactive terminals and is disabled automatically on CI — set `SAP_AI_DEV_TOOLKIT_DISABLE_SCAN_ANIMATION=true` to turn it off. The table is a weather report, not a bouncer: green **PASS** means the ADT probe responded, red **FAIL** means it failed, and yellow **SKIPPED** means it was skipped. Probe failures do not block MCP registration or startup for destinations you select.
 
-Run `sap-ai-dev --setup` later to change the destination selection or remove generated destination entries. Run `sap-ai-dev --setup --tools` to also choose optional companion tools. Generated destination entries use the global `sap-ai-dev` command when it is on `PATH`; otherwise (for example after a pure npx setup) they automatically launch the pinned package version through `npx`, routed through `cmd /c npx` on Windows so every MCP host can spawn them. Pass `--npx` to force the npx launcher even when a global command exists; companion tools already use `npx` with their own npm packages.
+Run `sap-ai-dev --setup` later to change the destination selection or remove generated destination entries. Run `sap-ai-dev --setup --tools` to also choose optional companion tools. Generated destination entries use the global `sap-ai-dev` command when it is on `PATH` and is the same package version as the setup that writes them; otherwise (for example after a pure npx setup, or when an older global install is still on `PATH`) they automatically launch the pinned package version through `npx`, routed through `cmd /c npx` on Windows so every MCP host can spawn them. Setup warns when it skips a global install of another version. Pass `--npx` to force the npx launcher even when a global command exists; companion tools already use `npx` with their own npm packages.
 
 If a setup step is skipped or fails, rerun it from an interactive terminal:
 
@@ -824,6 +824,7 @@ The response contains a `tools` array. A `RunQuery` entry resembles this excerpt
 | `SAP_AI_DEV_TOOLKIT_BINARY_URL` | Alternate VSP binary download URL (checksum-verified). Legacy `BAS_VSP_BINARY_URL` still works. |
 | `SAP_AI_DEV_TOOLKIT_RELEASE_BASE_URL` | Override the base URL that VSP release binaries are downloaded from. |
 | `SAP_AI_DEV_TOOLKIT_CACHE_DIR` | Binary cache directory. Legacy `BAS_VSP_CACHE_DIR` still works. |
+| `SAP_AI_DEV_TOOLKIT_VERSION` | Written by setup into each destination entry: the toolkit version that configured it. An older `sap-ai-dev` started from that entry hands off to this version through `npx` (see Self-healing modes). |
 | `BAS_CF_SPACE_GUID`, `BAS_CF_DESTINATION_INSTANCE_GUID`, `BAS_CF_DESTINATION_INSTANCE`, `BAS_CF_DESTINATION_KEY`, `BAS_CF_DESTINATION_NAME`, `BAS_CF_CONNECTIVITY_INSTANCE_GUID`, `BAS_CF_CONNECTIVITY_INSTANCE`, `BAS_CF_CONNECTIVITY_KEY` | Written into generated Cloud Foundry destination entries; they reference service instances and key **names** (never credentials). |
 | `GO_BINARY` | Explicit Go executable for the repository-only `build:vsp` script; not used during installation. |
 | `SAP_AI_DEV_TOOLKIT_SKIP_PROBE=true` | Skip destination probes; useful for controlled diagnostics or fixtures. |
@@ -834,6 +835,7 @@ The response contains a `tools` array. A `RunQuery` entry resembles this excerpt
 
 VSP children connect to each configured destination URL directly. BAS destination authentication remains selected through VSP's `--proxy-auth` path; Cloud Foundry on-premise destinations continue through the separate Connectivity proxy.
 Child crash recovery restarts a failed VSP child, re-initializes it, re-registers tools, and retries the interrupted `tools/call` once before surfacing an error. State-changing tools are not retried.
+Stale launcher recovery: when an MCP entry starts a `sap-ai-dev` older than the `SAP_AI_DEV_TOOLKIT_VERSION` setup recorded in it (for example an outdated global install left on `PATH`), the launcher logs a warning and hands off to that version through `npx` on the same stdio, so the host never runs the stale launcher or VSP binary. A source checkout (`npm link`) always runs as-is.
 Existing installs that still set the previous `BAS_VSP_*` environment variables remain supported. The setup wizard writes new MCP entries with the `SAP_AI_DEV_TOOLKIT_*` names.
 
 #### Server logging

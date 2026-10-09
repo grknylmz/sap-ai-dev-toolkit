@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { dirname, join } from 'node:path';
@@ -8,7 +9,7 @@ import { discoverDestinations, remediation, slugifyDestination, statusRows } fro
 import { adtBaseUrl, adtPort, detectAdtUrl, discoverSapGuiSystems, hasExplicitPort, hasPathPrefix } from './local-sap-gui.mjs';
 import { binaryTarget, cacheDirectory, downloadBinary, findBinary } from './binary.mjs';
 import { MCPProxy } from './mcp-proxy.mjs';
-import { installMcpConfig, npxMcpLauncher, repairManagedMcpConfig } from './mcp-config.mjs';
+import { configuredVersionHandoff, installMcpConfig, npxPackageLauncher, repairManagedMcpConfig } from './mcp-config.mjs';
 import { runSetup } from './setup.mjs';
 import { resolveConfiguredCloudFoundryDestination } from './cf-destination.mjs';
 import { createTlsServerNameAdtProxy } from './tls-adt-proxy.mjs';
@@ -268,6 +269,33 @@ function noProxyEnv(env, host) {
   return { NO_PROXY: noProxy, no_proxy: noProxy };
 }
 
+// Runs a child on this process's stdio and mirrors its exit; rejects only when it cannot start.
+async function runOnOwnStdio(command, commandArgs, env) {
+  const child = spawn(command, commandArgs, { env, stdio: 'inherit' });
+  process.once('SIGINT', () => child.kill('SIGINT'));
+  process.once('SIGTERM', () => child.kill('SIGTERM'));
+  const [code, signal] = await new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('exit', (exitCode, exitSignal) => resolve([exitCode, exitSignal]));
+  });
+  if (signal) process.kill(process.pid, signal);
+  process.exitCode = code ?? 1;
+}
+
+// A source checkout runs as-is: its developer chose that code.
+async function handOffToConfiguredVersion() {
+  const handoff = existsSync(join(root, '.git')) ? null : configuredVersionHandoff(runtimeEnv, pkg.version);
+  if (!handoff) return false;
+  logLine(`[sap-ai-dev] sap-ai-dev-toolkit ${pkg.version} is older than ${handoff.version}, which configured this MCP entry; self-healing: handing off to sap-ai-dev-toolkit@${handoff.version} through npx. Run "npm install -g sap-ai-dev-toolkit@${handoff.version}" to update the global install.`);
+  try {
+    await runOnOwnStdio(handoff.command, handoff.args, { ...runtimeEnv, SAP_AI_DEV_TOOLKIT_HANDOFF: pkg.version });
+    return true;
+  } catch (error) {
+    logLine(`[sap-ai-dev] handoff to sap-ai-dev-toolkit@${handoff.version} could not start (${error.message}); continuing with ${pkg.version}`);
+    return false;
+  }
+}
+
 async function discoverForCommand() {
   const env = { ...runtimeEnv };
   if (env.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'cloud-foundry') env.SAP_AI_DEV_TOOLKIT_DESTINATION = '';
@@ -349,6 +377,7 @@ async function main() {
     process.stdout.write(usage());
     return;
   }
+  if (!setup && !check && !list && !doctor && !demo && await handOffToConfiguredVersion()) return;
   if (doctor && demo) throw new Error('Use either --doctor or --demo, not both.');
   if (demo) {
     await runOfflineDemo();
@@ -383,14 +412,8 @@ async function main() {
       detectAdtUrl: detectLocalAdtUrl
     };
     if (hasFlag('--npx')) {
-      // Windows has no npx.exe, so generated entries there launch through
-      // `cmd /c npx`; other platforms use npx directly.
-      const launcher = npxMcpLauncher();
-      setupOptions.install = (selected, options) => installMcpConfig(selected, {
-        ...options,
-        command: launcher.command,
-        args: [...launcher.prefixArgs, '--yes', '--ignore-scripts', `--package=sap-ai-dev-toolkit@${pkg.version}`, 'sap-ai-dev']
-      });
+      const launcher = npxPackageLauncher(pkg.version);
+      setupOptions.install = (selected, options) => installMcpConfig(selected, { ...options, ...launcher });
     }
     await runSetup(setupOptions);
     return;
@@ -450,15 +473,7 @@ async function main() {
       : (/\.(?:cmd|bat)$/i.test(binary)
         ? { command: 'cmd', prefixArgs: ['/c', binary] }
         : { command: binary, prefixArgs: [] });
-    const child = spawn(spawnTarget.command, [...spawnTarget.prefixArgs, ...process.argv.slice(2)], { env: runtimeEnv, stdio: 'inherit' });
-    process.once('SIGINT', () => child.kill('SIGINT'));
-    process.once('SIGTERM', () => child.kill('SIGTERM'));
-    const [code, signal] = await new Promise((resolve, reject) => {
-      child.once('error', reject);
-      child.once('exit', (exitCode, exitSignal) => resolve([exitCode, exitSignal]));
-    });
-    if (signal) process.kill(process.pid, signal);
-    process.exitCode = code ?? 1;
+    await runOnOwnStdio(spawnTarget.command, [...spawnTarget.prefixArgs, ...process.argv.slice(2)], runtimeEnv);
     return;
   }
 

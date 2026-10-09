@@ -8,11 +8,12 @@ import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { isolatedWindowsEnv, isWindows, pathEntry, writeFakeCli } from './fake-bin.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { binaryTarget } from '../src/binary.mjs';
-import { npxMcpLauncher } from '../src/mcp-config.mjs';
+import { configuredVersionHandoff, npxMcpLauncher } from '../src/mcp-config.mjs';
 import { spawnWithPty } from './pty.mjs';
 
 const launcher = fileURLToPath(new URL('../src/launcher.mjs', import.meta.url));
@@ -280,6 +281,32 @@ test('configured local SAP GUI runtime fails clearly without ADT URL', async () 
   assert.doesNotMatch(result.stderr, /H2O_URL is required/);
 });
 
+test('only a launcher older than the toolkit version that configured its entry hands off, once', () => {
+  const configured = { SAP_AI_DEV_TOOLKIT_VERSION: '0.10.2' };
+  assert.deepEqual(configuredVersionHandoff(configured, '0.9.95', 'win32'), {
+    version: '0.10.2',
+    command: 'cmd',
+    args: ['/c', 'npx', '--yes', '--ignore-scripts', '--package=sap-ai-dev-toolkit@0.10.2', 'sap-ai-dev']
+  });
+  assert.equal(configuredVersionHandoff(configured, '0.10.2'), null);
+  assert.equal(configuredVersionHandoff(configured, '0.10.10'), null);
+  assert.equal(configuredVersionHandoff({}, '0.9.6'), null);
+  assert.equal(configuredVersionHandoff({ ...configured, SAP_AI_DEV_TOOLKIT_HANDOFF: '0.9.95' }, '0.9.95'), null);
+});
+
+test('a source checkout runs as-is even when a newer toolkit configured its MCP entry', { skip: !existsSync(join(repoRoot, '.git')) && 'needs a git checkout' }, async () => {
+  const result = await runLauncher([], {
+    ...process.env,
+    SAP_AI_DEV_TOOLKIT_VERSION: '999.0.0',
+    SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE: 'sap-gui-local',
+    SAP_AI_DEV_TOOLKIT_DESTINATION: 'Local Missing URL',
+    H2O_URL: ''
+  });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /SAP_URL is required for local SAP GUI MCP entries/);
+  assert.doesNotMatch(result.stderr, /handing off/);
+});
+
 // The copy stays inside the repo so bare imports still resolve to its
 // node_modules, while dist/ is absent like a package whose binary vanished.
 async function packageWithoutBinaries(t) {
@@ -370,6 +397,20 @@ test('runtime heals a missing bundled VSP binary with a checksum-verified downlo
   assert.equal(restarted.code, 0, restarted.stderr);
   assert.equal(release.requests.length, downloads);
   assert.doesNotMatch(restarted.stderr, /downloading a checksum-verified copy/);
+});
+
+test('a stale launcher self-heals by handing off to the toolkit version that configured its MCP entry', { skip: isWindows && 'the fake npx is a shebang script' }, async t => {
+  const copy = await packageWithoutBinaries(t);
+  const bin = await mkdtemp(join(tmpdir(), 'sap-ai-handoff-'));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  await writeFakeCli(bin, 'npx', 'process.stdout.write(JSON.stringify({ argv: process.argv.slice(2), handoff: process.env.SAP_AI_DEV_TOOLKIT_HANDOFF })); process.exitCode = 7;');
+  const result = await runLauncher([], { ...process.env, PATH: pathEntry(bin), SAP_AI_DEV_TOOLKIT_VERSION: '999.0.0' }, copy.launcher);
+  assert.equal(result.code, 7, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    argv: ['--yes', '--ignore-scripts', '--package=sap-ai-dev-toolkit@999.0.0', 'sap-ai-dev'],
+    handoff: copy.version
+  });
+  assert.match(result.stderr, /self-healing: handing off to sap-ai-dev-toolkit@999\.0\.0 through npx/);
 });
 
 test('runtime starts a configured local SAP GUI destination without BAS discovery', async () => {
