@@ -30,6 +30,26 @@ const expectedSkills = [
   'sap-standard-api-analysis',
   'sap-transport-release'
 ];
+const abapStyleAgentNames = [
+  'abap-developer.agent.md',
+  'abap-runtime-debugger.agent.md',
+  'rap-service-developer.agent.md',
+  'sap-solution-architect.agent.md'
+];
+const abapStyleSkillNames = [
+  'abap-debugging',
+  'abap-development',
+  'abap-runtime-analysis',
+  'abap-testing-quality',
+  'clean-core-extensibility',
+  'rap-development',
+  'rap-service-delivery',
+  'sap-sdlc-orchestration',
+  'sap-standard-api-analysis',
+  'sap-transport-release'
+];
+const cleanAbapCheatSheetUrl = 'https://github.com/SAP/styleguides/blob/main/clean-abap/cheat-sheet/CheatSheet.md';
+const cleanAbapNamesUrl = 'https://github.com/SAP/styleguides/blob/main/clean-abap/CleanABAP.md#names';
 
 async function readMarkdown(path) {
   // Normalize CRLF so content assertions hold on Windows checkouts where
@@ -121,6 +141,50 @@ test('all bundled agents enforce lint before ABAP activation', async () => {
     assert.match(markdown, /exact (?:reviewed )?(?:object )?set|exact activation request/i, `${path} must scope activation to the linted objects`);
     assert.match(markdown, /(?:activation is never a substitute for testing|must not be used merely to run tests|never activate merely to run tests|never activate.*testing)/i, `${path} must forbid activation as a testing shortcut`);
   }
+});
+
+test('ABAP-capable agents and skills select modern syntax by supported release', async () => {
+  for (const name of abapStyleAgentNames) {
+    const path = join(agentsRoot, name);
+    const markdown = await readMarkdown(path);
+    assert.match(markdown, /oldest supported ABAP release/i, `${path} must identify the syntax compatibility floor`);
+    assert.match(markdown, /7\.40/i, `${path} must explicitly consider modern syntax on ABAP 7.40 or newer`);
+    assert.match(markdown, /modern ABAP syntax/i, `${path} must consider modern ABAP syntax`);
+    assert.ok(markdown.includes(cleanAbapCheatSheetUrl), `${path} must link the Clean ABAP cheat sheet`);
+    assert.ok(markdown.includes(cleanAbapNamesUrl), `${path} must link the Clean ABAP naming guide`);
+  }
+
+  for (const name of abapStyleSkillNames) {
+    const path = join(skillsRoot, name, 'SKILL.md');
+    const markdown = await readMarkdown(path);
+    assert.match(markdown, /oldest supported ABAP release/i, `${path} must identify the syntax compatibility floor`);
+    assert.match(markdown, /7\.40/i, `${path} must explicitly consider modern syntax on ABAP 7.40 or newer`);
+    assert.match(markdown, /modern ABAP syntax/i, `${path} must consider modern ABAP syntax`);
+    assert.ok(markdown.includes(cleanAbapCheatSheetUrl), `${path} must link the Clean ABAP cheat sheet`);
+    assert.ok(markdown.includes(cleanAbapNamesUrl), `${path} must link the Clean ABAP naming guide`);
+  }
+});
+
+test('canonical ABAP style guidance summarizes Clean ABAP naming conventions', async () => {
+  const path = join(skillsRoot, 'abap-development', 'SKILL.md');
+  const markdown = await readMarkdown(path);
+  assert.match(markdown, /descriptive (?:problem|domain|solution)/i);
+  assert.match(markdown, /snake_case/i);
+  assert.match(markdown, /nouns? for classes/i);
+  assert.match(markdown, /verbs? for methods/i);
+  assert.match(markdown, /plural/i);
+  assert.match(markdown, /Hungarian|type prefixes/i);
+  assert.match(markdown, /feature-specific.*(?:release|version)|(?:release|version).*feature-specific/is);
+});
+
+test('CDS guidance checks its language level separately from ABAP release', async () => {
+  const path = join(skillsRoot, 'cds-development', 'SKILL.md');
+  const markdown = await readMarkdown(path);
+  assert.match(markdown, /CDS (?:language )?(?:level|version|capabilit)/i);
+  assert.match(markdown, /not infer CDS syntax support solely from an ABAP release/i);
+  assert.match(markdown, /oldest supported ABAP release/i);
+  assert.ok(markdown.includes(cleanAbapCheatSheetUrl));
+  assert.ok(markdown.includes(cleanAbapNamesUrl));
 });
 
 test('agent file names match the slugified frontmatter names for harness renames', async () => {
