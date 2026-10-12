@@ -173,7 +173,7 @@ function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r', selec
   });
 }
 
-test('imports selected CF destinations, passes managed key references, and removes only orphaned keys', async t => {
+test('imports selected CF destinations while preserving existing managed destinations', async t => {
   const fixture = await makeFixture(t);
   const previous = cloudFoundryDestination({
     name: 'old-destination', serverName: 'cf:space-one:old-instance:old-destination',
@@ -218,12 +218,14 @@ test('imports selected CF destinations, passes managed key references, and remov
     instanceName: 'old-destination-service', keyName: 'old-key'
   }]);
   const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
-  assert.deepEqual(Object.keys(config.servers), ['cf-space-one-new-instance-new-destination']);
+  assert.deepEqual(Object.keys(config.servers).sort(), [
+    'cf-space-one-new-instance-new-destination',
+    'cf-space-one-old-instance-old-destination'
+  ]);
+  assert.equal(config.servers['cf-space-one-old-instance-old-destination'].env.BAS_CF_DESTINATION_KEY, 'old-key');
   assert.equal(config.servers['cf-space-one-new-instance-new-destination'].env.BAS_CF_DESTINATION_KEY, 'new-key');
   const calls = (await readFile(fixture.callLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-  assert.deepEqual(calls.filter(args => args[0] === 'delete-service-key'), [[
-    'delete-service-key', '-f', '--wait', 'old-destination-service', 'old-key'
-  ]]);
+  assert.deepEqual(calls.filter(args => args[0] === 'delete-service-key'), []);
   assert.equal(calls.some(args => args.at(-1) === 'new-key'), false);
 });
 
@@ -251,7 +253,7 @@ test('declining CF import keeps BAS setup and does not create CF keys', async t 
   assert.equal(calls.some(args => args[0] === 'delete-service-key'), false);
 });
 
-test('old CF keys are preserved when the CLI targets a different space', async t => {
+test('existing CF destinations are preserved when setup targets a different space', async t => {
   const fixture = await makeFixture(t, { space: 'space-two' });
   const previous = cloudFoundryDestination({
     name: 'old-destination', serverName: 'cf:space-one:old-instance:old-destination',
@@ -264,7 +266,9 @@ test('old CF keys are preserved when the CLI targets a different space', async t
 
   const result = await runSetupInPty(fixture, { importAnswer: 'n\r' });
   assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
-  assert.match(result.stdout, /requires targeting CF space space-one; it was left untouched/);
+  const config = JSON.parse(await readFile(fixture.configPath, 'utf8'));
+  assert.deepEqual(Object.keys(config.servers).sort(), ['bas-system', 'cf-space-one-old-instance-old-destination']);
+  assert.equal(config.servers['cf-space-one-old-instance-old-destination'].env.BAS_CF_DESTINATION_KEY, 'old-key');
   const calls = (await readFile(fixture.callLog, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.equal(calls.some(args => args[0] === 'delete-service-key'), false);
 });
@@ -309,7 +313,7 @@ test('missing service keys are treated as removed without exposing CLI stderr', 
     name: 'bas-system', url: 'https://bas.example', client: '100', authentication: 'Basic', probe: { status: 'available' }
   }]);
 
-  const result = await runSetupInPty(fixture, { importAnswer: 'n\r' });
+  const result = await runSetupInPty(fixture, { importAnswer: 'n\r', selection: '\r\r' });
   assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
   assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /Service key not found/);
   assert.doesNotMatch(result.stdout, /Could not delete managed destination service key/);
