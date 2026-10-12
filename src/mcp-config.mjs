@@ -588,6 +588,7 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
     options = destinationsOrOptions || {};
   }
   const env = options.env || process.env;
+  const additive = options.additive === true;
   const path = options.path || await resolveMcpConfigPath(env);
   const installWarnings = [];
   // recoverInvalid: BOM/encoding damage, VS Code JSONC comments, torn writes
@@ -623,7 +624,9 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
     }
   }
   const servers = Object.create(null);
+  const managedEntries = [];
   const managedInputIds = new Set();
+  const generatedNames = new Set(Object.keys(generated));
   for (const [name, entry] of Object.entries(config.servers)) {
     const managed = isPackageLauncher(entry)
       && typeof destinationValue(entry?.env) === 'string'
@@ -636,17 +639,38 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
         if (match) managedInputIds.add(match[1]);
       }
     }
-    if (!LEGACY_MCP_SERVER_PREFIXES.some(prefix => name.startsWith(prefix)) && !managed && !isCompanionServer(entry)) servers[name] = entry;
+    const exactManagedUpdate = managed && generatedNames.has(name)
+      && destinationValue(entry.env) === generated[name]?.env?.SAP_AI_DEV_TOOLKIT_DESTINATION
+      && destinationSource(entry.env) === generated[name]?.env?.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE;
+    if (additive && (managed || isCompanionServer(entry)) && !exactManagedUpdate) managedEntries.push([name, entry]);
+    else if (!managed && !isCompanionServer(entry) && !LEGACY_MCP_SERVER_PREFIXES.some(prefix => name.startsWith(prefix))) servers[name] = entry;
   }
+  const retainedNames = new Set(managedEntries.map(([name]) => name));
   for (const name of Object.keys(generated)) {
-    if (Object.hasOwn(servers, name)) {
-      throw new Error(`MCP server "${name}" already exists and is not managed by sap-ai-dev-toolkit`);
+    if (Object.hasOwn(servers, name) || retainedNames.has(name)) {
+      const existing = Object.hasOwn(servers, name) ? servers[name] : config.servers[name];
+      const conflict = Object.hasOwn(servers, name)
+        ? 'already exists and is not managed by sap-ai-dev-toolkit'
+        : `conflicts with a different managed destination${isCompanionServer(existing) ? ' or companion server' : ''}`;
+      throw new Error(`MCP server "${name}" ${conflict}`);
     }
   }
-  config.servers = { ...servers, ...generated };
+  config.servers = { ...servers, ...Object.fromEntries(managedEntries), ...generated };
   if (generatedInputs.size || managedInputIds.size) {
-    const existingInputs = Array.isArray(config.inputs) ? config.inputs.filter(input => !generatedInputs.has(input?.id) && !managedInputIds.has(input?.id)) : [];
-    config.inputs = [...existingInputs, ...generatedInputs.values()];
+    const retainedInputIds = new Set();
+    if (additive) {
+      for (const [, entry] of managedEntries) {
+        for (const value of Object.values(entry.env || {})) {
+          const match = typeof value === 'string' ? value.match(/^\$\{input:([^}]+)}$/) : null;
+          if (match) retainedInputIds.add(match[1]);
+        }
+      }
+    }
+    const existingInputs = Array.isArray(config.inputs) ? config.inputs.filter(input =>
+      !managedInputIds.has(input?.id) || retainedInputIds.has(input?.id)) : [];
+    const inputsById = new Map(existingInputs.map(input => [input?.id, input]));
+    for (const [id, input] of generatedInputs) inputsById.set(id, input);
+    config.inputs = [...inputsById.values()];
   }
   await writeConfig(path, config);
   return { path, servers: generated, warnings: installWarnings };

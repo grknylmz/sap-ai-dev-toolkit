@@ -247,7 +247,7 @@ test('checkbox prompt redraws cleanly on arrow keys in terminals narrower than t
       { name: 'S4H (BAS, client 100, ok:available)', value: 's4h' },
       { name: 'cicd-backend (BAS, client 001, fail:not-found)', value: 'cicd', disabled: 'unreachable' }
     ];
-    const selection = checkboxPrompt({ message, choices, shortcuts: { all: 'a' } }, { input, output });
+    const selection = checkboxPrompt({ message, choices, shortcuts: { all: 'a' }, actions: { m: async () => [] } }, { input, output });
 
     await new Promise(resolve => setTimeout(resolve, 10));
     for (const [delay, key] of [[10, '\u001b[B'], [20, '\u001b[A'], [30, '\u001b[B']]) {
@@ -259,6 +259,7 @@ test('checkbox prompt redraws cleanly on arrow keys in terminals narrower than t
     const headerCount = (whilePrompting.match(/Select destinations \(Space:/gu) || []).length;
     assert.equal(headerCount, 1, `columns=${columns}: expected a single header line, got:\n${whilePrompting}`);
     assert.match(whilePrompting, /S4H/u);
+    assert.match(whilePrompting, /m: add system manually/u);
 
     input.write('\r');
     assert.deepEqual(await selection, []);

@@ -1,5 +1,6 @@
 import { open, readFile } from 'node:fs/promises';
 import { closeSync, openSync, realpathSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installBinary } from '../src/binary.mjs';
@@ -41,11 +42,21 @@ async function announce(message, tone = 'info') {
 
 function openControllingTerminal() {
   if (process.platform === 'win32') {
-    // fs cannot open CONIN$/CONOUT$ (libuv path normalization rejects the
-    // device names), so there is no controlling-terminal recovery on
-    // Windows: npm-script installs run non-interactively and the printed
-    // guidance points at `sap-ai-dev --setup` in a real terminal.
-    throw new Error('controlling terminal recovery is unavailable on Windows');
+    // npm can pipe lifecycle script streams even when the install was
+    // launched from an interactive Windows console. Verify console access,
+    // then attach Node TTY streams to its standard console devices.
+    const probe = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[Console]::OpenStandardInput(); [Console]::OpenStandardOutput()'], { stdio: 'ignore', windowsHide: true });
+    if (probe.error || probe.status !== 0) throw new Error('interactive console is unavailable');
+    const inputFd = openSync('CONIN$', 'r');
+    let outputFd;
+    try {
+      outputFd = openSync('CONOUT$', 'w');
+      return { input: new TTYReadStream(inputFd), output: new TTYWriteStream(outputFd) };
+    } catch (error) {
+      closeSync(inputFd);
+      if (outputFd !== undefined) closeSync(outputFd);
+      throw error;
+    }
   }
   const inputFd = openSync('/dev/tty', 'r');
   let outputFd;

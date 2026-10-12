@@ -44,6 +44,63 @@ test('message-server UUID resolves logon groups without deriving an instance fro
   assert.deepEqual(systems[0].messageServer, { host: 'msg.example', httpPort: 8101 });
 });
 
+test('discovers services referenced from multiple nested SAP GUI groups', async t => {
+  const systems = await fixture(t, 'landscape.xml', `<Landscape>
+    <Services>
+      <Service type="SAPGUI" uuid="svc-dev" name="Development" server="dev.example" systemid="DEV" instancenumber="00" />
+      <Service type="SAPGUI" uuid="svc-qa" name="Quality &gt; Test" server="qa.example" systemid="QAS" instancenumber="01" />
+    </Services>
+    <Workspaces>
+      <Workspace name="Main">
+        <Node name="Engineering"><Item serviceid="SVC-DEV" /></Node>
+        <Node name="Quality"><Node name="Nested"><Item serviceid="svc-qa" /><Item serviceid="svc-qa" /></Node></Node>
+      </Workspace>
+    </Workspaces>
+  </Landscape>`);
+  assert.deepEqual(systems.map(system => system.name), ['Development', 'Quality > Test']);
+  assert.deepEqual(systems.map(system => system.host), ['dev.example', 'qa.example']);
+});
+
+test('resolves reference entries with workspace labels while preserving distinct logon groups', async t => {
+  const systems = await fixture(t, 'landscape.xml', `<Landscape>
+    <Services>
+      <Messageserver uuid="MS-1" host="msg.example" port="3601" />
+      <Service type="SAPGUI" uuid="svc-public" name="Shared system" server="PUBLIC" msid="ms-1" systemid="DEV" />
+      <Service type="SAPGUI" uuid="svc-finance" name="Finance" server="FINANCE" msid="MS-1" systemid="DEV" />
+    </Services>
+    <Workspaces>
+      <Workspace name="Teams">
+        <Node name="Engineering"><Reference link="SVC-PUBLIC" name="Development" client="100" /></Node>
+        <Node name="Platform"><Reference link="svc-public" name="Development" client="100" /></Node>
+        <Node name="Operations"><Item serviceid="svc-finance" /></Node>
+      </Workspace>
+    </Workspaces>
+  </Landscape>`);
+  assert.deepEqual(systems.map(system => system.name), ['Development', 'Finance', 'Shared system']);
+  assert.deepEqual(systems.map(system => system.host), ['msg.example', 'msg.example', 'msg.example']);
+  assert.deepEqual(systems.map(system => system.messageServer.httpPort), [8101, 8101, 8101]);
+  assert.equal(systems.find(system => system.name === 'Development').client, '100');
+  assert.equal(systems.find(system => system.name === 'Finance').logonGroup, 'FINANCE');
+  assert.equal(systems.find(system => system.name === 'Shared system').logonGroup, 'PUBLIC');
+});
+
+test('preserves distinct service identities when names and endpoints match', async t => {
+  const systems = await fixture(t, 'landscape.xml', `<Landscape><Services>
+    <Service type="SAPGUI" uuid="a" name="Shared name" server="same.example" systemid="DEV" client="100" />
+    <Service type="SAPGUI" uuid="b" name="Shared name" server="same.example" systemid="DEV" client="100" />
+  </Services></Landscape>`);
+  assert.equal(systems.length, 2);
+});
+
+test('ignores unresolved workspace references and does not count comments or nested fake tags', async t => {
+  const systems = await fixture(t, 'landscape.xml', `<Landscape>
+    <!-- <Service type="SAPGUI" uuid="deleted" name="Deleted" server="deleted.example" /> -->
+    <Services><Service type="SAPGUI" uuid="good" name="Good" server="good.example" /></Services>
+    <Workspaces><Workspace name="Group"><Item serviceid="missing" /><Item name="Incomplete" /></Workspace></Workspaces>
+  </Landscape>`);
+  assert.deepEqual(systems.map(system => system.name), ['Good']);
+});
+
 test('UTF-16 SAP Logon INI retains instance and SNC metadata', async t => {
   const content = '[Description]\r\nItem1=Development\r\n[Server]\r\nItem1=dev.example\r\n[Database]\r\nItem1=DEV\r\n[SystemNumber]\r\nItem1=03\r\n[SNC]\r\nItem1=0\r\n';
   const systems = await fixture(t, 'saplogon.ini', Buffer.concat([Buffer.from([255, 254]), Buffer.from(content, 'utf16le')]));

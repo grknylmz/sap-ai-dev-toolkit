@@ -76,7 +76,7 @@ test('local SAP GUI entries detect normalized name collisions', () => {
   ], {}), /Duplicate MCP destination server name/);
 });
 
-test('local SAP GUI generated inputs replace stale managed inputs but preserve user inputs', async t => {
+test('local SAP GUI generated inputs replace stale inputs for the replaced system', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'sap-gui-stale-inputs-'));
   const path = join(directory, 'mcp.json');
   await writeFile(path, JSON.stringify({
@@ -149,6 +149,25 @@ test('writes local SAP GUI entries with VS Code login inputs and no BAS dependen
   assert.equal(installed.servers['a4h-100'].env.H2O_URL, undefined);
   let config = await readMcpConfig(path);
   assert.deepEqual(config.inputs.map(input => input.id), ['keep-me', 'sap-ai-dev-dev-abap-user', 'sap-ai-dev-dev-abap-password']);
+
+  const secondLocal = {
+    ...local,
+    name: 'QA ABAP',
+    systemId: 'Q4H',
+    url: 'https://qa.example.com:44300',
+    childEnv: { SAP_USER: '${input:sap-ai-dev-qa-abap-user}', SAP_PASSWORD: '${input:sap-ai-dev-qa-abap-password}' },
+    inputs: [
+      { id: 'sap-ai-dev-qa-abap-user', type: 'promptString', description: 'SAP user for QA ABAP' },
+      { id: 'sap-ai-dev-qa-abap-password', type: 'promptString', description: 'SAP password for QA ABAP', password: true }
+    ]
+  };
+  await installMcpConfig([secondLocal], { env: { PATH: directory }, path, additive: true });
+  config = await readMcpConfig(path);
+  assert.deepEqual(Object.keys(config.servers).sort(), ['a4h-100', 'q4h-100', 'userServer']);
+  assert.deepEqual(config.inputs.map(input => input.id), [
+    'keep-me', 'sap-ai-dev-dev-abap-user', 'sap-ai-dev-dev-abap-password',
+    'sap-ai-dev-qa-abap-user', 'sap-ai-dev-qa-abap-password'
+  ]);
 
   await installMcpConfig([], { env: { PATH: directory }, path });
   config = await readMcpConfig(path);

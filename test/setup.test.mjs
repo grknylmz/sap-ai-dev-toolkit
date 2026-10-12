@@ -163,7 +163,7 @@ async function assertUserClaudeAssets(home) {
   assert.equal((await stat(join(claudeRoot, '.sap-ai-dev-toolkit-assets.json'))).isFile(), true);
 }
 
-test('reconciles generated entries while preserving unrelated MCP config', async () => {
+test('adds generated entries while preserving existing managed and unrelated MCP config', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-config-'));
   const path = join(directory, 'mcp.json');
   await writeFile(path, JSON.stringify({
@@ -175,26 +175,27 @@ test('reconciles generated entries while preserving unrelated MCP config', async
     }
   }));
   try {
-    await installMcpConfig(destinations.slice(0, 2), { env: { H2O_URL: 'http://new-h2o' }, path });
+    await installMcpConfig(destinations.slice(0, 1), { env: { H2O_URL: 'http://new-h2o' }, path, additive: true });
+    await installMcpConfig(destinations.slice(1, 2), { env: { H2O_URL: 'http://new-h2o' }, path, additive: true });
     const config = JSON.parse(await readFile(path, 'utf8'));
     const generated = Object.entries(config.servers).filter(([, entry]) => entry.BAS_EXT === 'true');
     assert.equal(config.custom, true);
     assert.deepEqual(config.inputs, [{ id: 'keep-me' }]);
     assert.deepEqual(Object.keys(config.servers).sort(), ['alpha-system', 'beta-system', 'unrelated']);
-    assert.deepEqual(generated.map(([name]) => name), ['alpha-system', 'beta-system']);
+    assert.deepEqual(generated.map(([name]) => name).sort(), ['alpha-system', 'beta-system']);
     assert.equal(generated.length, 2);
-    assert.deepEqual(generated.map(([, entry]) => entry.env.SAP_AI_DEV_TOOLKIT_DESTINATION), ['alpha-system', 'beta-system']);
+    assert.deepEqual(generated.map(([, entry]) => entry.env.SAP_AI_DEV_TOOLKIT_DESTINATION).sort(), ['alpha-system', 'beta-system']);
     assert.deepEqual(generated.map(([, entry]) => entry.env.H2O_URL), ['http://new-h2o', 'http://new-h2o']);
     // No sap-ai-dev launcher is on PATH here (pure npx scenario), so the
     // generated entries pin the package through npx instead of writing a
     // command no MCP host could spawn; Windows routes through cmd /c.
     const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
     const npxLauncher = npxMcpLauncher();
-    assert.deepEqual(generated.map(([, entry]) => [entry.command, entry.args]), generated.map(() => [
+    for (const [, entry] of generated) assert.deepEqual([entry.command, entry.args], [
       npxLauncher.command,
       [...npxLauncher.prefixArgs, '--yes', '--ignore-scripts', `--package=sap-ai-dev-toolkit@${version}`, 'sap-ai-dev']
-    ]));
-    assert.deepEqual(generated.map(([, entry]) => entry.env.SAP_ALLOW_TRANSPORTABLE_EDITS), ['true', 'true']);
+    ]);
+    assert.deepEqual(generated.map(([, entry]) => entry.env.SAP_ALLOW_TRANSPORTABLE_EDITS).sort(), ['true', 'true']);
     assert.equal(new Set(generated.map(([name]) => name)).size, 2);
 
     await installMcpConfig([], { env: { H2O_URL: 'http://new-h2o' }, path });
@@ -264,6 +265,33 @@ test('does not overwrite an unrelated server with the destination name', async (
   }
 });
 
+
+test('additive install rejects collisions with previously managed destination names', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-managed-collision-'));
+  const path = join(directory, 'mcp.json');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const first = { ...destinations[0], name: 'ABAP Dev', serverName: 'ABAP Dev' };
+  const second = { ...destinations[0], name: 'ABAP_Dev', serverName: 'ABAP_Dev', url: 'http://other.dest' };
+  await installMcpConfig([first], { env: { H2O_URL: 'http://h2o.example' }, path, command: 'sap-ai-dev' });
+  const before = await readFile(path, 'utf8');
+  await assert.rejects(
+    () => installMcpConfig([second], { env: { H2O_URL: 'http://h2o.example' }, path, command: 'sap-ai-dev', additive: true }),
+    /conflicts with a different managed destination/
+  );
+  assert.equal(await readFile(path, 'utf8'), before, 'a collision must not rewrite the existing configuration');
+});
+
+test('additive install rejects destination names that collide with companion servers', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-companion-collision-'));
+  const path = join(directory, 'mcp.json');
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  await installMcpConfig([], { env: { H2O_URL: 'http://h2o.example' }, path, sapDevelopmentServers: ['sap-fiori-tools'] });
+  const destination = { ...destinations[0], name: 'sap-fiori-tools', serverName: 'sap-fiori-tools' };
+  await assert.rejects(
+    () => installMcpConfig([destination], { env: { H2O_URL: 'http://h2o.example' }, path, additive: true }),
+    /conflicts with a different managed destination or companion server/
+  );
+});
 
 test('self-heals malformed MCP JSON with a backup instead of failing setup', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-config-heal-'));

@@ -108,6 +108,21 @@ test('all bundled agents invoke chat-attached MCP tools without terminal JSON-RP
   }
 });
 
+test('all bundled agents enforce lint before ABAP activation', async () => {
+  for (const name of expectedAgents) {
+    const path = join(agentsRoot, name);
+    const markdown = await readMarkdown(path);
+    if (name === 'hana-cloud-hdi-specialist.agent.md') {
+      assert.match(markdown, /does not implement or activate ABAP code/i, `${path} must explicitly refuse ABAP activation`);
+      continue;
+    }
+    assert.match(markdown, /(?:immediately before (?:every |any )?(?:ABAP )?activation|(?:Every ABAP )?activation must be preceded immediately)/i, `${path} must require lint directly before activation`);
+    assert.match(markdown, /LintABAP.{0,200}(?:successfully|must succeed)|successful `LintABAP`/is, `${path} must require a successful lint run`);
+    assert.match(markdown, /exact (?:reviewed )?(?:object )?set|exact activation request/i, `${path} must scope activation to the linted objects`);
+    assert.match(markdown, /(?:activation is never a substitute for testing|must not be used merely to run tests|never activate merely to run tests|never activate.*testing)/i, `${path} must forbid activation as a testing shortcut`);
+  }
+});
+
 test('agent file names match the slugified frontmatter names for harness renames', async () => {
   for (const name of expectedAgents) {
     const path = join(agentsRoot, name);
@@ -208,6 +223,20 @@ test('each skill has valid metadata, matching name, and enforceable live-tool va
     assert.match(markdown, /^#\s+\S.+$/m, `${skill} must have a top-level heading`);
     assertMentionsLiveToolDiscovery(markdown, path);
     assertNoUnsafeTransportClaims(markdown, path);
+  }
+});
+
+test('every bundled skill that permits ABAP activation requires lint on the exact activation set first', async () => {
+  const skillNames = await readdir(skillsRoot);
+  for (const skill of skillNames) {
+    if (skill.startsWith('hana-cloud-')) continue;
+    const path = join(skillsRoot, skill, 'SKILL.md');
+    const markdown = await readMarkdown(path);
+    if (!/(?:^|\s)activat(?:e|ed|es|ing|ion)\b|ActivateMultiple/i.test(markdown)) continue;
+    assert.match(markdown, /(?:immediately before (?:every |any )?(?:ABAP )?activation|before activating|(?:Every ABAP )?activation must be preceded immediately)/i, `${path} must require lint directly before activation`);
+    assert.match(markdown, /LintABAP.{0,200}(?:successfully|must succeed)|successful `LintABAP`/is, `${path} must require a successful lint run`);
+    assert.match(markdown, /exact (?:reviewed )?(?:object )?set|exact activation request/i, `${path} must scope activation to the linted objects`);
+    assert.match(markdown, /never (?:be used|activate).{0,60}merely to run tests|never activate.*run tests/i, `${path} must forbid activation as a testing shortcut`);
   }
 });
 

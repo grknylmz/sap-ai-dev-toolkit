@@ -705,6 +705,7 @@ export async function runSetup({
     return { skipped: true, reason: 'no-destinations', warnings: [...warnings, ...cleanupWarnings] };
   };
   let selected;
+  let additiveSetup = false;
   if (!selectable.length) {
     // Nothing was detected — no BAS/CF destinations, or no SAP GUI entries.
     // Offer the manual MCP entry wizard before giving up.
@@ -721,9 +722,11 @@ export async function runSetup({
     }, { input, output });
     if (choice !== 'manual') return await exitWithoutDestinations();
     selected = await runManualEntryWizard({ env, input, output, detectAdtUrl });
+    additiveSetup = true;
     if (!selected.length) return await exitWithoutDestinations();
   } else {
     selected = await chooseDiscoveredDestinations(destinations, { isBas, input, output, env, detectAdtUrl, previousAdtUrls });
+    additiveSetup = selected.length > 0;
   }
 
   let sapDevelopmentServers = [];
@@ -746,7 +749,7 @@ export async function runSetup({
   }
 
   try {
-    const result = await install(selected, { env, sapDevelopmentServers });
+    const result = await install(selected, { env, sapDevelopmentServers, additive: additiveSetup });
     const location = result?.path ? ` in ${result.path}` : '';
     print(output, '');
     const configuredCount = selected.length + sapDevelopmentServers.length;

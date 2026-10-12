@@ -164,6 +164,8 @@ function normalizeRecord(record, sourcePath) {
     authentication: ssoHintFrom(record) ? 'Basic/SSO hint' : 'Basic',
     authMode: 'basic',
     ssoHint: ssoHintFrom(record),
+    ...(record.uuid ? { serviceId: text(record.uuid).toLowerCase() } : {}),
+    ...(record.msid ? { logonGroup: text(record.logongroup || record.server || record.group) } : {}),
     proxyType: 'Internet',
     landscapePath: sourcePath,
     probe: { status: 'needs-adt-url' }
@@ -175,28 +177,51 @@ function parseLandscapeXml(content, sourcePath) {
   // Comments must not turn deleted entries into selectable systems.
   content = content.replace(/<!--[\s\S]*?-->/g, '');
   const messageServers = new Map();
-  for (const match of content.matchAll(/<Messageserver\b([^>]*)>/gi)) {
+  for (const match of content.matchAll(/<Messageserver\b((?:[^>"']|"[^"]*"|'[^']*')*)>/gi)) {
     const record = attributes(match[1]);
-    if (record.uuid) messageServers.set(record.uuid, record);
+    if (record.uuid) messageServers.set(record.uuid.toLowerCase(), record);
   }
-  for (const match of content.matchAll(/<Service\b([^>]*)\/?>(?:\s*<\/Service>)?/gi)) {
+  const services = new Map();
+  for (const match of content.matchAll(/<Service\b((?:[^>"']|"[^"]*"|'[^']*')*)\/?>(?:\s*<\/Service>)?/gi)) {
     const record = attributes(match[1]);
-    if (record.msid) {
-      const messageServer = messageServers.get(record.msid);
-      // For load-balanced entries `server` is a logon group, not a host.
-      if (!messageServer?.host) continue;
-      record.server = messageServer.host;
-      record.msport = messageServer.port;
-    }
-    const normalized = normalizeRecord(record, sourcePath);
+    if (record.uuid) services.set(record.uuid.toLowerCase(), record);
+    const normalized = normalizeLandscapeService(record, messageServers, sourcePath);
     if (normalized) records.push(normalized);
   }
-  // SAP GUI for Java files may use generic Item/Connection elements.
-  for (const match of content.matchAll(/<(?:Item|Connection)\b([^>]*)\/?>(?:\s*<\/(?:Item|Connection)>)?/gi)) {
-    const normalized = normalizeRecord(attributes(match[1]), sourcePath);
+
+  // Workspace trees organize visibility, not service definitions. Items can
+  // point at shared services, so resolve those references across all groups.
+  const referencedServiceIds = new Set();
+  for (const match of content.matchAll(/<(?:Item|Reference)\b((?:[^>"']|"[^"]*"|'[^']*')*)\/?>(?:\s*<\/(?:Item|Reference)>)?/gi)) {
+    const item = attributes(match[1]);
+    const serviceId = text(item.serviceid || item.service_id || item.link || item.ref).replace(/^#/, '').toLowerCase();
+    const referenced = serviceId ? services.get(serviceId) : null;
+    if (serviceId && !referenced) continue;
+    const record = referenced ? { ...referenced, ...item } : item;
+    if (referenced) {
+      for (const key of ['server', 'host', 'applicationserver', 'messageserver', 'mshost', 'msid', 'systemid', 'sid', 'r3name', 'type', 'kind']) {
+        if (referenced[key] && !item[key]) record[key] = referenced[key];
+      }
+      // Emit an unaliased service only once even when multiple groups include it.
+      if (!(item.name || item.description || item.desc) && referencedServiceIds.has(serviceId)) continue;
+      referencedServiceIds.add(serviceId);
+    }
+    const normalized = normalizeLandscapeService(record, messageServers, sourcePath);
     if (normalized) records.push(normalized);
   }
   return records;
+}
+
+function normalizeLandscapeService(record, messageServers, sourcePath) {
+  if (record.msid) {
+    const messageServer = messageServers.get(record.msid.toLowerCase());
+    // For load-balanced entries `server` is a logon group, not a host.
+    if (!messageServer?.host) return null;
+    record.logongroup = record.logongroup || record.server || record.group;
+    record.server = messageServer.host;
+    record.msport = messageServer.port;
+  }
+  return normalizeRecord(record, sourcePath);
 }
 
 function parseSapLogonIni(content, sourcePath) {
@@ -390,7 +415,7 @@ export async function discoverSapGuiSystems({ env = process.env, paths } = {}) {
   if (!systems.length && !paths) systems = await parseSapGuiCandidatePaths(await broadSelfHealingSapGuiCandidates(env));
   const seen = new Set();
   return systems.filter(system => {
-    const key = `${system.name}\0${system.host}\0${system.systemId}\0${system.instance}\0${system.client}`.toLowerCase();
+    const key = `${system.serviceId || ''}\0${system.logonGroup || ''}\0${system.name}\0${system.host}\0${system.systemId}\0${system.instance}\0${system.client}`.toLowerCase();
     if (seen.has(key)) return false;
     seen.add(key);
     return true;

@@ -274,17 +274,19 @@ export async function checkboxPrompt({ message, choices: initialChoices, require
   const render = (error = '') => {
     const columns = Number.isFinite(output?.columns) ? output.columns : 80;
     const indexes = visibleIndexes();
+    const fixedLines = 1 + (searchable ? 1 : 0) + (Object.hasOwn(actions, 'm') ? 1 : 0) + footer().length;
     const pageSize = searchable
-      ? Math.max(1, checkboxPageSize(output, indexes.length + 1) - 1)
+      ? Math.max(1, Math.min(indexes.length, (Number.isFinite(output?.rows) ? output.rows : 24) - fixedLines - 7))
       : checkboxPageSize(output, indexes.length);
     const cursorPosition = indexes.indexOf(cursor);
     ensureVisible(pageSize, indexes.length, cursorPosition);
     const lines = [];
     lines.push(truncateToColumns(`${message} (Space: select, ${shortcuts?.all || 'a'}: toggle all, Enter: confirm)`, columns));
     if (searchable) {
-      const hint = searchQuery ? 'Backspace edits; Esc clears' : 'type prefix; / before a or m';
+      const hint = searchQuery ? 'Backspace edits; Esc clears' : 'type prefix to search';
       lines.push(truncateToColumns(`Search: ${searchQuery || 'type prefix'} (${hint})`, columns));
     }
+    if (Object.hasOwn(actions, 'm')) lines.push(truncateToColumns('m: add system manually', columns));
     const end = Math.min(indexes.length, top + pageSize);
     for (let index = top; index < end; index += 1) {
       const choiceIndex = indexes[index];
