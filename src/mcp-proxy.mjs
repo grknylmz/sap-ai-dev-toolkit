@@ -45,10 +45,13 @@ const APPLICATION_LOG_DESCRIPTION = 'Read SAP application log (SLG1) entries. Re
 const NON_RETRIABLE_VSP_TOOLS = new Set([
   'Activate',
   'ActivateMultiple',
+  'CreateObject',
   'CreateTransport',
   'EditSource',
   'LockObject',
+  'PublishServiceBinding',
   'UnlockObject',
+  'UnpublishServiceBinding',
   'WriteSource'
 ]);
 
@@ -68,12 +71,13 @@ function requestTimeoutMs(env) {
 }
 
 
-// Keep the default public VSP surface small enough for developer-lifecycle use.
+// Keep the default public tool surface small enough for developer-lifecycle use.
 // Hidden upstream tools can still be used by local workflow tools when needed.
 export const PUBLIC_VSP_TOOLS = new Set([
   'Activate',
   'ActivateMultiple',
   'CompareSource',
+  'CreateObject',
   'CreateTransport',
   'DebuggerAttach',
   'DebuggerDetach',
@@ -116,13 +120,19 @@ export const PUBLIC_VSP_TOOLS = new Set([
   'ListTransports',
   'LockObject',
   'PrettyPrint',
+  'PublishServiceBinding',
   'RunATCCheck',
   'RunQuery',
   'RunUnitTests',
   'SearchObject',
   'SetBreakpoint',
   'SyntaxCheck',
+  // UI5 write tools stay hidden: the ADT filestore is read-only.
+  'UI5GetApp',
+  'UI5GetFileContent',
+  'UI5ListApps',
   'UnlockObject',
+  'UnpublishServiceBinding',
   'WriteSource'
 ]);
 
@@ -175,7 +185,7 @@ function useProxyAuthentication(destination) {
 function childEnvironment(destination, env) {
   const childEnv = { ...sanitizeChildEnv(env), ...(destination.childEnv || {}) };
   if (useProxyAuthentication(destination)) {
-    // VSP loads SAP_* values from local .env files. Set every supported local
+    // The runtime loads SAP_* values from local .env files. Set every supported local
     // auth variable explicitly empty so dotenv cannot supply a fallback
     // identity or session instead of the selected BAS destination identity.
     for (const key of [
@@ -200,7 +210,7 @@ export function childArguments(destination, env = process.env) {
 
 // Windows cannot exec a .js/.mjs file directly (no shebang support), so test
 // fixtures written in JavaScript are launched through the current Node binary.
-// The production VSP binary is a native executable and is unaffected; a
+// The production runtime executable is native and unaffected; a
 // Windows .cmd/.bat override needs cmd /c because Node refuses to spawn
 // batch files directly (EINVAL since the CVE-2024-27980 hardening).
 function spawnCommand(binary) {
@@ -237,16 +247,16 @@ class Child {
     // Without a listener that is an uncaught exception that kills the whole
     // MCP server — exactly the crash window self-healing is meant to cover.
     this.process.stdin.on('error', error => {
-      if (!this.closing && this.options.log) this.options.log(`[${destination.name}] VSP child stdin error: ${diagnosticText(error.message)}`);
+      if (!this.closing && this.options.log) this.options.log(`[${destination.name}] runtime process stdin error: ${diagnosticText(error.message)}`);
       this.fail(new Error(`child stdin failed: ${error.message}`));
     });
     this.process.on('error', error => {
-      if (!this.closing && !this.pending.size && this.options.log) this.options.log(`[${destination.name}] VSP child process error: ${diagnosticText(error.message)}`);
+      if (!this.closing && !this.pending.size && this.options.log) this.options.log(`[${destination.name}] runtime process error: ${diagnosticText(error.message)}`);
       this.fail(error);
       void closeDestinationRoute(destination);
     });
     this.process.on('exit', (code, signal) => {
-      if (!this.closing && !this.pending.size && this.options.log) this.options.log(`[${destination.name}] VSP child exited (${code ?? signal})`);
+      if (!this.closing && !this.pending.size && this.options.log) this.options.log(`[${destination.name}] runtime process exited (${code ?? signal})`);
       this.fail(new Error(`child exited (${code ?? signal})`));
       void closeDestinationRoute(destination);
     });
@@ -327,7 +337,7 @@ class Child {
     try { this.process.stdin.write(`${JSON.stringify({ jsonrpc: JSONRPC, method, ...(params === undefined ? {} : { params })})}\n`); } catch {}
   }
 
-  // VSP's own "Error:" line explains an exit, and stderr can still be draining when 'exit' fires.
+  // The runtime's own "Error:" line explains an exit, and stderr can still be draining when 'exit' fires.
   async stopReason(waitMs = 1000) {
     let timer;
     await Promise.race([this.stderrClosed, new Promise(resolve => { timer = setTimeout(resolve, waitMs); })]);
@@ -352,7 +362,7 @@ class Child {
     return tools;
   }
 
-  // The VSP tool surface is fixed for the process lifetime (--mode is a
+  // The runtime tool surface is fixed for the process lifetime (--mode is a
   // launch argument), so listings are memoized per child. The memo is
   // cleared on failure, on child exit, and on upstream list_changed.
   listToolsCached() {
@@ -465,7 +475,7 @@ export class MCPProxy {
       // keeping serverInfo's children[0] fallback and merged slug numbering deterministic.
       const started = await Promise.all(this.destinations.map(destination => (async () => {
         try {
-          this.eventSink(`[${destination.name}] starting VSP child (client=${destination.client || '001'})`);
+          this.eventSink(`[${destination.name}] starting runtime process (client=${destination.client || '001'})`);
           return {
             destination,
             child: new Child(this.binary, destination, this.childSpawnOptions(destination))
@@ -491,7 +501,7 @@ export class MCPProxy {
     return this;
   }
 
-  // Self-healing mode 3: transparently restart a crashed VSP child so an
+  // Self-healing mode 3: transparently restart a crashed child so an
   // MCP tools/call does not permanently fail after a single crash. The
   // restarted child re-initializes and re-registers tools before the call
   // is retried once. Concurrent triggers share one restart (no orphaned
@@ -505,11 +515,11 @@ export class MCPProxy {
     const now = Date.now();
     state.timestamps = state.timestamps.filter(at => now - at < RESTART_WINDOW_MS);
     if (state.timestamps.length >= MAX_RESTARTS_PER_WINDOW) {
-      throw new Error(`VSP child restart budget exhausted (${MAX_RESTARTS_PER_WINDOW} in ${RESTART_WINDOW_MS / 1000}s); surfacing the failure instead of respawning`);
+      throw new Error(`Runtime process restart budget exhausted (${MAX_RESTARTS_PER_WINDOW} in ${RESTART_WINDOW_MS / 1000}s); surfacing the failure instead of respawning`);
     }
     state.inFlight = (async () => {
       const name = entry.destination.name;
-      this.eventSink(`[${name}] VSP child crashed; self-healing restart in progress`, 'warning');
+      this.eventSink(`[${name}] runtime process crashed; self-healing restart in progress`, 'warning');
       try {
         await entry.child.close().catch(() => {});
         const child = new Child(this.binary, entry.destination, this.childSpawnOptions(entry.destination));
@@ -518,7 +528,7 @@ export class MCPProxy {
         this.toolsCache = null;
         await child.listToolsCached().catch(() => {});
         state.timestamps.push(Date.now());
-        this.eventSink(`[${name}] VSP child self-healing restart complete`);
+        this.eventSink(`[${name}] runtime process self-healing restart complete`);
         this.emitToolsListChanged();
         return entry;
       } finally {
@@ -544,16 +554,16 @@ export class MCPProxy {
     const initialized = await Promise.all(this.children.map(async entry => {
       const { destination } = entry;
       const startedAt = Date.now();
-      this.eventSink(`[${destination.name}] initializing VSP MCP session`);
+      this.eventSink(`[${destination.name}] initializing runtime MCP session`);
       for (let attempt = 1; ; attempt += 1) {
         const attemptStartedAt = Date.now();
-        // VSP answers initialize only after its browser sign-in, which waits on a person.
+        // The runtime answers initialize only after browser sign-in, which waits on a person.
         const signIn = destination.authentication === 'SSO'
           ? setInterval(() => this.eventSink(`[${destination.name}] still waiting for the SSO sign-in (${Math.round((Date.now() - attemptStartedAt) / 1000)} s): finish it in the browser window (it may be behind other windows); restarting the server cancels it`), this.ssoHeartbeatMs)
           : undefined;
         try {
           entry.server = await entry.child.initialize(params).finally(() => clearInterval(signIn));
-          this.eventSink(`[${destination.name}] VSP MCP session initialized (${Date.now() - startedAt}ms)`);
+          this.eventSink(`[${destination.name}] runtime MCP session initialized (${Date.now() - startedAt}ms)`);
           return entry;
         } catch (error) {
           const reason = await entry.child.stopReason();

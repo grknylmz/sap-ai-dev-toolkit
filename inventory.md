@@ -1,23 +1,23 @@
 # SAP AI Dev Toolkit Tool Inventory
 
-This inventory reflects the current SAP AI Dev Toolkit proxy behavior in `src/mcp-proxy.mjs`. The proxy exposes a curated VSP allowlist plus destination-scoped local workflows; it does not expose every tool registered by VSP. The live MCP `tools/list` response remains authoritative because capabilities vary by VSP mode and SAP system.
+This inventory reflects the current SAP AI Dev Toolkit proxy behavior in `src/mcp-proxy.mjs`. The proxy exposes a curated upstream tool allowlist plus destination-scoped local workflows; it does not expose every tool registered by the SAP runtime. The live MCP `tools/list` response remains authoritative because capabilities vary by runtime mode and SAP system.
 
 ## Summary
 
 | Status | Count | Notes |
 | --- | ---: | --- |
-| VSP tools | Up to 51 | Curated from the child VSP tool list and exposed in lowercase snake_case, unprefixed (`get_source`) on single-destination servers; a destination slug prefix (`demo-abap_get_source`) appears only when one server fronts multiple destinations. |
+| Upstream tools | Up to 59 | Curated from the child tool list and exposed in lowercase snake_case, unprefixed (`get_source`) on single-destination servers; a destination slug prefix (`demo-abap_get_source`) appears only when one server fronts multiple destinations. |
 | Local lint tool | 1 per destination | `LintABAP` analyzes caller-supplied ABAP source in memory; it is exposed publicly as `lint_abap`. |
-| Workflow tools | Up to 6 per destination | Review/apply change sets, transport evidence, Clean Core release assessment, and read-only RAP regression suites. Some are exposed only when their upstream VSP tools are registered. |
-| Convenience mapping | Dynamic | `GetApplicationLog` maps to VSP `SAP(action="analyze", type="application_log")` when the SAP router is registered. |
-| Intentionally filtered VSP tools | Dynamic | Destructive, broad-router, trace, and unsupported VSP operations are hidden from direct calls. |
-| Mode-dependent | Dynamic | Focused/expert mode and backend capabilities determine what VSP registers. |
+| Workflow tools | Up to 6 per destination | Review/apply change sets, transport evidence, Clean Core release assessment, and read-only RAP regression suites. Some are exposed only when their upstream capabilities are registered. |
+| Convenience mapping | Dynamic | `GetApplicationLog` maps to the upstream `SAP(action="analyze", type="application_log")` operation when the SAP router is registered. |
+| Intentionally filtered tools | Dynamic | Destructive, broad-router, trace, and unsupported operations are hidden from direct calls. |
+| Mode-dependent | Dynamic | Focused/expert mode and backend capabilities determine which tools are registered. |
 
-The maximum fixture surface is 59 tools per destination when expert-mode capabilities and all local workflows are available. Multiple selected destinations create separate MCP servers; this add-on cannot inspect VS Code's aggregate tool budget or per-chat tool binding.
+The maximum fixture surface is 67 tools per destination when expert-mode capabilities and all local workflows are available. Multiple selected destinations create separate MCP servers; this add-on cannot inspect VS Code's aggregate tool budget or per-chat tool binding.
 
-## Known upstream VSP tools
+## Known upstream tools
 
-These names are known from fixtures, README, and historical upstream VSP inventories. They are not a statement that the proxy exposes them; only the curated list in [tools.md](tools.md) is public through the proxy. Names absent from that allowlist are filtered even when VSP registers them.
+These names are known from fixtures, README, and historical upstream inventories. They are not a statement that the proxy exposes them; only the curated list in [tools.md](tools.md) is public through the proxy. Names absent from that allowlist are filtered even when the runtime registers them.
 
 ### Baseline/source inspection
 
@@ -139,14 +139,24 @@ These names are known from fixtures, README, and historical upstream VSP invento
 - `PublishServiceBinding`
 - `UnpublishServiceBinding`
 
-### General VSP router
+### UI5 ABAP repository
+
+- `UI5ListApps`
+- `UI5GetApp`
+- `UI5GetFileContent`
+- `UI5UploadFile`
+- `UI5DeleteFile`
+- `UI5CreateApp`
+- `UI5DeleteApp`
+
+### General SAP router
 
 - `SAP`
 
 ## Enabled add-on/local tools
 
 - `LintABAP` — local add-on tool; lints caller-supplied ABAP source without contacting SAP.
-- `GetApplicationLog` — add-on convenience tool mapped to VSP `SAP` with `action="analyze"` and `type="application_log"`.
+- `GetApplicationLog` — add-on convenience tool mapped to the upstream `SAP` operation with `action="analyze"` and `type="application_log"`.
 
 These logical names are exposed through MCP in lowercase snake_case (`lint_abap`, `get_application_log`) because BAS/VS Code chat tool references bind only lowercase identifiers.
 
@@ -162,14 +172,14 @@ These logical names are exposed through MCP in lowercase snake_case (`lint_abap`
 ## Notes
 
 - Runtime tool names are unprefixed lowercase snake_case (`run_query`) on the normal single-destination server; a `<destination-slug>_` prefix appears only on multi-destination servers. `tools/call` accepts the exact name returned by `tools/list`.
-- The proxy starts VSP with `--enable-transports`; generated MCP entries set `SAP_ALLOW_TRANSPORTABLE_EDITS=true`.
-- The curated VSP tool surface and enabled transport mode are the same for every destination; SAP authorization remains authoritative.
+- The proxy starts the SAP runtime with `--enable-transports`; generated MCP entries set `SAP_ALLOW_TRANSPORTABLE_EDITS=true`.
+- The curated upstream tool surface and enabled transport mode are the same for every destination; SAP authorization remains authoritative.
 - `SAP_AI_DEV_TOOLKIT_REQUEST_TIMEOUT_MS` (default 600000) bounds each forwarded call; stalled requests fail without killing the child.
-- Transport release/deletion and the general-purpose `SAP` router are intentionally hidden from direct proxy calls. `GetApplicationLog` is the bounded convenience mapping for the SAP application-log route.
+- Transport release/deletion, UI5 repository writes (the ADT filestore is read-only), and the general-purpose `SAP` router are intentionally hidden from direct proxy calls. `GetApplicationLog` is the bounded convenience mapping for the SAP application-log route.
 
 ## Separate optional HANA Cloud inspector
 
-The HANA inspector is a standalone companion MCP process launched as `sap-ai-hana`; it is not a VSP child and is not destination-prefixed. It uses a read-only identity selected from `HANA_RO_*` variables or one unambiguous `VCAP_SERVICES` binding. Its host/schema target is fixed by process configuration; tool arguments cannot change it.
+The HANA inspector is a standalone companion MCP process launched as `sap-ai-hana`; it is not a child of the SAP runtime and is not destination-prefixed. It uses a read-only identity selected from `HANA_RO_*` variables or one unambiguous `VCAP_SERVICES` binding. Its host/schema target is fixed by process configuration; tool arguments cannot change it.
 
 | Tool | Behavior |
 | --- | --- |

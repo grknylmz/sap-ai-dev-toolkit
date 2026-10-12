@@ -150,12 +150,14 @@ test('state-changing tools are not retried after a child crash', async t => {
   const exit = once(deadChild.process, 'exit');
   deadChild.process.kill('SIGKILL');
   await exit;
-  const response = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'write_source', arguments: {} } });
-  assert.ok(response.error, 'a crashed-child write must surface an error');
-  assert.equal(entry.child, deadChild, 'a state-changing tool must not trigger a restart+retry');
+  for (const [id, name] of ['write_source', 'create_object', 'publish_service_binding', 'unpublish_service_binding'].entries()) {
+    const response = await proxy.handle({ jsonrpc: '2.0', id: 3 + id, method: 'tools/call', params: { name, arguments: {} } });
+    assert.ok(response.error, `a crashed-child ${name} must surface an error`);
+    assert.equal(entry.child, deadChild, `${name} must not trigger a restart+retry`);
+  }
   const events = await fixtureLogs(log);
-  assert.equal(events.filter(event => event.event === 'call' && event.name === 'WriteSource').length, 0,
-    'the write must never have reached a child');
+  assert.equal(events.filter(event => event.event === 'call').length, 0,
+    'no state-changing call may have reached a child');
 });
 
 test('self-healing restarts share one restart and respect the restart budget', async t => {

@@ -154,7 +154,14 @@ const toolNames = [
   'WriteProgram',
   'ListDependencies',
   'PublishServiceBinding',
-  'UnpublishServiceBinding'
+  'UnpublishServiceBinding',
+  'UI5ListApps',
+  'UI5GetApp',
+  'UI5GetFileContent',
+  'UI5UploadFile',
+  'UI5DeleteFile',
+  'UI5CreateApp',
+  'UI5DeleteApp'
 ];
 if (mode === 'expert') toolNames.push('ActivateMultiple', 'SAP');
 

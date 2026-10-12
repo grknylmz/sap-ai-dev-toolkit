@@ -264,7 +264,7 @@ test('runtime starts destinations even when their ADT probes fail', async () => 
     assert.equal(result.stdout, '');
     assert.match(result.stderr, /launch-system: probe=unavailable \(HTTP 503\)/);
     assert.match(result.stderr, /starting MCP proxy for launch-system \(client=001\)/);
-    assert.match(result.stderr, /\[launch-system\] starting VSP child/);
+    assert.match(result.stderr, /\[launch-system\] starting runtime process \(client=001\)/);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
@@ -360,19 +360,19 @@ async function missingBinaryEnv(t, origin) {
   };
 }
 
-test('runtime names the missing bundled VSP binary when the download fallback fails', async t => {
+test('runtime names the missing executable when the download fallback fails', async t => {
   const copy = await packageWithoutBinaries(t);
   const release = await startReleaseServer(t, {});
   const { asset } = binaryTarget();
   const result = await runLauncher([], await missingBinaryEnv(t, release.origin), copy.launcher);
   assert.equal(result.code, 1);
-  assert.match(result.stderr, new RegExp(`VSP binary ${asset} is unavailable for sap-ai-dev-toolkit@${copy.version}: bundled VSP binary not found at .*dist[\\\\/]${asset} \\(ENOENT\\)`));
-  assert.match(result.stderr, /download fallback failed: VSP binary download failed \(404\)/);
-  assert.match(result.stderr, /Reinstall sap-ai-dev-toolkit \(a git checkout needs npm run build:vsp\)/);
+  assert.match(result.stderr, new RegExp(`Runtime executable ${asset} is unavailable for sap-ai-dev-toolkit@${copy.version}: bundled runtime executable not found at .*dist[\\\\/]${asset} \\(ENOENT\\)`));
+  assert.match(result.stderr, /download fallback failed: Runtime binary download failed \(404\)/);
+  assert.match(result.stderr, /a git checkout must build its bundled runtime executable first/);
   assert.deepEqual(release.requests, [`/v${copy.version}/${asset}`]);
 });
 
-test('runtime heals a missing bundled VSP binary with a checksum-verified download once', { skip: isWindows && 'the downloaded fake VSP is a shebang script' }, async t => {
+test('runtime heals a missing bundled executable with a checksum-verified download once', { skip: isWindows && 'the downloaded fake executable is a shebang script' }, async t => {
   const copy = await packageWithoutBinaries(t);
   const { asset } = binaryTarget();
   // A shell wrapper: the cached name (…-0.9.5-vsp-…) would give Node a bogus file extension.
@@ -385,9 +385,9 @@ test('runtime heals a missing bundled VSP binary with a checksum-verified downlo
   const healed = await runLauncher(['--doctor', '--json'], env, copy.launcher);
   assert.equal(healed.code, 0, healed.stderr);
   assert.equal(JSON.parse(healed.stdout).ok, true, healed.stdout);
-  assert.match(healed.stderr, /bundled VSP binary not found at .*; downloading a checksum-verified copy/);
+  assert.match(healed.stderr, /bundled runtime executable not found at .*; downloading a checksum-verified copy/);
   const cached = join(env.SAP_AI_DEV_TOOLKIT_CACHE_DIR, `sap-ai-dev-toolkit-${copy.version}-${asset}`);
-  assert.ok(healed.stderr.includes(`VSP binary installed at ${cached}`), healed.stderr);
+  assert.ok(healed.stderr.includes(`runtime executable installed at ${cached}`), healed.stderr);
   assert.deepEqual(await readFile(cached), fake);
   const children = (await readFile(env.FAKE_LOG, 'utf8')).trim().split(/\r?\n/).map(line => JSON.parse(line));
   assert.ok(children.some(entry => entry.event === 'initialize'));
@@ -430,11 +430,10 @@ test('runtime starts a configured local SAP GUI destination without BAS discover
       FAKE_LOG: log
     });
     assert.equal(result.code, 0, result.stderr);
-    assert.match(result.stderr, /\[Local Dev\] starting VSP child \(client=100\)/);
-    assert.equal(result.stderr.includes('H2O_URL is required'), false);
+    assert.match(result.stderr, /\[Local Dev\] starting runtime process \(client=100\)/);
     const { version } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
     assert.ok(result.stderr.includes(`[sap-ai-dev] sap-ai-dev-toolkit v${version} (node ${process.version}, pid `), result.stderr);
-    assert.ok(result.stderr.includes(`[sap-ai-dev] VSP binary: ${fakeVsp}`), result.stderr);
+    assert.ok(result.stderr.includes(`[sap-ai-dev] runtime executable: ${fakeVsp}`), result.stderr);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

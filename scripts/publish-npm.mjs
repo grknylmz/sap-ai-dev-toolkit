@@ -60,7 +60,7 @@ function runNpm(npmArgs, env) {
 }
 
 // dist/ is gitignored, so a publish from a clean checkout silently ships no
-// VSP binaries and every `npm install` of it fails (the 0.7.0 incident):
+// runtime executables and every `npm install` of it fails (the 0.7.0 incident):
 // postinstall only downloads from a GitHub release as a fallback. The
 // prepublishOnly hook in package.json builds the binaries and re-invokes this
 // script with --verify-only, so an incomplete dist/ can never be published —
@@ -84,12 +84,12 @@ async function main() {
   const patch = args.has('--patch');
   if (dryRun && patch) throw new Error('--dry-run cannot be combined with --patch; it never changes the package version');
 
-  // Second half of the prepublishOnly hook (after build-vsp.mjs ran): refuse
+  // Second half of the prepublishOnly hook (after the build script ran): refuse
   // to let an incomplete dist/ reach the registry.
   if (args.has('--verify-only')) {
     const missing = await missingDistBinaries();
-    if (missing.length > 0) throw new Error(`dist/checksums.txt is missing ${missing.join(', ')}; run npm run build:vsp first`);
-    console.error('dist/checksums.txt lists every pinned VSP binary.');
+    if (missing.length > 0) throw new Error(`dist/checksums.txt is missing ${missing.join(', ')}; run the package build script first`);
+    console.error('dist/checksums.txt lists every pinned runtime executable.');
     return;
   }
 

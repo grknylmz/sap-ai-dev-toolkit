@@ -137,7 +137,7 @@ async function withLiveClient(t) {
   return client;
 }
 
-test('live S4H MCP exposes a curated ABAP lifecycle surface under 62 tools', { skip: LIVE ? false : 'set SAP_AI_DEV_LIVE_S4H=1 to run against a live BAS/S4H destination' }, async t => {
+test('live S4H MCP exposes a curated ABAP lifecycle surface under 68 tools', { skip: LIVE ? false : 'set SAP_AI_DEV_LIVE_S4H=1 to run against a live BAS/S4H destination' }, async t => {
   const client = await withLiveClient(t);
   const listed = await client.request('tools/list', {});
   const tools = listed.tools || [];
@@ -145,7 +145,7 @@ test('live S4H MCP exposes a curated ABAP lifecycle surface under 62 tools', { s
   const toolName = name => snakeCaseName(name);
 
   assert.ok(tools.length > 25, `expected a useful ABAP lifecycle surface, got ${tools.length}`);
-  assert.ok(tools.length < 62, `curated destination tool count must stay below 62, got ${tools.length}`);
+  assert.ok(tools.length < 68, `curated destination tool count must stay below 68, got ${tools.length}`);
   assert.ok(tools.every(tool => !tool.name.startsWith(`${SLUG}_`)), 'single-destination tools are unprefixed; the server identity selects the destination');
 
   for (const required of [
@@ -154,14 +154,16 @@ test('live S4H MCP exposes a curated ABAP lifecycle surface under 62 tools', { s
     'SyntaxCheck', 'PrettyPrint', 'Activate', 'RunUnitTests', 'RunATCCheck', 'GetInactiveObjects',
     'GetClass', 'GetProgram', 'GetPackage', 'GetTable', 'GetTableContents', 'RunQuery',
     'GetTransport', 'GetTransportInfo', 'ListTransports', 'CreateTransport', 'LockObject', 'UnlockObject',
-    'GetApplicationLog', 'PrepareABAPChangeSet', 'ApplyABAPChangeSet', 'CheckTransportReadiness', 'PlanABAPCloudMigration'
+    'GetApplicationLog', 'PrepareABAPChangeSet', 'ApplyABAPChangeSet', 'CheckTransportReadiness', 'PlanABAPCloudMigration',
+    'CreateObject', 'PublishServiceBinding', 'UnpublishServiceBinding', 'UI5ListApps', 'UI5GetApp', 'UI5GetFileContent'
   ]) {
     assert.ok(names.has(toolName(required)), `expected curated lifecycle tool ${required}`);
   }
 
   for (const hidden of [
     'SAP', 'ReleaseTransport', 'DeleteTransport', 'DeleteObject', 'ExecuteABAP', 'CallRFC',
-    'ListSQLTraces', 'AnalyzeABAPCode', 'CreateObject', 'CreateClassWithTests', 'WriteClass', 'UpdateSource'
+    'ListSQLTraces', 'AnalyzeABAPCode', 'CreateClassWithTests', 'WriteClass', 'UpdateSource',
+    'UI5UploadFile', 'UI5DeleteFile', 'UI5CreateApp', 'UI5DeleteApp'
   ]) {
     assert.equal(names.has(toolName(hidden)), false, `broad/destructive tool ${hidden} must remain hidden`);
   }

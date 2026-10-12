@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { brandedEnvValue } from './branding.mjs';
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-// Single source of truth for the upstream VSP commit; scripts/build-vsp.mjs
+// Single source of truth for the pinned upstream commit; scripts/build-vsp.mjs
 // imports this constant so the built artifact and the runtime cannot drift.
 export const UPSTREAM_COMMIT = '9886d2727f47506368b0a3c2f1c1766f1200f747';
 
@@ -20,11 +20,11 @@ const platformMap = {
 
 export function binaryTarget(platform = process.platform, arch = process.arch) {
   const target = platformMap[`${platform}:${arch}`];
-  if (!target) throw new Error(`Unsupported platform ${platform}/${arch}. Set SAP_AI_DEV_TOOLKIT_BINARY or build cmd/vsp with scripts/build-vsp.mjs.`);
+  if (!target) throw new Error(`Unsupported platform ${platform}/${arch}. Set SAP_AI_DEV_TOOLKIT_BINARY or run the package build script.`);
   return { os: target[0], arch: target[1], extension: target[2], asset: `vsp-${target[0]}-${target[1]}${target[2]}` };
 }
 
-// Every VSP asset the npm tarball must bundle; publish:npm refuses to ship a
+// Every runtime asset the npm tarball must bundle; publish:npm refuses to ship a
 // package whose dist/checksums.txt does not list all of them.
 export function packagedBinaryAssets() {
   return Object.keys(platformMap).map(key => binaryTarget(...key.split(':')).asset);
@@ -76,7 +76,7 @@ async function verifyAgainstPackagedChecksums(path, target) {
 
 export function packageRepositoryUrl(pkg) {
   const raw = typeof pkg.repository === 'string' ? pkg.repository : pkg.repository?.url;
-  if (!raw) throw new Error('package.json repository.url is required to resolve VSP release assets');
+  if (!raw) throw new Error('package.json repository.url is required to resolve runtime release assets');
   return raw.replace(/^git\+/, '').replace(/\.git$/, '').replace(/\/$/, '');
 }
 
@@ -114,13 +114,13 @@ export async function findBinary(pkg, options = {}) {
       await stat(bundled);
       const verified = await verifyAgainstPackagedChecksums(bundled, target);
       if (verified === false) {
-        log(`bundled VSP binary ${bundled} failed checksum verification; ignoring it`);
+        log(`bundled runtime executable ${bundled} failed checksum verification; ignoring it`);
       } else {
-        if (verified === null) log(`bundled VSP binary ${target.asset} has no packaged checksum entry; using it unverified`);
+        if (verified === null) log(`bundled runtime executable ${target.asset} has no packaged checksum entry; using it unverified`);
         return bundled;
       }
     } catch (error) {
-      log(`bundled VSP binary not found at ${bundled} (${error.code || error.message})`);
+      log(`bundled runtime executable not found at ${bundled} (${error.code || error.message})`);
     }
   }
   const path = cachedBinaryPath(pkg, options.platform, options.arch, env);
@@ -128,9 +128,9 @@ export async function findBinary(pkg, options = {}) {
     await stat(path);
     const verified = await verifyAgainstPackagedChecksums(path, target);
     if (verified === false) {
-      log(`cached VSP binary ${target.asset} failed checksum verification; ignoring it`);
+      log(`cached runtime executable ${target.asset} failed checksum verification; ignoring it`);
     } else {
-      if (verified === null) log(`cached VSP binary ${target.asset} has no packaged checksum entry; using it unverified`);
+      if (verified === null) log(`cached runtime executable ${target.asset} has no packaged checksum entry; using it unverified`);
       return path;
     }
   } catch {}
@@ -141,7 +141,7 @@ export async function findBinary(pkg, options = {}) {
     await stat(legacyPath);
     const verified = await verifyAgainstPackagedChecksums(legacyPath, target);
     if (verified === true) return legacyPath;
-    log(`legacy cached VSP binary ${legacyPath} has no packaged checksum match; ignoring it`);
+    log(`legacy cached runtime executable ${legacyPath} has no packaged checksum match; ignoring it`);
   } catch {}
   return null;
 }
@@ -155,7 +155,7 @@ export async function installBinary(pkg, options = {}) {
       await stat(bundled);
       const target0 = binaryTarget(options.platform, options.arch);
       if (await verifyAgainstPackagedChecksums(bundled, target0) !== false) return bundled;
-      throw new Error(`bundled VSP binary ${target0.asset} failed checksum verification`);
+      throw new Error(`bundled runtime executable ${target0.asset} failed checksum verification`);
     } catch (error) {
       if (String(error?.message || '').includes('checksum verification')) throw error;
     }
@@ -169,7 +169,7 @@ export async function downloadBinary(pkg, options = {}) {
   const base = releaseBaseUrl(pkg, pkg.version);
   const assetUrl = brandedEnvValue(env, 'BINARY_URL') || `${base}/${target.asset}`;
   const response = await fetch(assetUrl);
-  if (!response.ok) throw new Error(`VSP binary download failed (${response.status}); set SAP_AI_DEV_TOOLKIT_BINARY or SAP_AI_DEV_TOOLKIT_BINARY_URL`);
+  if (!response.ok) throw new Error(`Runtime binary download failed (${response.status}); set SAP_AI_DEV_TOOLKIT_BINARY or SAP_AI_DEV_TOOLKIT_BINARY_URL`);
   const bytes = Buffer.from(await response.arrayBuffer());
   const actual = createHash('sha256').update(bytes).digest('hex');
   // Prefer the packaged checksum manifest (immutable per published version)
@@ -180,13 +180,13 @@ export async function downloadBinary(pkg, options = {}) {
   if (!expected) {
     const checksumUrl = `${base}/checksums.txt`;
     const checksumResponse = await fetch(checksumUrl);
-    if (!checksumResponse.ok) throw new Error(`VSP checksum download failed (${checksumResponse.status}); set SAP_AI_DEV_TOOLKIT_BINARY or SAP_AI_DEV_TOOLKIT_BINARY_URL`);
+    if (!checksumResponse.ok) throw new Error(`Runtime checksum download failed (${checksumResponse.status}); set SAP_AI_DEV_TOOLKIT_BINARY or SAP_AI_DEV_TOOLKIT_BINARY_URL`);
     const checksumText = await checksumResponse.text();
     expected = checksumText.split(/\r?\n/).map(line => line.trim().split(/\s+/)).find(parts => parts.length >= 2 && (parts[1] === target.asset || parts[1].endsWith(`/${target.asset}`)))?.[0]?.toLowerCase();
     expectedSource = 'release checksums.txt';
     if (!expected) throw new Error(`checksums.txt has no entry for ${target.asset}; set SAP_AI_DEV_TOOLKIT_BINARY or SAP_AI_DEV_TOOLKIT_BINARY_URL`);
   }
-  if (actual !== expected) throw new Error(`VSP checksum mismatch for ${target.asset} (verified against ${expectedSource})`);
+  if (actual !== expected) throw new Error(`Runtime checksum mismatch for ${target.asset} (verified against ${expectedSource})`);
   const dir = cacheDirectory(env);
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);

@@ -505,7 +505,7 @@ export async function textPrompt({ message, secret = false, required = true, pla
 }
 
 // Animated progress line for long-running steps (destination discovery,
-// ADT probes, VSP binary provisioning). TTY outputs get spinner frames on an
+// ADT probes, runtime provisioning). TTY outputs get spinner frames on an
 // unref'd timer that starts after a short delay, so steps that finish quickly
 // never flash anything. Non-TTY outputs (pipes, MCP hosts, --json callers,
 // CI) stay completely silent so machine consumers never see progress noise.

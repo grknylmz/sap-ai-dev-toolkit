@@ -59,7 +59,7 @@ async function fileExists(path) {
   }
 }
 
-// Every Chromium-based browser VSP can drive, best first; SAP_BROWSER_EXEC pins one ahead of the rest.
+// Every Chromium-based browser the runtime can drive, best first; SAP_BROWSER_EXEC pins one ahead of the rest.
 export async function findSsoBrowsers({ env = process.env, platform = process.platform, exists = fileExists, appPaths = registeredAppPaths } = {}) {
   const candidates = [];
   const pinned = envValue(env, 'SAP_BROWSER_EXEC');

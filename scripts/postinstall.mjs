@@ -299,8 +299,8 @@ async function main() {
   if (process.env.npm_config_ignore_scripts === 'true') return;
 
   // Go is intentionally NOT provisioned here: the installed package never
-  // runs `go` (only the repository-only build:vsp script does), so a toolchain
-  // download at install time was pure cost. The pinned, checksum-verified VSP
+  // runs `go` (only the repository-only build script does), so a toolchain
+  // download at install time was pure cost. The pinned, checksum-verified runtime
   // binary ships with the package; the download below is the fallback.
   let binary = brandedEnvValue(runtimeEnv, 'BINARY');
   try {
@@ -309,19 +309,19 @@ async function main() {
     } else {
       // The bundled binary resolves in milliseconds; the animation only
       // appears when provisioning actually takes time (download fallback).
-      const stopBinaryProgress = startProgress('Preparing the pinned VSP runtime for this platform', { output: process.stderr, env: runtimeEnv });
+      const stopBinaryProgress = startProgress('Preparing the pinned runtime for this platform', { output: process.stderr, env: runtimeEnv });
       try {
         binary = await installBinary(pkg, { env: runtimeEnv });
         stopBinaryProgress();
-        await announce('Pinned VSP binary installed and ready.', 'success');
+        await announce('Pinned runtime installed and ready.', 'success');
       } catch (error) {
         stopBinaryProgress();
-        throw new Error(`VSP binary provisioning failed: ${error.message}`);
+        throw new Error(`Runtime provisioning failed: ${error.message}`);
       }
     }
   } catch (error) {
     await announce(error.message, 'error');
-    await announce('Set SAP_AI_DEV_TOOLKIT_BINARY only when supplying a trusted prebuilt VSP executable.', 'info');
+    await announce('Set SAP_AI_DEV_TOOLKIT_BINARY only when supplying a trusted prebuilt runtime executable.', 'info');
     process.exitCode = 1;
     return;
   }

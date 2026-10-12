@@ -12,7 +12,7 @@ const allowedHiddenMentions = new Set(['DeleteBreakpoint', 'DebuggerListen']);
 
 // tools.md list sections that define the curated surface.
 const curatedSections = new Set([
-  'Public VSP tools',
+  'Public upstream tools',
   'Destination-scoped workflow tools',
   'Separate optional HANA Cloud inspector'
 ]);
@@ -54,7 +54,7 @@ function isToolShaped(token) {
 
 test('agents and skills only reference tools from the curated tools.md surface', async () => {
   const curated = await curatedToolNames();
-  assert.equal(curated.size, 65, 'tools.md curated sections must list 53 VSP + 8 workflow + 4 HANA tools');
+  assert.equal(curated.size, 71, 'tools.md curated sections must list 59 upstream + 8 workflow + 4 HANA tools');
 
   const drift = [];
   for (const path of await assetPaths()) {

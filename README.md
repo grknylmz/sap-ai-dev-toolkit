@@ -33,7 +33,7 @@
 SAP AI Dev Toolkit connects your AI coding assistant to the SAP development tools available for each selected destination. Agents can inspect ABAP and CDS, propose changes, run checks, and return the evidence—without losing sight of which SAP system each operation targets.
 
 <p align="center">
-  <strong>Agent chat</strong> → <strong>destination-scoped MCP</strong> → <strong>VSP + configured route (BAS, CF, or local SAP GUI)</strong> → <strong>SAP ADT</strong> → <strong>your SAP system</strong><br>
+  <strong>Agent chat</strong> → <strong>destination-scoped MCP</strong> → <strong>SAP runtime + configured route (BAS, CF, or local SAP GUI)</strong> → <strong>SAP ADT</strong> → <strong>your SAP system</strong><br>
   <em>results and diagnostics flow back along the same path</em>
 </p>
 
@@ -71,7 +71,7 @@ After setup, connect a selected BAS destination or local SAP GUI system from you
 
 Use the attached destination-prefixed tools directly in chat. Do not launch `sap-ai-dev` or handcraft MCP JSON-RPC in a terminal to discover or call them.
 
-**Prerequisite:** Node.js 20 or newer. The pinned VSP runtime ships with the package; no Go toolchain is installed or required.
+**Prerequisite:** Node.js 20 or newer. The pinned runtime ships with the package; no Go toolchain is installed or required.
 
 ## 🤖 Available agents and skills
 
@@ -95,7 +95,7 @@ Agents and skills install for the harnesses you pick during global installation:
 
 <p align="center"><strong>💬 Request → 🔎 Inspect → 🧠 Reason → 🧑‍💻 Implement → 🧪 Verify → 📋 Report</strong></p>
 
-The workflow covers ABAP, CDS, RAP, repository analysis, table and query access, testing, ATC, application logs, transports, and controlled source changes. The live MCP tool list remains the source of truth for what your connected SAP system and active VSP mode expose.
+The workflow covers ABAP, CDS, RAP, repository analysis, table and query access, testing, ATC, application logs, transports, and controlled source changes. The live MCP tool list remains the source of truth for what your connected SAP system and active runtime mode expose.
 
 ## 🌟 Feature highlights
 
@@ -115,13 +115,13 @@ The workflow covers ABAP, CDS, RAP, repository analysis, table and query access,
 | 📋 | **Transport readiness evidence** | Bring request, dependency, inactive-object, test, and ATC results together in one report. |
 | 🧭 | **ABAP Cloud migration assessment** | Check SAP API release evidence in batches and focus review on recognized unreleased APIs. |
 | 🚀 | **Reusable RAP smoke suites** | Turn OData metadata into repeatable GET checks with saved assertions. |
-| 🩺 | **Connection Doctor** | Find setup issues across destination reachability, VSP startup, SAP system info, and tool discovery. |
+| 🩺 | **Connection Doctor** | Find setup issues across destination reachability, runtime startup, SAP system info, and tool discovery. |
 | 🧪 | **Offline playground** | Try the agents and workflows locally with sample SAP data; demo changes disappear on exit. |
 | 🔐 | **Controlled SAP state changes** | State-changing actions require a known target and an explicit request; SAP authorizations still apply. |
 | 🧱 | **Destination isolation** | Each generated MCP server is tied to its own `SAP_AI_DEV_TOOLKIT_DESTINATION`, helping prevent accidental cross-system execution. |
 | 🛡️ | **Credential-safe configuration** | Credentials, cookies, usernames, passwords, and raw destination payloads are not written into MCP configuration. |
 
-The catalog below covers source inspection, data, editing, quality, transports, logs, and multi-step development workflows. Availability can vary by SAP system and VSP mode, so the live `tools/list` response is authoritative.
+The catalog below covers source inspection, data, editing, quality, transports, logs, and multi-step development workflows. Availability can vary by SAP system and runtime mode, so the live `tools/list` response is authoritative.
 
 ## 🚀 What can the agent do?
 
@@ -180,11 +180,11 @@ The package ships with five custom agents plus fourteen task-focused Agent Skill
 
 ## 🗺️ How it fits together
 
-Each selected BAS destination becomes its own isolated MCP server identity. The MCP client discovers the live tools and schemas, the add-on routes calls to the correct VSP child, and VSP reaches SAP ADT through the selected BAS destination.
+Each selected BAS destination becomes its own isolated MCP server identity. The MCP client discovers the live tools and schemas, the add-on routes calls to the correct runtime process, and the process reaches SAP ADT through the selected BAS destination.
 
 ## 🧰 Optional full-stack companion MCP servers
 
-ABAP/RAP backend access is provided by this add-on's BAS/VSP proxy. For end-to-end SAP development, setup can also add managed companion MCP entries for frontend, CAP, browser validation, and read-only HANA inspection:
+ABAP/RAP backend access is provided by this add-on's BAS proxy. For end-to-end SAP development, setup can also add managed companion MCP entries for frontend, CAP, browser validation, and read-only HANA inspection:
 
 ```sh
 sap-ai-dev --setup --tools
@@ -242,7 +242,7 @@ Once the destination server is enabled in your chat's tools picker, ask for outc
 | 🚦 **Explicit state change** | Activation, service publication, and transport creation happen only when requested and authorized. |
 | 🧪 **Verification first** | The agent uses available lint, syntax, unit-test, ATC, and diagnostics workflows and reports what actually ran. |
 | 🔒 **SAP authorization remains authoritative** | The add-on does not bypass backend SAP permissions. |
-| 🚚 **Curated VSP tool surface** | The proxy exposes the same curated developer-lifecycle set for every destination, plus local workflow tools; SAP authorizations and VSP safety checks still apply. |
+| 🚚 **Curated SAP tool surface** | The proxy exposes the same curated developer-lifecycle set for every destination, plus local workflow tools; SAP authorizations and runtime safety checks still apply. |
 | 🧱 **Per-destination isolation** | Generated MCP entries are scoped to a single `SAP_AI_DEV_TOOLKIT_DESTINATION`. |
 | 🔑 **Credential-aware setup** | BAS authentication material stays in Destination configuration. Local SAP GUI setup writes VS Code input prompts for SAP user/password instead of raw credentials. |
 
@@ -273,12 +273,12 @@ Prefer a persistent global install? Install globally from SAP Business Applicati
 Everything works natively on Windows — PowerShell, cmd, and Windows Terminal are all supported:
 
 - `npm install --global sap-ai-dev-toolkit` puts three commands on `PATH`: `sap-ai-dev`, its alias `sap-ai-dev-toolkit`, and `sap-ai-hana`. If `sap-ai-dev` is reported as unknown, npm's global bin directory is missing from `PATH` (run `npm prefix -g` to find it) or the install did not complete — `npx --yes --ignore-scripts sap-ai-dev-toolkit --setup` works without any global install.
-- The pinned VSP runtime ships inside the package as a native `vsp-win32-x64.exe`; no Go toolchain, WSL, or extra downloads are required.
+- The pinned SAP runtime ships inside the package as a native Windows executable; no Go toolchain, WSL, or extra downloads are required.
 - MCP entries that launch through npm are written as `cmd /c npx ...` on Windows — the form VS Code, Claude Code, and Cursor can spawn there. Entries written on Linux/macOS use plain `npx`.
 - Setup reads `mcp.json` even when Windows tools saved it with a UTF-8/UTF-16 BOM (PowerShell `>`/`Set-Content`, Notepad "UTF-8 with BOM") and rewrites it as plain UTF-8. If the existing file cannot be used as-is, setup self-heals before falling back to a reset: VS Code-style comments and trailing commas (JSONC) are recovered in place, torn reads from a concurrent editor save are re-read once, and broken `servers`/`inputs` fields are repaired individually. Every lossy change first backs up the original next to the real file as `mcp.json.healed|repaired|invalid-<timestamp>.bak` (exclusive create, so reruns never overwrite an earlier backup; symlinked configs keep their link). `sap-ai-dev --doctor` stays strict and reports such files instead of rewriting them — run `sap-ai-dev --setup` to heal.
 - Local SAP GUI discovery reads the Windows landscape files and registry, and setup can write a Windows / smart card SSO entry that signs in through Microsoft Edge; see the “Local machine SAP GUI support” section below.
 
-If you previously installed the old package, remove it first because the legacy `bas-vsp-mcp` command is no longer shipped:
+If you previously installed an earlier package, remove it before installing this one:
 
 ```sh
 npm uninstall --global bas-mcp-addon
@@ -295,14 +295,14 @@ The guided setup can also offer companion MCP entries with `sap-ai-dev --setup -
 | CAP tools | `@cap-js/mcp-server` | CAP CDS/service model inspection and CAP app development |
 | Browser validation | `@playwright/mcp` | Fiori/UI smoke tests, screenshots, and browser runtime validation |
 
-The installer handles VSP provisioning automatically:
+The installer handles runtime provisioning automatically:
 
-- Uses the package's bundled patched VSP binary for the current platform, verified against the npm-published `dist/checksums.txt`. When the bundled asset is missing (an interrupted install, an antivirus quarantine, or a git checkout without `dist/`), a checksum-anchored download from the matching GitHub release is the fallback; MCP server startup runs it too, because npx entries skip install scripts.
-- No Go toolchain is downloaded or required at install time; Go is only used by the repository's own `build:vsp` development script.
+- Uses the package's bundled runtime executable for the current platform, verified against the npm-published `dist/checksums.txt`. When the bundled asset is missing (an interrupted install, an antivirus quarantine, or a git checkout without `dist/`), a checksum-anchored download from the matching GitHub release is the fallback; MCP server startup runs it too, because npx entries skip install scripts.
+- No Go toolchain is downloaded or required at install time; Go is only used by the repository's own build script.
 
 Setup detects where it is running. With `H2O_URL` set, it treats the environment as SAP Business Application Studio and opens a checkbox picker for BAS destinations, with no destinations selected by default: every row starts with an empty box `[ ]`. Use **Space** to tick a destination (`[✓]`) and **Enter** to confirm; the line under the list always names the next key to press. Press **a** to toggle all destinations (select all if any are unchecked; otherwise clear the selection). Pressing **Enter** with nothing selected asks for a second **Enter**, because confirming with none selected removes this add-on's managed MCP entries. When the `cf` CLI 8.18 or newer is authenticated to a targeted space, setup first offers an optional import from that space's Destination service; type **y** then **Enter** to include it, or press **Enter** to skip. Accepted CF and BAS destinations appear together in the picker.
 
-Without `H2O_URL`, interactive setup looks for local SAP GUI system configuration on macOS and Windows (for example SAP GUI landscape XML and `saplogon.ini`). SAP GUI landscape files describe SAP GUI/DIAG connectivity, not the ADT HTTP(S) endpoint or a complete ABAP client catalog, so setup asks for the SAP client or comma-separated clients to configure for each selected system (for example `100,200`), proposes an ADT URL from the SAP GUI host and instance when it can, and asks you to confirm or edit that value. Multiple entered clients create separate isolated MCP entries, one per system/client pair. Local SAP GUI MCP server keys use the SAP system ID and client (for example `t4d-100`) instead of the longer SAP GUI description, while `SAP_AI_DEV_TOOLKIT_DESTINATION` still preserves the display name. When the ADT URL uses an IP address, setup automatically inspects the SAP HTTPS certificate, extracts DNS subjectAltName entries, and offers to enable secure TLS self-healing with a simple yes/no confirmation; you do not need to type certificate names. The generated MCP entry uses VS Code input prompts for the SAP user and password at server start; raw SAP credentials are not stored in `mcp.json`. On Windows, setup offers Windows / smart card SSO (the default) instead, which writes `SAP_AUTH_MODE=sso` without username/password prompts. At server start, VSP opens a Microsoft Edge window on the ADT URL whenever no session is cached yet; Edge completes the login the same way it does in your browser (smart card certificate and PIN, Kerberos, or company SAML/Entra login). Keep the MCP server running until the sign-in finishes; the session is then cached and refreshed automatically. SSO entries need an ADT URL with a host name, not an IP address. npm may run its install hook without an interactive terminal, even when the shell is interactive; in that case, destination selection is skipped without changing MCP config, and you should run `sap-ai-dev --setup` afterwards.
+Without `H2O_URL`, interactive setup looks for local SAP GUI system configuration on macOS and Windows (for example SAP GUI landscape XML and `saplogon.ini`). SAP GUI landscape files describe SAP GUI/DIAG connectivity, not the ADT HTTP(S) endpoint or a complete ABAP client catalog, so setup asks for the SAP client or comma-separated clients to configure for each selected system (for example `100,200`), proposes an ADT URL from the SAP GUI host and instance when it can, and asks you to confirm or edit that value. Multiple entered clients create separate isolated MCP entries, one per system/client pair. Local SAP GUI MCP server keys use the SAP system ID and client (for example `t4d-100`) instead of the longer SAP GUI description, while `SAP_AI_DEV_TOOLKIT_DESTINATION` still preserves the display name. When the ADT URL uses an IP address, setup automatically inspects the SAP HTTPS certificate, extracts DNS subjectAltName entries, and offers to enable secure TLS self-healing with a simple yes/no confirmation; you do not need to type certificate names. The generated MCP entry uses VS Code input prompts for the SAP user and password at server start; raw SAP credentials are not stored in `mcp.json`. On Windows, setup offers Windows / smart card SSO (the default) instead, which writes `SAP_AUTH_MODE=sso` without username/password prompts. At server start, the runtime opens Microsoft Edge on the ADT URL; Edge completes the login the same way it does in your browser (smart card certificate and PIN, Kerberos, or company SAML/Entra login), and the session is cached and refreshed automatically. SSO entries need an ADT URL with a host name, not an IP address. npm may run its install hook without an interactive terminal, even when the shell is interactive; in that case, destination selection is skipped without changing MCP config, and you should run `sap-ai-dev --setup` afterwards.
 
 ### 🖥️ Local machine SAP GUI support
 
@@ -314,10 +314,10 @@ Supported discovery and runtime behavior:
 - **Client selection:** SAP GUI entries may contain one default client but cannot reliably list every ABAP client available through ADT. Setup asks for one or more 3-digit clients per selected system; enter comma-separated values such as `100,200` to create separate MCP servers for each client.
 - **ADT endpoint derivation:** SAP GUI entries usually contain DIAG/router information, not the HTTP(S) ADT endpoint. Setup derives the common ADT port from the SAP instance when possible, for example instance `00` → `https://host:44300`, and asks for confirmation only when configuring the selected entry.
 - **Credential handling:** username/password local entries use VS Code MCP input prompts (`${input:...}`) at server start. Plain SAP credentials are not written to `mcp.json`.
-- **Login methods:** local entries use either username/password or Windows / smart card SSO. SSO sets `SAP_SSO=true` for the VSP runtime, which drives Microsoft Edge for the login: the first sign-in opens an Edge window immediately, and an expired session is refreshed without a window for up to 15 seconds before Edge opens again. While a sign-in is pending, the MCP server output repeats a reminder every 15 seconds. If a sign-in fails — the browser cannot start, its window is closed, or the sign-in times out — the server retries with the next Chromium-based browser it finds (Microsoft Edge, Google Chrome, Brave, Vivaldi, Chromium, including per-user installs and Windows App Paths registrations), or once more with the only one, and logs each attempt with its reason.
+- **Login methods:** local entries use either username/password or Windows / smart card SSO. SSO sets `SAP_SSO=true` for the runtime, which drives Microsoft Edge for the login and re-opens an Edge window only when the cached session can no longer be refreshed silently.
 - **IP-address HTTPS self-healing:** if the confirmed ADT URL is `https://<ip>:<port>` and the certificate is issued to DNS names, setup reads the certificate DNS SANs automatically and stores them as `SAP_TLS_SERVER_NAMES`. At runtime a loopback proxy dials the IP address but verifies TLS against those discovered DNS names, trying them one by one. Certificate verification stays enabled; there is no `--insecure` mode.
 - **Private CAs:** if the SAP HTTPS certificate chains to an internal CA that is not trusted by the local Node runtime, set `SAP_TLS_CA_FILE` or `SAP_AI_DEV_TOOLKIT_TLS_CA_FILE` to a PEM CA bundle. This adds trust roots for the self-healing proxy without disabling certificate validation.
-- **Redirect and request safety:** local loopback proxies reject cross-origin forward-form requests and rewrite same-origin SAP redirects back through the loopback listener, so VSP stays on the safe route.
+- **Redirect and request safety:** local loopback proxies reject cross-origin forward-form requests and rewrite same-origin SAP redirects back through the loopback listener, so the runtime stays on the safe route.
 
 Typical local setup flow:
 
@@ -336,9 +336,9 @@ The same postinstall offers the bundled agents and skills for several AI coding 
 
 Some current npm versions also require install hooks to be approved. If npm reports that `sap-ai-dev-toolkit`'s `postinstall` was blocked, allow it during a fresh install with `npm install --global --allow-scripts=sap-ai-dev-toolkit sap-ai-dev-toolkit`, or run `sap-ai-dev --setup` from an interactive terminal after installation.
 
-The setup report uses icons and terminal colors; set `NO_COLOR=1` to disable ANSI colors. Long-running steps (BAS destination discovery, ADT probes, VSP runtime provisioning, `--doctor` checks) show an animated progress line so the terminal never looks stuck; it appears only on interactive terminals and is disabled automatically on CI — set `SAP_AI_DEV_TOOLKIT_DISABLE_SCAN_ANIMATION=true` to turn it off. The table is a weather report, not a bouncer: green **PASS** means the ADT probe responded, red **FAIL** means it failed, and yellow **SKIPPED** means it was skipped. Probe failures do not block MCP registration or startup for destinations you select.
+The setup report uses icons and terminal colors; set `NO_COLOR=1` to disable ANSI colors. Long-running steps (BAS destination discovery, ADT probes, runtime provisioning, `--doctor` checks) show an animated progress line so the terminal never looks stuck; it appears only on interactive terminals and is disabled automatically on CI — set `SAP_AI_DEV_TOOLKIT_DISABLE_SCAN_ANIMATION=true` to turn it off. The table is a weather report, not a bouncer: green **PASS** means the ADT probe responded, red **FAIL** means it failed, and yellow **SKIPPED** means it was skipped. Probe failures do not block MCP registration or startup for destinations you select.
 
-Run `sap-ai-dev --setup` later to change the destination selection or remove generated destination entries. Run `sap-ai-dev --setup --tools` to also choose optional companion tools. Generated destination entries use the global `sap-ai-dev` command when it is on `PATH` and is the same package version as the setup that writes them; otherwise (for example after a pure npx setup, or when an older global install is still on `PATH`) they automatically launch the pinned package version through `npx`, routed through `cmd /c npx` on Windows so every MCP host can spawn them. Setup warns when it skips a global install of another version. Pass `--npx` to force the npx launcher even when a global command exists; companion tools already use `npx` with their own npm packages.
+Run `sap-ai-dev --setup` later to change the destination selection or remove generated destination entries. Run `sap-ai-dev --setup --tools` to also choose optional companion tools. Generated destination entries use the global `sap-ai-dev` command when it is on `PATH`; otherwise (for example after a pure npx setup) they automatically launch the pinned package version through `npx`, routed through `cmd /c npx` on Windows so every MCP host can spawn them. Pass `--npx` to force the npx launcher even when a global command exists; companion tools already use `npx` with their own npm packages.
 
 If a setup step is skipped or fails, rerun it from an interactive terminal:
 
@@ -354,10 +354,10 @@ npx --yes --ignore-scripts sap-ai-dev-toolkit --setup
 
 This lists discovered systems in the same checkbox picker, with nothing selected by default. Use **Space** to choose destinations, **Enter** to confirm, **a** to toggle all (select all if any are unchecked; otherwise clear the selection), and **m** to configure an undiscovered system manually in the manual entry wizard; configured systems join the picker pre-selected. Because no global `sap-ai-dev` command is on `PATH`, it writes MCP entries that launch the pinned package version through npx — through `cmd /c npx` on Windows, which is the form VS Code, Claude Code, and Cursor can spawn there. `--ignore-scripts` avoids running the install-time wizard a second time; add `--npx` to force this launcher shape even when the toolkit is installed globally. After setup, in BAS or VS Code run **MCP: List Servers**, select each chosen destination, and choose **Start Server**.
 
-For a non-interactive installation or a platform without a published VSP asset, provide a trusted binary override:
+For a non-interactive installation or a platform without a published runtime asset, provide a trusted binary override:
 
 ```sh
-SAP_AI_DEV_TOOLKIT_BINARY=/path/to/vsp npm install --global sap-ai-dev-toolkit
+SAP_AI_DEV_TOOLKIT_BINARY=/path/to/runtime-executable npm install --global sap-ai-dev-toolkit
 ```
 
 At the end of a global install, the color-coded summary shows the MCP config path, each generated entry name, destination/client/authentication, launch command, and environment key names (not values). The installer does not open an editor automatically; in BAS/VS Code:
@@ -436,7 +436,7 @@ cp -n "$ADDON_ROOT/.github/agents/"*.agent.md .github/agents/
 cp -Rn "$ADDON_ROOT/.github/skills/." .github/skills/
 ```
 
-Review skipped or conflicting files and merge changes manually. `LintABAP` analyzes caller-supplied source in memory; it does not read workspace files. `vsp lsp --stdio` supplies editor diagnostics separately and does not appear in `tools/list`.
+Review skipped or conflicting files and merge changes manually. `LintABAP` analyzes caller-supplied source in memory; it does not read workspace files. Editor diagnostics are separate from MCP tools and do not appear in `tools/list`.
 
 <a id="bas"></a>
 
@@ -451,7 +451,7 @@ Interactive npm install and `sap-ai-dev --setup` both use a checkbox picker with
 
 When nothing is detected — no BAS destinations, no Cloud Foundry imports, or no local SAP GUI entries — setup offers the **manual entry wizard** instead of stopping. The same wizard is available at any point in the destination picker via the **m** shortcut. It asks for a system name, the ADT HTTP(S) base URL (for example `https://myhost.example:44300`), one or more 3-digit SAP clients, and (on Windows) the login mode. You can add several systems in one run; each becomes the same isolated per-system/client MCP server the discovery flows generate, including credential input prompts and TLS self-healing for IP-based HTTPS URLs. Declining the wizard when nothing was detected exits setup without changes; aborting it inside the picker (Ctrl+C) returns to the selection unchanged.
 
-Setup tidies its own footprint: it reconciles MCP entries managed by this package and removes legacy `sapAiDev_*` / `basVspMcp_*` entries from earlier releases. Existing unrelated MCP servers and top-level configuration such as `inputs` stay untouched.
+Setup tidies its own footprint: it reconciles MCP entries managed by this package and removes legacy entries from earlier releases. Existing unrelated MCP servers and top-level configuration such as `inputs` stay untouched.
 
 ### 🌐 BAS destination example
 
@@ -520,7 +520,7 @@ One selected system, one isolated stdio MCP entry. Here's the shape:
 }
 ```
 
-The MCP protocol `serverInfo.name` is the lowercased destination slug (from `SAP_AI_DEV_TOOLKIT_DESTINATION`, legacy `BAS_VSP_DESTINATION` accepted), so each wizard-generated destination has its own identity instead of the shared `sap-ai-dev-toolkit` name.
+The MCP protocol `serverInfo.name` is the lowercased destination slug, so each wizard-generated destination has its own identity instead of the shared `sap-ai-dev-toolkit` name.
 
 Credentials, cookies, SAP usernames, passwords, and raw BAS destination payloads are not written to the MCP configuration.
 
@@ -530,9 +530,8 @@ The configuration path is selected in this order:
 
 1. `SAP_AI_DEV_MCP_CONFIG`, when set.
 2. `SAP_AI_DEV_TOOLKIT_MCP_CONFIG`, when set.
-3. `BAS_VSP_MCP_CONFIG`, when set for compatibility with earlier releases.
-4. An existing MCP user configuration detected automatically.
-5. The default MCP user configuration location.
+3. An existing MCP user configuration detected automatically.
+4. The default MCP user configuration location.
 
 Set `SAP_AI_DEV_MCP_CONFIG` to use a specific configuration file:
 
@@ -554,9 +553,9 @@ The file must be strict JSON with an object-valued `servers` property. Existing 
 
 With `H2O_URL` set, the normal command starts the MCP proxy. Each generated entry supplies one `SAP_AI_DEV_TOOLKIT_DESTINATION`, so each server stays in its own lane and exposes only its selected SAP system.
 
-The proxy exposes a curated subset of VSP tools, plus local `LintABAP`, destination-scoped workflow tools, and the convenience `GetApplicationLog` mapping when the VSP SAP router is available. Hidden VSP tools remain available only behind local workflow chaining where required; they are not advertised or directly callable through the proxy. Direct VSP invocation remains available outside BAS when you pass an explicit VSP argument.
+The proxy exposes a curated subset of upstream tools, plus local `LintABAP`, destination-scoped workflow tools, and the convenience `GetApplicationLog` mapping when the SAP router is available. Hidden upstream tools remain available only behind local workflow chaining where required; they are not advertised or directly callable through the proxy. The runtime can also be invoked directly outside BAS with an explicit command argument.
 
-Without `H2O_URL`, generated local SAP GUI entries start a destination-scoped local MCP server. In an interactive local terminal with no arguments, `sap-ai-dev` starts local setup. Other non-setup arguments are passed directly to the installed VSP binary—no BAS proxy detour.
+Without `H2O_URL`, generated local SAP GUI entries start a destination-scoped local MCP server. In an interactive local terminal with no arguments, `sap-ai-dev` starts local setup. Other non-setup arguments are passed directly to the installed runtime executable—no BAS proxy detour.
 
 ### 🔄 How an MCP tool call reaches SAP
 
@@ -566,7 +565,7 @@ Each generated MCP server entry is named with the lowercased destination slug: `
 
 Upgrading from an earlier release that wrote mixed-case entry names (for example `ActionS4D` or `cf:<guid>:<guid>:<name>`)? Re-run `sap-ai-dev --setup` to replace legacy entries — this is the only migration path for Cloud Foundry entries — or run `sap-ai-dev --doctor` to rename BAS entries in place. Then reload the BAS window and start a new chat; an existing chat keeps its stale tool binding. If setup reports that the lowercase name already exists and is not managed by this package, rename or remove that user-owned server entry first.
 
-The proxy keeps VSP tool descriptions and input schemas, then adds the destination label. `LintABAP` and the workflow tools are implemented locally; they use the schemas shown by `tools/list` and call only the destination attached to their name. Linting operates on submitted source in memory. The live `tools/list` result remains the source of truth for the installed VSP binary's exact schemas.
+The proxy keeps upstream tool descriptions and input schemas, then adds the destination label. `LintABAP` and the workflow tools are implemented locally; they use the schemas shown by `tools/list` and call only the destination attached to their name. Linting operates on submitted source in memory. The live `tools/list` result remains the source of truth for the installed runtime's exact schemas.
 
 <a id="tools"></a>
 
@@ -574,7 +573,7 @@ The proxy keeps VSP tool descriptions and input schemas, then adds the destinati
 
 From read-only inspection to controlled SAP changes. The catalog is organized by developer intent so you can quickly see what the agent can inspect, query, validate, edit, activate, or prepare for transport.
 
-The menu includes the tools registered by the active VSP mode, the `GetApplicationLog` mapping, local linting, and destination workflows where their required VSP capabilities are available. Focused mode may omit `ActivateMultiple`, `GetUserTransports`, and `GetTransportInfo`; the live `tools/list` result remains authoritative.
+The menu includes the tools registered by the active runtime mode, the `GetApplicationLog` mapping, local linting, and destination workflows where their required capabilities are available. Focused mode may omit `ActivateMultiple`, `GetUserTransports`, and `GetTransportInfo`; the live `tools/list` result remains authoritative.
 
 ### 🧹 Lint submitted ABAP source locally
 
@@ -597,7 +596,7 @@ The single text item in the MCP result contains JSON: `{ "status": "clean" | "is
 
 ### 🧩 Review and delivery workflows
 
-These local tools are namespaced by destination. Change-set tools appear when VSP exposes `GetSource` and `WriteSource`; transport and Clean Core tools appear when their underlying checks exist. RAP suite tools use the selected destination's proxy route.
+These local tools are namespaced by destination. Change-set tools appear when the runtime exposes `GetSource` and `WriteSource`; transport and Clean Core tools appear when their underlying checks exist. RAP suite tools use the selected destination's proxy route.
 
 | Tool | Behavior |
 | --- | --- |
@@ -608,13 +607,13 @@ These local tools are namespaced by destination. Change-set tools appear when VS
 | `GenerateRAPRegressionSuite` | Read `$metadata` and return reusable JSON with a metadata check and one `$top=1` GET for each entity set. |
 | `RunRAPRegressionSuite` | Run the saved suite with GET requests, expected status/content-type checks, and optional JSON-path assertions. Requests stay under the same `/sap/opu/odata` service root; response bodies are capped at 2 MiB. |
 
-For a change set, pass the exact `GetSource` arguments and observed full source for each object, plus exact `WriteSource` arguments containing the replacement source. Each source is limited to 128 KiB and 1,000 lines so the full diff can be reviewed. Review every diff before calling `ApplyABAPChangeSet`. Each object is checked immediately before its write; a change after that read can still race the write because VSP does not expose compare-and-write here.
+For a change set, pass the exact `GetSource` arguments and observed full source for each object, plus exact `WriteSource` arguments containing the replacement source. Each source is limited to 128 KiB and 1,000 lines so the full diff can be reviewed. Review every diff before calling `ApplyABAPChangeSet`. Each object is checked immediately before its write; a change after that read can still race the write because the runtime does not expose compare-and-write here.
 
 For a transport report, include exactly one `GetTransport` check whose `transport` matches `transport_id`, then add applicable dependency, inactive-object, ABAP Unit, or ATC checks. Each uses the exact arguments in the live upstream schema.
 
 For an ABAP Cloud assessment, get object URIs from `SearchObject` and pass them to `PlanABAPCloudMigration`. It reports release evidence; it does not guess replacement APIs. Save the JSON from `GenerateRAPRegressionSuite` and pass it to `RunRAPRegressionSuite` after relevant service changes.
 
-`sap-ai-dev --doctor` probes each discovered destination, checks that each managed MCP entry still matches its selected BAS destination, starts VSP, lists MCP tools, and calls `GetSystemInfo` directly when that tool is exposed. It repairs only tagged toolkit-owned BAS entries that can be verified against complete destination discovery; it does not add destinations, remove stale or third-party entries, or overwrite malformed configuration. `--doctor --json` reports redacted diagnostics and exits unsuccessfully when a required check fails.
+`sap-ai-dev --doctor` probes each discovered destination, checks that each managed MCP entry still matches its selected BAS destination, starts the runtime, lists MCP tools, and calls `GetSystemInfo` directly when that tool is exposed. It repairs only tagged toolkit-owned BAS entries that can be verified against complete destination discovery; it does not add destinations, remove stale or third-party entries, or overwrite malformed configuration. `--doctor --json` reports redacted diagnostics and exits unsuccessfully when a required check fails.
 
 `tools/list` confirms what this MCP server exposes; it does not prove that VS Code attached the server to the active chat. Start the selected destination in **MCP: List Servers**, enable it in the Chat tools picker, and reload/reselect the agent if the host binding is stale. This add-on cannot inspect or repair another MCP server's registration or a host-wide tool budget.
 
@@ -639,6 +638,7 @@ For an ABAP Cloud assessment, get object URIs from `SearchObject` and pass them 
 | `GetFunction`, `GetClass`, `GetClassComponents`, `GetClassInclude`, `GetProgram`, `GetInclude`, `GetInterface` | Read supported object-specific source or metadata views. |
 | `ListDependencies` | List dependencies for impact and transport-readiness planning. |
 | `GetInactiveObjects` | List objects changed by the current user but not yet activated. |
+| `UI5ListApps`, `UI5GetApp`, `UI5GetFileContent` | List UI5/Fiori apps in the ABAP repository and read their files. Read-only: the ADT filestore cannot deploy apps, so deploy them with SAP Fiori tools. |
 
 ### 🗃️ Read SAP tables and metadata
 
@@ -666,8 +666,11 @@ SAP authorizations and the destination's available APIs still apply.
 | `SyntaxCheck` | Ask SAP to syntax-check source before saving or activation. |
 | `Activate` | Activate one named ABAP object. |
 | `ActivateMultiple` | Activate related objects together while resolving mutual dependencies, such as an include and its main program. |
+| `CreateObject` | Create a new object, including RAP service bindings (`SRVB/SVB`; pass `binding_version` `V4` for Fiori Elements V4 apps, because the default is V2). |
+| `PublishServiceBinding` | Publish an activated service binding as an OData service; V2 and V4 bindings are both supported. |
+| `UnpublishServiceBinding` | Withdraw a published service binding. |
 
-The write and activation tools change SAP state. Confirm the target, package, and transport before using them. `EditSource` performs a focused replacement; its default syntax check prevents saving when syntax errors are reported.
+The write, activation, and publication tools change SAP state. Confirm the target, package, and transport before using them. `EditSource` performs a focused replacement; its default syntax check prevents saving when syntax errors are reported.
 
 ### ✅ Test and inspect the system
 
@@ -693,11 +696,11 @@ The write and activation tools change SAP state. Confirm the target, package, an
 | `UnlockObject` | Unlock an ABAP repository object in SAP. |
 | `CreateTransport` | Create a transport request. |
 | `CheckTransportReadiness` | Collect a whitelisted bundle of transport, dependency, inactive-object, ABAP Unit, and ATC evidence. |
-`LockObject` and `UnlockObject` are state-changing VSP tools; the proxy does not retry them after a child crash to avoid duplicate side effects.
+`LockObject` and `UnlockObject` are state-changing tools; the proxy does not retry them after a child crash to avoid duplicate side effects.
 
 Transport release and deletion are not exposed by the curated proxy surface; release or delete transports outside this add-on after review.
 
-The proxy starts VSP with `--enable-transports` and omits `--transport-read-only`. Generated MCP entries set `SAP_ALLOW_TRANSPORTABLE_EDITS=true` so source edits in transportable packages are permitted. VSP safety checks and SAP authorizations still apply.
+The proxy enables transport support and permits source edits in transportable packages through generated MCP entries. Runtime safety checks and SAP authorizations still apply.
 
 ### 📜 Read SAP application logs (SLG1)
 
@@ -710,7 +713,7 @@ The proxy starts VSP with `--enable-transports` and omits `--transport-read-only
 - `messages: true` adds BALDAT details and T100 message text; otherwise, the tool returns log headers only.
 - The proxy maps this convenience tool to the single upstream `SAP(action="analyze", type="application_log")` operation. The general-purpose `SAP` router itself is hidden from direct calls.
 
-The proxy intentionally does not expose the full child VSP process. Object deletion, broad trace surfaces, arbitrary SAP router/RFC calls, debugger helper/delete-breakpoint routes, and transport release/delete tools are hidden from direct MCP calls. The curated debugger tools (`SetBreakpoint`, `GetBreakpoints`, `DebuggerAttach`, `DebuggerGetStack`, `DebuggerGetVariables`, `DebuggerStep`, and `DebuggerDetach`) remain available when VSP and the target system expose them. Direct VSP invocation without `H2O_URL` retains the VSP binary's own tool surface; in an interactive local terminal, use an explicit VSP argument because plain `sap-ai-dev` starts local setup.
+The proxy intentionally limits the child process tool surface. Object deletion, broad trace surfaces, arbitrary SAP router/RFC calls, debugger helper/delete-breakpoint routes, UI5 repository writes, and transport release/delete tools are hidden from direct MCP calls. The curated debugger tools (`SetBreakpoint`, `GetBreakpoints`, `DebuggerAttach`, `DebuggerGetStack`, `DebuggerGetVariables`, `DebuggerStep`, and `DebuggerDetach`) remain available when supported by the runtime and target system. Direct runtime invocation without `H2O_URL` retains its full tool surface; in an interactive local terminal, use an explicit command argument because plain `sap-ai-dev` starts local setup.
 
 ### 🚀 Ready to put the tools to work from chat?
 
@@ -806,41 +809,35 @@ The response contains a `tools` array. A `RunQuery` entry resembles this excerpt
 | --- | --- |
 | `H2O_URL` | BAS endpoint used to discover destinations. Required for BAS discovery. |
 | `SAP_AI_DEV_TOOLKIT_DESTINATION` | Comma-separated destination allowlist for normal runtime discovery. Setup clears this temporarily so it can display all eligible systems. |
-| `SAP_AI_DEV_TOOLKIT_MODE` | VSP child mode (`expert` by default; `focused` omits `ActivateMultiple`, `GetUserTransports`, and `GetTransportInfo`). The proxy exposes its curated tool subset and local workflow tools, including `LintABAP`. |
-| `SAP_ALLOW_TRANSPORTABLE_EDITS` | Generated MCP entries set this to `true` to permit source edits in transportable packages; VSP safety checks and SAP authorizations still apply. |
-| `SAP_AUTH_MODE=sso` | Local SAP GUI entry mode for Windows / smart card SSO. Runtime starts VSP with `SAP_SSO=true`, which signs in through Microsoft Edge and caches the session per system and client. Older `windows-sso`, `browser-saml`, and `saml-password` entries are treated as `sso`. |
-| `SAP_SSO_FIRST_LOGIN` | Local SSO entries default to `window`: with no cached session, VSP opens the Edge sign-in window at once. Set `silent` to try a hidden browser first. |
-| `SAP_SSO_SILENT_TIMEOUT` | How long a hidden SSO refresh may run before the Edge window opens, as a Go duration. Local SSO entries default to `15s`; VSP's own default is `45s`. |
-| `SAP_BROWSER_EXEC` | Full path of the Chromium-based browser for SSO sign-in. It is tried first; the other browsers found on the machine remain fallbacks. |
+| `SAP_AI_DEV_TOOLKIT_MODE` | Runtime mode (`expert` by default; `focused` omits `ActivateMultiple`, `GetUserTransports`, and `GetTransportInfo`). The proxy exposes its curated tool subset and local workflow tools, including `LintABAP`. |
+| `SAP_ALLOW_TRANSPORTABLE_EDITS` | Generated MCP entries set this to `true` to permit source edits in transportable packages; runtime safety checks and SAP authorizations still apply. |
+| `SAP_AUTH_MODE=sso` | Local SAP GUI entry mode for Windows / smart card SSO. Runtime starts the SAP process with `SAP_SSO=true`, which signs in through Microsoft Edge and caches the session per system and client. Older `windows-sso`, `browser-saml`, and `saml-password` entries are treated as `sso`. |
 | `SAP_TLS_SERVER_NAMES` / `SAP_AI_DEV_TOOLKIT_TLS_SERVER_NAMES` | Comma-separated local SAP GUI TLS self-healing names, normally auto-discovered during setup from the SAP HTTPS certificate when `SAP_URL` uses an IP address. Runtime tries them one by one while keeping certificate validation enabled. |
 | `SAP_TLS_SERVER_NAME` / `SAP_AI_DEV_TOOLKIT_TLS_SERVER_NAME` | Single-name compatibility form of the local SAP GUI TLS self-healing override. Prefer the auto-discovered plural variable written by setup. |
 | `SAP_TLS_CA_FILE` / `SAP_AI_DEV_TOOLKIT_TLS_CA_FILE` | Optional PEM CA bundle for the local TLS self-healing proxy when the SAP HTTPS certificate chains to a private CA that is not in the OS/Node trust store. Certificate verification remains enabled. |
 | `SAP_AI_DEV_TOOLKIT_HTTP_PROXY` | Egress proxy for BAS discovery and probe traffic. Takes precedence over `HTTP_PROXY`/`http_proxy`; unset means the default BAS proxy for `.dest` hosts, empty means direct. |
-| `SAP_AI_DEV_TOOLKIT_REQUEST_TIMEOUT_MS` | Per-request timeout for calls forwarded to a VSP child (default 600000 = 10 minutes; `0` disables). A stalled request fails with a timeout error; the child is left running. |
+| `SAP_AI_DEV_TOOLKIT_REQUEST_TIMEOUT_MS` | Per-request timeout for calls forwarded to a runtime process (default 600000 = 10 minutes; `0` disables). A stalled request fails with a timeout error; the process is left running. |
 | `SAP_AI_DEV_MCP_CONFIG` | Explicit MCP configuration path; highest precedence. |
 | `SAP_AI_DEV_TOOLKIT_MCP_CONFIG` | Branded compatibility alias for the MCP configuration path. |
-| `BAS_VSP_MCP_CONFIG` | Backward-compatible alias for the MCP configuration path. |
-| `SAP_AI_DEV_TOOLKIT_BINARY` | Trusted prebuilt VSP executable; skips binary provisioning. Legacy `BAS_VSP_BINARY` still works. |
-| `SAP_AI_DEV_TOOLKIT_BINARY_URL` | Alternate VSP binary download URL (checksum-verified). Legacy `BAS_VSP_BINARY_URL` still works. |
-| `SAP_AI_DEV_TOOLKIT_RELEASE_BASE_URL` | Override the base URL that VSP release binaries are downloaded from. |
-| `SAP_AI_DEV_TOOLKIT_CACHE_DIR` | Binary cache directory. Legacy `BAS_VSP_CACHE_DIR` still works. |
-| `SAP_AI_DEV_TOOLKIT_VERSION` | Written by setup into each destination entry: the toolkit version that configured it. An older `sap-ai-dev` started from that entry hands off to this version through `npx` (see Self-healing modes). |
+| `SAP_AI_DEV_TOOLKIT_BINARY` | Trusted prebuilt runtime executable; skips binary provisioning. |
+| `SAP_AI_DEV_TOOLKIT_BINARY_URL` | Alternate runtime binary download URL (checksum-verified). |
+| `SAP_AI_DEV_TOOLKIT_RELEASE_BASE_URL` | Override the base URL that runtime binaries are downloaded from. |
+| `SAP_AI_DEV_TOOLKIT_CACHE_DIR` | Runtime binary cache directory. |
 | `BAS_CF_SPACE_GUID`, `BAS_CF_DESTINATION_INSTANCE_GUID`, `BAS_CF_DESTINATION_INSTANCE`, `BAS_CF_DESTINATION_KEY`, `BAS_CF_DESTINATION_NAME`, `BAS_CF_CONNECTIVITY_INSTANCE_GUID`, `BAS_CF_CONNECTIVITY_INSTANCE`, `BAS_CF_CONNECTIVITY_KEY` | Written into generated Cloud Foundry destination entries; they reference service instances and key **names** (never credentials). |
-| `GO_BINARY` | Explicit Go executable for the repository-only `build:vsp` script; not used during installation. |
+| `GO_BINARY` | Explicit Go executable for the repository-only runtime build script; not used during installation. |
 | `SAP_AI_DEV_TOOLKIT_SKIP_PROBE=true` | Skip destination probes; useful for controlled diagnostics or fixtures. |
 | `HTTP_PROXY` / `HTTPS_PROXY` | BAS proxy settings used for destination-list requests, destination probing, and child processes. |
 | `NO_PROXY` | Proxy bypass list for BAS destination-list requests; `.dest` hosts remain routed through the BAS proxy. |
 
 #### Self-healing modes
 
-VSP children connect to each configured destination URL directly. BAS destination authentication remains selected through VSP's `--proxy-auth` path; Cloud Foundry on-premise destinations continue through the separate Connectivity proxy.
-Child crash recovery restarts a failed VSP child, re-initializes it, re-registers tools, and retries the interrupted `tools/call` once before surfacing an error. State-changing tools are not retried.
-Stale launcher recovery: when an MCP entry starts a `sap-ai-dev` older than the `SAP_AI_DEV_TOOLKIT_VERSION` setup recorded in it (for example an outdated global install left on `PATH`), the launcher logs a warning and hands off to that version through `npx` on the same stdio, so the host never runs the stale launcher or VSP binary. A source checkout (`npm link`) always runs as-is.
-Existing installs that still set the previous `BAS_VSP_*` environment variables remain supported. The setup wizard writes new MCP entries with the `SAP_AI_DEV_TOOLKIT_*` names.
+Runtime processes connect to each configured destination URL directly. BAS destination authentication remains selected through the configured proxy-auth path; Cloud Foundry on-premise destinations continue through the separate Connectivity proxy.
+Child crash recovery restarts a failed runtime process, re-initializes it, re-registers tools, and retries the interrupted `tools/call` once before surfacing an error. State-changing tools are not retried.
+Existing installs retain support for legacy environment aliases. The setup wizard writes new MCP entries with the `SAP_AI_DEV_TOOLKIT_*` names.
 
 #### Server logging
 
-Every observable event — startup banner (version, PID, VSP binary), destination discovery, VSP session initialization, each JSON-RPC request with its id, every tool call with duration and outcome, self-healing restarts, and errors — is logged twice: to **stderr** with ISO timestamps (visible when the server runs in a terminal or in hosts that surface stderr), and to the host's **MCP server output channel** as standard `notifications/message` log notifications (VS Code/BAS and Claude Code render these under the server's output). Log notifications start at `info`; send `logging/setLevel` with `debug` (or higher) from the client to adjust what reaches the channel — stderr always receives everything. Credentials, cookies, and tokens are redacted.
+Every observable event — startup banner (version, PID, runtime executable), destination discovery, runtime session initialization, each JSON-RPC request with its id, every tool call with duration and outcome, self-healing restarts, and errors — is logged twice: to **stderr** with ISO timestamps (visible when the server runs in a terminal or in hosts that surface stderr), and to the host's **MCP server output channel** as standard `notifications/message` log notifications (VS Code/BAS and Claude Code render these under the server's output). Log notifications start at `info`; send `logging/setLevel` with `debug` (or higher) from the client to adjust what reaches the channel — stderr always receives everything. Credentials, cookies, and tokens are redacted.
 
 <a id="troubleshooting"></a>
 
@@ -855,13 +852,13 @@ sap-ai-dev --list-destinations --json
 
 Next, check that the backend answers at `/sap/bc/adt`.
 
-Runtime diagnostics take the stderr lane. In the MCP server's Output view, check per-destination ADT probe status, VSP child stderr, and failed tool-call details; stdout is reserved for MCP protocol messages.
+Runtime diagnostics take the stderr lane. In the MCP server's Output view, check per-destination ADT probe status, child process stderr, and failed tool-call details; stdout is reserved for MCP protocol messages.
 
-If `GetSystemInfo` or `RunQuery` reports a CSRF-token fetch failure, VSP tries `/sap/bc/adt/core/discovery` first and falls back to `/sap/bc/adt/discovery` when the core endpoint returns HTTP 404 or 5xx without a token. If both endpoints fail, the error includes their HTTP statuses; check BAS destination routing and the SAP ADT service. `GetInstalledComponents` is a separate GET request and a failure there is not evidence of a CSRF problem.
+If `GetSystemInfo` or `RunQuery` reports a CSRF-token fetch failure, the runtime tries `/sap/bc/adt/core/discovery` first and falls back to `/sap/bc/adt/discovery` when the core endpoint returns HTTP 404 or 5xx without a token. If both endpoints fail, the error includes their HTTP statuses; check BAS destination routing and the SAP ADT service. `GetInstalledComponents` is a separate GET request and a failure there is not evidence of a CSRF problem.
 
 **`MCP config ... contains invalid JSON`** usually means one of three things, all healed automatically by setup: the file starts with a byte-order mark (Windows PowerShell `>` redirection, `Set-Content`, or Notepad's "UTF-8 with BOM" mode — invisible in editors and terminals), it contains comments or trailing commas (VS Code reads `mcp.json` as JSONC), or setup raced an editor save and read a torn file (retried once before healing). Unrecoverable content is backed up as `mcp.json.<kind>-<timestamp>.bak` and replaced; the backup path is printed in the setup warning. On older versions, re-save the file as UTF-8 without BOM (VS Code: "Change File Encoding → Save with Encoding → UTF-8") and rerun `sap-ai-dev --setup`.
 
-If automatic Go or VSP provisioning fails, check network access and the package's supported platform. You can install Go manually or set `GO_BINARY` as an explicit fallback. A trusted prebuilt VSP can be supplied with `SAP_AI_DEV_TOOLKIT_BINARY`.
+If automatic runtime provisioning fails, check network access and the package's supported platform. You can install Go manually or set `GO_BINARY` as an explicit fallback. A trusted prebuilt executable can be supplied with `SAP_AI_DEV_TOOLKIT_BINARY`.
 
 ## 🧑‍💻 Development
 
@@ -883,29 +880,21 @@ NPM_PUBLISH_TOKEN=npm_...
 
 - `npm run publish:npm` publishes the version already set in `package.json`.
 - To publish a patch bump, run `npm run publish:npm -- --patch`; it updates `package.json` and `package-lock.json` before publishing. If publishing fails after the bump, retry without `--patch`.
-- npm's `prepublishOnly` hook builds the pinned VSP binaries for all platforms (including the Go toolchain if missing) and refuses to ship a tarball whose `dist/checksums.txt` does not list all five assets; it guards `npm run publish:npm` and a plain `npm publish` alike. Pass `--skip-build` to republish an already-built `dist/` without rebuilding.
+- npm's `prepublishOnly` hook builds the pinned runtime binaries for all platforms (including the Go toolchain if missing) and refuses to ship a tarball whose `dist/checksums.txt` does not list all five assets; it guards `npm run publish:npm` and a plain `npm publish` alike. Pass `--skip-build` to republish an already-built `dist/` without rebuilding.
 - Preview the package without publishing, changing its version, or building with `npm run publish:npm -- --dry-run`.
-- GitHub Actions runs the test suite on pushes to `main` and pull requests. A push to `main` that changes the `package.json` version runs the same checks, builds the VSP binaries, publishes that version to npm, and creates a `v<version>` GitHub release with generated notes and the VSP binaries plus `checksums.txt` attached for the download fallback.
+- GitHub Actions runs the test suite on pushes to `main` and pull requests. A push to `main` that changes the `package.json` version runs the same checks, builds the runtime binaries, publishes that version to npm, and creates a `v<version>` GitHub release with generated notes and the binaries plus `checksums.txt` attached for the download fallback.
 - The publish workflow uses the `NPM_PUBLISH_TOKEN` GitHub repository secret. Verify it with `gh secret list`; the token value is never stored in the repository.
 
 The token is not printed or stored in the repository.
 
 ## 📄 Acknowledgements and licenses
 
-The original SAP AI Development Toolkit code and project changes are copyright (c) 2026 Gurkan Yilmaz and released under the MIT License. Everyone may use, copy, modify, distribute, sublicense, and sell copies, provided the copyright and license notices are retained; the software is provided without warranty. See `LICENSE`. Bundled VSP and third-party components retain their own licenses and notices in `NOTICE` and `LICENSE-APACHE-2.0.txt`.
+The original SAP AI Development Toolkit code and project changes are copyright (c) 2026 Gurkan Yilmaz and released under the MIT License. Everyone may use, copy, modify, distribute, sublicense, and sell copies, provided the copyright and license notices are retained; the software is provided without warranty. See `LICENSE`. Bundled third-party components retain their own licenses and notices in `NOTICE` and `LICENSE-APACHE-2.0.txt`.
 
-This add-on bundles patched binaries from Vibing Steampunk (VSP), created by Alice Vinogradova and contributors. The binaries are built from upstream commit `9886d27`; this repository's BAS proxy-auth patch is in `patches/vsp-bas-proxy-auth.patch`.
-
-Thanks to the VSP maintainers for the ADT/MCP implementation.
-
-VSP is MIT-licensed. It permits use, modification, redistribution, and sale, provided the copyright and license notice are retained. It is permissive, not copyleft, and disclaims warranty.
-
-The upstream VSP NOTICE identifies `open-rfc-go` and `open-rfc` under Apache-2.0. Redistributors must include the license and preserve applicable notices. Apache-2.0's patent license terminates if a recipient initiates patent litigation alleging that the work infringes; it grants no general trademark rights.
-
-This package includes the upstream VSP license and notices, plus the Apache-2.0 license text, in `LICENSE`, `NOTICE`, and `LICENSE-APACHE-2.0.txt`. The upstream notice records other Go-module licenses in VSP's `go.mod` and `go.sum`; this is not a full audit of every transitive dependency.
+The bundled runtime and its dependencies retain their original licenses and required attribution. The package includes the applicable notices and license texts in `LICENSE`, `NOTICE`, and `LICENSE-APACHE-2.0.txt`.
 
 License sources:
 
-- VSP `LICENSE`
-- VSP `NOTICE`
+- `LICENSE`
+- `NOTICE`
 - Apache License 2.0

@@ -81,15 +81,15 @@ async function runDoctor(destinations) {
     checks.push(doctorRow('-', 'MCP config repair', 'failed', redactText(error.message || error).slice(0, 300)));
   }
   for (const destination of destinations) {
-    stopProgress.update(`Checking ${destination.name}: ADT probe, VSP startup, tools/list`);
+    stopProgress.update(`Checking ${destination.name}: ADT probe, runtime startup, tools/list`);
     const probe = destination.probe;
     const probeStatus = !probe || probe.status === 'skipped' ? 'skipped' : (probe.available === true ? 'passed' : 'failed');
     checks.push(doctorRow(destination.name, 'ADT probe', probeStatus, probe?.status || 'No BAS ADT probe was supplied; GetSystemInfo will check the route.'));
-    checks.push(doctorRow(destination.name, 'VSP binary', binary ? 'passed' : 'failed', binary ? 'installed' : binaryError));
+    checks.push(doctorRow(destination.name, 'Runtime executable', binary ? 'passed' : 'failed', binary ? 'installed' : binaryError));
     if (!binary) {
-      checks.push(doctorRow(destination.name, 'VSP MCP startup', 'skipped', 'The VSP binary is unavailable.'));
-      checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', 'VSP MCP startup could not run.'));
-      checks.push(doctorRow(destination.name, 'MCP tools/list', 'skipped', 'VSP MCP startup could not run.'));
+      checks.push(doctorRow(destination.name, 'MCP startup', 'skipped', 'The runtime executable is unavailable.'));
+      checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', 'MCP startup could not run.'));
+      checks.push(doctorRow(destination.name, 'MCP tools/list', 'skipped', 'MCP startup could not run.'));
       try { await destination.close?.(); } catch {}
       continue;
     }
@@ -98,7 +98,7 @@ async function runDoctor(destinations) {
       proxy.start();
       const initialized = await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } });
       if (initialized?.error) throw new Error(initialized.error.message || 'MCP initialization failed');
-      checks.push(doctorRow(destination.name, 'VSP MCP startup', 'passed', 'initialized'));
+      checks.push(doctorRow(destination.name, 'MCP startup', 'passed', 'initialized'));
       const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
       if (listed?.error) throw new Error(listed.error.message || 'MCP tools/list failed');
       const tools = listed.result?.tools || [];
@@ -109,13 +109,13 @@ async function runDoctor(destinations) {
       const localSegments = new Set(['lint_abap', 'get_application_log', 'prepare_abap_change_set', 'apply_abap_change_set', 'check_transport_readiness', 'plan_abap_cloud_migration', 'generate_rap_regression_suite', 'run_rap_regression_suite']);
       const isUpstreamTool = tool => (tool.name.startsWith(toolPrefix) ? tool.name.slice(toolPrefix.length) : tool.name);
       const upstreamCount = tools.filter(tool => !localSegments.has(isUpstreamTool(tool))).length;
-      checks.push(doctorRow(destination.name, 'MCP tools/list', upstreamCount ? 'passed' : 'failed', `${upstreamCount} VSP tools and ${tools.length} total MCP tools returned; chat-picker binding is host-managed`));
+      checks.push(doctorRow(destination.name, 'MCP tools/list', upstreamCount ? 'passed' : 'failed', `${upstreamCount} upstream tools and ${tools.length} total MCP tools returned; chat-picker binding is host-managed`));
       const systemInfo = tools.find(tool => tool.name === 'get_system_info' || tool.name === `${toolPrefix}get_system_info`);
       const needsAdtUrl = destination.probe?.status === 'needs-adt-url';
       if (needsAdtUrl) {
         checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', 'No ADT URL is configured for this SAP GUI system; run sap-ai-dev --setup to add one.'));
       } else if (!systemInfo) {
-        checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', 'GetSystemInfo is not exposed by this VSP mode.'));
+        checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', 'GetSystemInfo is not exposed by this runtime mode.'));
       } else {
         const inspected = await proxy.handle({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: systemInfo.name, arguments: {} } });
         const failed = inspected?.error || inspected?.result?.isError;
@@ -123,8 +123,8 @@ async function runDoctor(destinations) {
       }
     } catch (error) {
       const detail = redactText(error.message || error).slice(0, 300);
-      const initialized = checks.some(row => row.name === destination.name && row.stage === 'VSP MCP startup' && row.status === 'passed');
-      if (!initialized) checks.push(doctorRow(destination.name, 'VSP MCP startup', 'failed', detail));
+      const initialized = checks.some(row => row.name === destination.name && row.stage === 'MCP startup' && row.status === 'passed');
+      if (!initialized) checks.push(doctorRow(destination.name, 'MCP startup', 'failed', detail));
       else checks.push(doctorRow(destination.name, 'MCP tools/list', 'failed', detail));
       checks.push(doctorRow(destination.name, 'SAP system check', 'skipped', 'An earlier diagnostic step failed.'));
     } finally {
@@ -179,20 +179,20 @@ async function resolveBinary() {
   const notes = [];
   const found = await findBinary(pkg, { env: runtimeEnv, log: note => notes.push(note) });
   if (found) return found;
-  logLine(`[sap-ai-dev] ${notes.join('; ') || 'no VSP binary found'}; downloading a checksum-verified copy`);
+  logLine(`[sap-ai-dev] ${notes.join('; ') || 'no runtime executable found'}; downloading a checksum-verified copy`);
   try {
     const downloaded = await downloadBinary(pkg, { env: runtimeEnv });
-    logLine(`[sap-ai-dev] VSP binary installed at ${downloaded}`);
+    logLine(`[sap-ai-dev] runtime executable installed at ${downloaded}`);
     return downloaded;
   } catch (error) {
     notes.push(`download fallback failed: ${error.message}${error.cause?.code ? ` (${error.cause.code})` : ''}`);
   }
   const npxDirectory = root.match(/^(.*[\\/]_npx[\\/][^\\/]+)[\\/]node_modules[\\/]/)?.[1];
   throw new Error([
-    `VSP binary ${binaryTarget().asset} is unavailable for ${pkg.name}@${pkg.version}: ${notes.join('; ')}.`,
+    `Runtime executable ${binaryTarget().asset} is unavailable for ${pkg.name}@${pkg.version}: ${notes.join('; ')}.`,
     npxDirectory
-      ? `The npm package ships this binary, so an interrupted install or an antivirus quarantine usually removed it: delete ${npxDirectory} and restart the MCP server so npx reinstalls the package, or set SAP_AI_DEV_TOOLKIT_BINARY to a trusted patched VSP binary.`
-      : `Reinstall ${pkg.name} (a git checkout needs npm run build:vsp), check whether antivirus quarantined the binary, or set SAP_AI_DEV_TOOLKIT_BINARY to a trusted patched VSP binary.`
+      ? `The npm package ships this binary, so an interrupted install or an antivirus quarantine usually removed it: delete ${npxDirectory} and restart the MCP server so npx reinstalls the package, or set SAP_AI_DEV_TOOLKIT_BINARY to a trusted executable.`
+      : `Reinstall ${pkg.name} (a git checkout must build its bundled runtime executable first), check whether antivirus quarantined the executable, or set SAP_AI_DEV_TOOLKIT_BINARY to a trusted executable.`
   ].join(' '));
 }
 
@@ -322,7 +322,7 @@ async function configuredLocalSapGuiDestination(env) {
   const adt = (sso || !tlsServerNames.length) && !hasPathPrefix(configuredUrl)
     ? await resolveLocalAdtUrl(name, configuredUrl, client)
     : { url: configuredUrl };
-  // The scan reached ADT directly, so an env proxy the browser's PAC would bypass must not reroute VSP.
+  // The scan reached ADT directly, so an env proxy the browser's PAC would bypass must not reroute the runtime.
   const direct = adt.verified ? noProxyEnv(env, new URL(adt.url).hostname) : {};
   const probe = adt.verified === undefined
     ? { status: 'configured', available: true }
@@ -340,7 +340,7 @@ async function configuredLocalSapGuiDestination(env) {
       systemId,
       authentication: 'SSO',
       ssoBrowsers,
-      // SAP_SAML_AUTH survives sanitizeChildEnv and would make VSP demand SAML credentials.
+      // SAP_SAML_AUTH survives sanitizeChildEnv and would make the runtime demand SAML credentials.
       // A first sign-in has no session a hidden browser could renew, so its window opens at once.
       childEnv: { SAP_SSO: 'true', SAP_SSO_SYSTEM: cacheKey, SAP_SAML_AUTH: '', SAP_SSO_FIRST_LOGIN: env.SAP_SSO_FIRST_LOGIN || 'window', SAP_SSO_SILENT_TIMEOUT: env.SAP_SSO_SILENT_TIMEOUT || '15s', ...(ssoBrowsers.length ? { SAP_BROWSER_EXEC: ssoBrowsers[0].path } : {}), ...direct },
       probe
@@ -443,7 +443,7 @@ async function main() {
     let proxy;
     try {
       const binary = await binaryOrError();
-      logLine(`[sap-ai-dev] VSP binary: ${binary}`);
+      logLine(`[sap-ai-dev] runtime executable: ${binary}`);
       proxy = new MCPProxy({ binary, destinations: [destination], env: runtimeEnv, log: logLine, version: pkg.version });
       const shutdown = signal => { void proxy.close().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143)); };
       process.once('SIGINT', () => shutdown('SIGINT'));
@@ -492,7 +492,7 @@ async function main() {
   }
   const binary = await binaryOrError();
   logLine(`[sap-ai-dev] sap-ai-dev-toolkit v${pkg.version} (node ${process.version}, pid ${process.pid})`);
-  logLine(`[sap-ai-dev] VSP binary: ${binary}`);
+  logLine(`[sap-ai-dev] runtime executable: ${binary}`);
   logLine(`[sap-ai-dev] starting MCP proxy for ${destinations.map(destination => `${destination.name} (client=${destination.client})`).join(', ')}`);
   const proxy = new MCPProxy({ binary, destinations, env: process.env, log: logLine, version: pkg.version });
   const shutdown = signal => { void proxy.close().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143)); };

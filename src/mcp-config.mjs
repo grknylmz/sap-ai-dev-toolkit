@@ -131,26 +131,6 @@ export function npxMcpLauncher(platform = process.platform) {
     : { command: 'npx', prefixArgs: [] };
 }
 
-export function npxPackageLauncher(version, platform = process.platform) {
-  const { command, prefixArgs } = npxMcpLauncher(platform);
-  return { command, args: [...prefixArgs, '--yes', '--ignore-scripts', `--package=sap-ai-dev-toolkit${version ? `@${version}` : ''}`, 'sap-ai-dev'] };
-}
-
-function isOlderVersion(version, other) {
-  const parts = value => Array.from({ length: 3 }, (_, index) => Number.parseInt(String(value).split('.')[index], 10) || 0);
-  const [current, target] = [parts(version), parts(other)];
-  const index = current.findIndex((part, position) => part !== target[position]);
-  return index >= 0 && current[index] < target[index];
-}
-
-// Setup pins its version into each entry, so a stale sap-ai-dev on PATH can hand off
-// to that version through npx instead of running old code; the handoff happens once.
-export function configuredVersionHandoff(env, runningVersion, platform = process.platform) {
-  const configured = brandedEnvValue(env, 'VERSION');
-  if (!configured || brandedEnvValue(env, 'HANDOFF') || !isOlderVersion(runningVersion, configured)) return null;
-  return { version: configured, ...npxPackageLauncher(configured, platform) };
-}
-
 // Normalizes the argument list of npx-launched entries, whether written as
 // `npx ...` or the Windows `cmd /c npx ...` form; returns null when the entry
 // is not npx-launched.
@@ -166,36 +146,17 @@ function npxLaunchArgs(entry) {
   return null;
 }
 
-// The package version a PATH sap-ai-dev starts, found through npm's global
-// layouts (Unix bin symlink, Windows .cmd shim); null when the layout is unknown.
-async function commandPackageVersion(command) {
-  const target = await realpath(command).catch(() => command);
-  for (const manifest of [join(dirname(dirname(target)), 'package.json'), join(dirname(command), 'node_modules', 'sap-ai-dev-toolkit', 'package.json')]) {
-    try {
-      const pkg = JSON.parse(await readFile(manifest, 'utf8'));
-      if (pkg.name === 'sap-ai-dev-toolkit') return pkg.version;
-    } catch {
-      // Try the other layout.
-    }
-  }
-  return null;
-}
-
 // Resolves how generated destination entries launch the toolkit: the global
-// sap-ai-dev command when it is on PATH and is this version, otherwise the
-// pinned package through npx (routed through cmd /c on Windows) so entries
-// written by a pure `npx sap-ai-dev-toolkit --setup` run still start on every host.
+// sap-ai-dev command when it is on PATH, otherwise the pinned package
+// through npx (routed through cmd /c on Windows) so entries written by a
+// pure `npx sap-ai-dev-toolkit --setup` run still start on every host.
 async function resolveLauncherInstallCommand(env) {
   const resolved = await resolveMcpServerCommand(env);
+  if (resolved !== 'sap-ai-dev') return { command: resolved, args: null };
+  const { command, prefixArgs } = npxMcpLauncher();
   const selfVersion = await runningPackageVersion();
-  let warning;
-  if (resolved !== 'sap-ai-dev') {
-    const installed = await commandPackageVersion(resolved);
-    if (installed === null || !selfVersion || installed === selfVersion) return { command: resolved, args: null };
-    // A stale global install would keep starting the old launcher and VSP binary.
-    warning = `${resolved} is sap-ai-dev-toolkit ${installed}, not ${selfVersion}; MCP entries start sap-ai-dev-toolkit@${selfVersion} through npx instead. Run "npm install -g sap-ai-dev-toolkit@${selfVersion}" to use the global command.`;
-  }
-  return { ...npxPackageLauncher(selfVersion), warning };
+  const packageSpec = selfVersion ? `sap-ai-dev-toolkit@${selfVersion}` : 'sap-ai-dev-toolkit';
+  return { command, args: [...prefixArgs, '--yes', '--ignore-scripts', `--package=${packageSpec}`, 'sap-ai-dev'] };
 }
 
 export async function resolveMcpConfigPath(env = process.env) {
@@ -343,7 +304,7 @@ function isPackageLauncher(entry) {
     && hasPackage(npxArgs, legacyPackages);
   // Current launchers are treated as managed only when tagged by this add-on.
   // Some early bas-mcp-addon entries were not tagged with BAS_EXT, though, and
-  // leaving them behind keeps advertising the old full VSP surface (~159 tools).
+  // leaving them behind keeps advertising the old full child tool surface (~159 tools).
   return (entry?.BAS_EXT === 'true' && (currentCommand || currentNpxLauncher || legacyCommand || legacyNpxLauncher))
     || legacyCommand
     || legacyNpxLauncher;
@@ -615,14 +576,12 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
     const resolved = await resolveLauncherInstallCommand(env);
     launcherCommand = resolved.command;
     launcherArgs = resolved.args;
-    if (resolved.warning) installWarnings.push(resolved.warning);
   }
   if (launcherCommand) {
     for (const entry of Object.values(generated)) {
       if (isCompanionServer(entry)) continue;
       entry.command = launcherCommand;
       if (launcherArgs?.length) entry.args = [...launcherArgs];
-      if (selfVersion) entry.env.SAP_AI_DEV_TOOLKIT_VERSION = selfVersion;
     }
   }
   const servers = Object.create(null);

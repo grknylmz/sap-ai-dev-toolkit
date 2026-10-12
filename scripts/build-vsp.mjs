@@ -47,7 +47,7 @@ async function main() {
     checksums.push(`${createHash('sha256').update(bytes).digest('hex')}  ${output.slice(dist.length + 1)}`);
   }
   await writeFile(join(dist, 'checksums.txt'), `${checksums.join('\n')}\n`);
-  console.error(`Built ${targets.length} patched VSP binaries at ${dist}`);
+  console.error(`Built ${targets.length} runtime executables at ${dist}`);
 }
 
-main().catch(error => { console.error(`build-vsp: ${error.message}`); process.exitCode = 1; });
+main().catch(error => { console.error(`runtime build: ${error.message}`); process.exitCode = 1; });

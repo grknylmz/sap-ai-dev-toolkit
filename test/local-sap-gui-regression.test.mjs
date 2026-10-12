@@ -79,8 +79,8 @@ test('detectAdtUrl takes the TLS ADT port from VSP detect and never downgrades h
   assert.match((await detectAdtUrl(fakeVsp, { url: 'https://sap.example', env: env(findings.slice(0, 1)) })).reason, /only plain HTTP answers ADT \(http:\/\/sap\.example:8000\)/);
   assert.equal((await detectAdtUrl(fakeVsp, { url: 'http://sap.example', env: env(findings.slice(0, 1)) })).url, 'http://sap.example:8000');
   assert.deepEqual(await detectAdtUrl(fakeVsp, { url: 'https://sap.example', env: env(null) }), { url: '', reason: 'no port answered on sap.example' });
-  assert.deepEqual(await detectAdtUrl(fakeVsp, { url: 'https://sap.example', env: { ...process.env, FAKE_DETECT_JSON: 'not json' } }), { url: '', reason: 'VSP detect returned unreadable output' });
-  assert.match((await detectAdtUrl(join(tmpdir(), 'missing-vsp-binary'), { url: 'https://sap.example' })).reason, /^VSP detect could not run \(ENOENT\) from /);
+  assert.deepEqual(await detectAdtUrl(fakeVsp, { url: 'https://sap.example', env: { ...process.env, FAKE_DETECT_JSON: 'not json' } }), { url: '', reason: 'Runtime detect returned unreadable output' });
+  assert.match((await detectAdtUrl(join(tmpdir(), 'missing-vsp-binary'), { url: 'https://sap.example' })).reason, /^Runtime detect could not run \(ENOENT\) from /);
 });
 
 test('adtVerdict explains every way a scan can come back without ADT', () => {

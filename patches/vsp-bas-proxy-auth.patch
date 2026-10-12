@@ -435,6 +435,190 @@ index 0000000..1ed3c2b
 +		t.Errorf("got component %#v", got)
 +	}
 +}
+diff --git a/pkg/adt/crud.go b/pkg/adt/crud.go
+index f412fb1..15ac38a 100755
+--- a/pkg/adt/crud.go
++++ b/pkg/adt/crud.go
+@@ -1250,7 +1250,12 @@ func (c *Client) publishUnpublishServiceBinding(ctx context.Context, action, ser
+   <adtcore:objectReference adtcore:name="%s"/>
+ </adtcore:objectReferences>`, serviceName)
+ 
+-	path := fmt.Sprintf("/sap/bc/adt/businessservices/odatav2/%s", action)
++	// Publish jobs live under the binding's protocol; odatav2 alone cannot serve a V4 binding.
++	protocol := "odatav2"
++	if binding, err := c.GetSRVB(ctx, serviceName); err == nil && strings.EqualFold(binding.BindingVersion, "V4") {
++		protocol = "odatav4"
++	}
++	path := fmt.Sprintf("/sap/bc/adt/businessservices/%s/%s", protocol, action)
+ 
+ 	resp, err := c.transport.Request(ctx, path, &RequestOptions{
+ 		Method:      http.MethodPost,
+diff --git a/pkg/adt/features.go b/pkg/adt/features.go
+index 13aa4b0..8fb7376 100755
+--- a/pkg/adt/features.go
++++ b/pkg/adt/features.go
+@@ -3,6 +3,7 @@ package adt
+ 
+ import (
+ 	"context"
++	"errors"
+ 	"fmt"
+ 	"io"
+ 	"net/http"
+@@ -267,26 +268,11 @@ func (p *FeatureProber) probeAbapGit(ctx context.Context) (bool, string, error)
+ 	return false, "abapGit not found", nil
+ }
+ 
+-// probeRAP checks if RAP development tools are available
++// probeRAP checks if RAP development tools are available.
++// DDLS predates RAP, so the behavior-definition collection is the signal.
+ func (p *FeatureProber) probeRAP(ctx context.Context) (bool, string, error) {
+-	// Check if DDLS endpoint exists
+-	resp, err := p.client.transport.Request(ctx, "/sap/bc/adt/ddic/ddl/sources", &RequestOptions{
+-		Method: http.MethodOptions,
+-	})
+-	if err != nil {
+-		// Check if it's a 404 vs connection error
+-		if strings.Contains(err.Error(), "404") {
+-			return false, "DDLS endpoint not available", nil
+-		}
+-		return false, "", err
+-	}
+-
+-	// OPTIONS returning 200 or 405 means endpoint exists
+-	if resp.StatusCode == 200 || resp.StatusCode == 405 {
+-		return true, "RAP endpoints available", nil
+-	}
+-
+-	return false, "RAP endpoints not responding", nil
++	return p.probeADTResource(ctx, "/sap/bc/adt/bo/behaviordefinitions",
++		"RAP endpoints available", "RAP behavior definition endpoint not available")
+ }
+ 
+ // probeAMDP checks if AMDP debugging is available
+@@ -324,44 +310,35 @@ func (p *FeatureProber) probeAMDP(ctx context.Context) (bool, string, error) {
+ 	return false, "AMDP debugger not responding", nil
+ }
+ 
+-// probeUI5 checks if UI5/Fiori BSP management is available
++// probeUI5 checks if the UI5/Fiori BSP repository is available
+ func (p *FeatureProber) probeUI5(ctx context.Context) (bool, string, error) {
+-	// Check if UI5 repository endpoint exists
+-	resp, err := p.client.transport.Request(ctx, "/sap/bc/adt/filestore/ui5-bsp", &RequestOptions{
+-		Method: http.MethodOptions,
+-	})
+-	if err != nil {
+-		if strings.Contains(err.Error(), "404") {
+-			return false, "UI5 BSP endpoint not available", nil
+-		}
+-		return false, "", err
+-	}
+-
+-	if resp.StatusCode == 200 || resp.StatusCode == 405 {
+-		return true, "UI5 BSP repository available", nil
+-	}
+-
+-	return false, "UI5 BSP not responding", nil
++	return p.probeADTResource(ctx, "/sap/bc/adt/filestore/ui5-bsp/objects",
++		"UI5 BSP repository available (read-only through ADT)", "UI5 BSP endpoint not available")
+ }
+ 
+ // probeTransport checks if CTS transport management is available
+ func (p *FeatureProber) probeTransport(ctx context.Context) (bool, string, error) {
+-	// Check if transport endpoint exists
+-	resp, err := p.client.transport.Request(ctx, "/sap/bc/adt/cts/transports", &RequestOptions{
+-		Method: http.MethodOptions,
+-	})
+-	if err != nil {
+-		if strings.Contains(err.Error(), "404") {
+-			return false, "CTS endpoint not available", nil
+-		}
+-		return false, "", err
+-	}
++	return p.probeADTResource(ctx, "/sap/bc/adt/cts/transportrequests",
++		"CTS transport management available", "CTS endpoint not available")
++}
+ 
+-	if resp.StatusCode == 200 || resp.StatusCode == 405 {
+-		return true, "CTS transport management available", nil
++// probeADTResource reports whether the ADT resource at path is registered.
++// ADT answers 404 only for an unknown path; a registered resource refuses OPTIONS with 400 or 405.
++func (p *FeatureProber) probeADTResource(ctx context.Context, path, available, missing string) (bool, string, error) {
++	_, err := p.client.transport.Request(ctx, path, &RequestOptions{Method: http.MethodOptions})
++	if err == nil {
++		return true, available, nil
+ 	}
+-
+-	return false, "CTS not responding", nil
++	var apiErr *APIError
++	if errors.As(err, &apiErr) {
++		switch apiErr.StatusCode {
++		case http.StatusBadRequest, http.StatusMethodNotAllowed:
++			return true, available, nil
++		case http.StatusNotFound:
++			return false, missing, nil
++		}
++	}
++	return false, "", err
+ }
+ 
+ // FeatureSummary returns a human-readable summary of all features
+diff --git a/pkg/adt/features_test.go b/pkg/adt/features_test.go
+new file mode 100644
+index 0000000..5e880bd
+--- /dev/null
++++ b/pkg/adt/features_test.go
+@@ -0,0 +1,50 @@
++package adt
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++)
++
++// Measured on S/4HANA 2023 (7.58): OPTIONS on a registered ADT resource answers
++// 400 "HTTP method OPTIONS not supported"; an unknown path answers 404.
++func TestFeatureProbesReadADTResourceAnswers(t *testing.T) {
++	tests := []struct {
++		name      string
++		feature   FeatureID
++		path      string
++		status    int
++		available bool
++		message   string
++	}{
++		{"RAP registered", FeatureRAP, "/sap/bc/adt/bo/behaviordefinitions", http.StatusBadRequest, true, "RAP endpoints available"},
++		{"RAP absent", FeatureRAP, "/sap/bc/adt/bo/behaviordefinitions", http.StatusNotFound, false, "RAP behavior definition endpoint not available"},
++		{"UI5 registered", FeatureUI5, "/sap/bc/adt/filestore/ui5-bsp/objects", http.StatusMethodNotAllowed, true, "UI5 BSP repository available (read-only through ADT)"},
++		{"UI5 absent", FeatureUI5, "/sap/bc/adt/filestore/ui5-bsp/objects", http.StatusNotFound, false, "UI5 BSP endpoint not available"},
++		{"CTS registered", FeatureTransport, "/sap/bc/adt/cts/transportrequests", http.StatusBadRequest, true, "CTS transport management available"},
++		{"CTS server error", FeatureTransport, "/sap/bc/adt/cts/transportrequests", http.StatusInternalServerError, false, "probe failed: ADT API error: status 500"},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if r.Method != http.MethodOptions || r.URL.Path != tt.path {
++					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
++					http.NotFound(w, r)
++					return
++				}
++				w.WriteHeader(tt.status)
++				_, _ = io.WriteString(w, "HTTP&#x20;method&#x20;OPTIONS&#x20;not&#x20;supported")
++			}))
++			defer server.Close()
++
++			prober := NewFeatureProber(NewClient(server.URL, "user", "pass"), DefaultFeatureConfig(), false)
++			got := prober.Probe(context.Background(), tt.feature)
++			if got.Available != tt.available || !strings.HasPrefix(got.Message, tt.message) {
++				t.Errorf("Probe(%s) = available %v, message %q; want %v, %q", tt.feature, got.Available, got.Message, tt.available, tt.message)
++			}
++		})
++	}
++}
 diff --git a/pkg/adt/http.go b/pkg/adt/http.go
 index 0b4d9f1..3473536 100755
 --- a/pkg/adt/http.go
@@ -562,6 +746,65 @@ index 0000000..80741da
 +	}
 +}
 +
+diff --git a/pkg/adt/servicebinding_publish_test.go b/pkg/adt/servicebinding_publish_test.go
+new file mode 100644
+index 0000000..93c19f9
+--- /dev/null
++++ b/pkg/adt/servicebinding_publish_test.go
+@@ -0,0 +1,53 @@
++package adt
++
++import (
++	"context"
++	"fmt"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++)
++
++func TestPublishServiceBindingUsesTheBindingProtocol(t *testing.T) {
++	tests := []struct {
++		name    string
++		status  int
++		version string
++		want    string
++	}{
++		{"V4 binding", http.StatusOK, "V4", "/sap/bc/adt/businessservices/odatav4/publishjobs"},
++		{"V2 binding", http.StatusOK, "V2", "/sap/bc/adt/businessservices/odatav2/publishjobs"},
++		{"unreadable binding", http.StatusNotFound, "", "/sap/bc/adt/businessservices/odatav2/publishjobs"},
++	}
++	for _, tt := range tests {
++		t.Run(tt.name, func(t *testing.T) {
++			var published string
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				switch {
++				case strings.Contains(r.URL.Path, "/discovery"):
++					w.Header().Set("X-CSRF-Token", "TOKEN")
++				case r.Method == http.MethodGet && r.URL.Path == "/sap/bc/adt/businessservices/bindings/ZUI_DEMO":
++					w.WriteHeader(tt.status)
++					fmt.Fprintf(w, `<srvb:serviceBinding xmlns:srvb="http://www.sap.com/adt/ddic/ServiceBindings" xmlns:adtcore="http://www.sap.com/adt/core" adtcore:name="ZUI_DEMO"><srvb:binding srvb:type="ODATA" srvb:version="%s" srvb:category="0"/></srvb:serviceBinding>`, tt.version)
++				case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/publishjobs"):
++					published = r.URL.Path
++					_, _ = io.WriteString(w, `<asx:abap xmlns:asx="http://www.sap.com/abapxml"><asx:values><DATA><SEVERITY>OK</SEVERITY><SHORT_TEXT>Published</SHORT_TEXT></DATA></asx:values></asx:abap>`)
++				default:
++					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
++					http.NotFound(w, r)
++				}
++			}))
++			defer server.Close()
++
++			result, err := NewClient(server.URL, "user", "pass").PublishServiceBinding(context.Background(), "ZUI_DEMO", "0001")
++			if err != nil {
++				t.Fatalf("PublishServiceBinding: %v", err)
++			}
++			if published != tt.want || result.Severity != "OK" {
++				t.Errorf("published to %q with severity %q; want %q with OK", published, result.Severity, tt.want)
++			}
++		})
++	}
++}
 diff --git a/pkg/adt/sso.go b/pkg/adt/sso.go
 index d67c4e8..a03f740 100644
 --- a/pkg/adt/sso.go
@@ -791,3 +1034,102 @@ index 8e5bed4..544b873 100644
  		Headless:    !headed,
  		Timeout:     p.timeout(headed),
  		Insecure:    p.cfg.Insecure,
+diff --git a/pkg/adt/ui5.go b/pkg/adt/ui5.go
+index 6d57bb3..425f1b1 100755
+--- a/pkg/adt/ui5.go
++++ b/pkg/adt/ui5.go
+@@ -6,6 +6,7 @@ import (
+ 	"fmt"
+ 	"net/http"
+ 	"net/url"
++	"regexp"
+ 	"strings"
+ )
+ 
+@@ -117,9 +118,19 @@ func (c *Client) UI5ListApps(ctx context.Context, query string, maxResults int)
+ 		return nil, fmt.Errorf("parsing UI5 apps list: %w", err)
+ 	}
+ 
+-	// Convert Atom entries to UI5App
+-	apps := make([]UI5App, 0, len(feed.Entries))
++	// The ADT filestore ignores name and maxResults (S/4HANA 2023 returned all 2797 apps), so apply both here.
++	var match *regexp.Regexp
++	if query != "" {
++		match = regexp.MustCompile("(?i)^" + strings.ReplaceAll(regexp.QuoteMeta(query), `\*`, ".*") + "$")
++	}
++	apps := make([]UI5App, 0, min(len(feed.Entries), maxResults))
+ 	for _, entry := range feed.Entries {
++		if len(apps) == maxResults {
++			break
++		}
++		if match != nil && !match.MatchString(entry.Title) {
++			continue
++		}
+ 		apps = append(apps, UI5App{
+ 			Name:        entry.Title,
+ 			Description: entry.Summary,
+diff --git a/pkg/adt/ui5_list_filter_test.go b/pkg/adt/ui5_list_filter_test.go
+new file mode 100644
+index 0000000..1385d6d
+--- /dev/null
++++ b/pkg/adt/ui5_list_filter_test.go
+@@ -0,0 +1,59 @@
++package adt
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"testing"
++)
++
++// SAP's ADT filestore answers with every app whatever name and maxResults say.
++func TestUI5ListAppsFiltersWhatTheFilestoreIgnores(t *testing.T) {
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path != "/sap/bc/adt/filestore/ui5-bsp/objects" {
++			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
++			http.NotFound(w, r)
++			return
++		}
++		w.Header().Set("Content-Type", "application/atom+xml")
++		_, _ = io.WriteString(w, `<atom:feed xmlns:atom="http://www.w3.org/2005/Atom">`+
++			`<atom:entry><atom:id>ZAPP_ONE</atom:id><atom:title>ZAPP_ONE</atom:title><atom:summary>One</atom:summary></atom:entry>`+
++			`<atom:entry><atom:id>/UI2/LAUNCHPAD</atom:id><atom:title>/UI2/LAUNCHPAD</atom:title></atom:entry>`+
++			`<atom:entry><atom:id>ZAPP_TWO</atom:id><atom:title>ZAPP_TWO</atom:title></atom:entry>`+
++			`</atom:feed>`)
++	}))
++	defer server.Close()
++	client := NewClient(server.URL, "user", "pass")
++
++	tests := []struct {
++		query      string
++		maxResults int
++		want       []string
++	}{
++		{"z*", 1, []string{"ZAPP_ONE"}},
++		{"Z*", 5, []string{"ZAPP_ONE", "ZAPP_TWO"}},
++		{"*LAUNCH*", 5, []string{"/UI2/LAUNCHPAD"}},
++		{"", 0, []string{"ZAPP_ONE", "/UI2/LAUNCHPAD", "ZAPP_TWO"}},
++	}
++	for _, tt := range tests {
++		apps, err := client.UI5ListApps(context.Background(), tt.query, tt.maxResults)
++		if err != nil {
++			t.Fatalf("UI5ListApps(%q, %d): %v", tt.query, tt.maxResults, err)
++		}
++		var got []string
++		for _, app := range apps {
++			got = append(got, app.Name)
++		}
++		if len(got) != len(tt.want) {
++			t.Errorf("UI5ListApps(%q, %d) = %v, want %v", tt.query, tt.maxResults, got, tt.want)
++			continue
++		}
++		for i := range got {
++			if got[i] != tt.want[i] {
++				t.Errorf("UI5ListApps(%q, %d) = %v, want %v", tt.query, tt.maxResults, got, tt.want)
++				break
++			}
++		}
++	}
++}

@@ -412,7 +412,7 @@ export function hasExplicitPort(url) {
   return /^[a-z][a-z0-9+.-]*:\/\/[^/?#]*:\d+(?:[/?#]|$)/i.test(String(url || '').trim());
 }
 
-// VSP appends every ADT path to the base URL, so a pasted ADT path would double up.
+// The runtime appends every ADT path to the base URL, so a pasted ADT path would double up.
 export function adtBaseUrl(url) {
   return String(url || '').trim().replace(/[?#].*$/, '').replace(/\/sap\/bc\/adt(?:\/.*)?$/i, '').replace(/\/+$/, '');
 }
@@ -432,7 +432,7 @@ function adtRank(finding) {
   return (finding.secure ? 0 : 2) + (finding.status >= 300 && finding.status < 400 ? 1 : 0);
 }
 
-// Picks the ADT URL from VSP detect's JSON, or explains why there is none.
+// Picks the ADT URL from runtime detect JSON, or explains why there is none.
 export function adtVerdict(result, protocol = 'https:') {
   const findings = Array.isArray(result?.findings) ? result.findings.filter(Boolean) : [];
   const usable = findings
@@ -452,7 +452,7 @@ export function adtVerdict(result, protocol = 'https:') {
   if (inactive) return { url: '', reason: `SAP answers at ${inactive.url} but /sap/bc/adt is not active; ask basis to activate it in SICF` };
   const tls = findings.find(finding => finding.kind === 'tls-name-mismatch');
   if (tls && /certificate required|bad certificate/i.test(String(tls.detail))) {
-    return { url: '', reason: `port ${tls.port} demands a client certificate (smart card), which VSP cannot present` };
+    return { url: '', reason: `port ${tls.port} demands a client certificate (smart card), which the runtime cannot present` };
   }
   if (tls) return { url: '', reason: `port ${tls.port} presents a certificate ${tls.certHost ? `for ${tls.certHost}` : 'this machine does not trust'}${tls.detail ? ` (${tls.detail})` : ''}` };
   const open = findings.filter(finding => ['open', 'http'].includes(finding.kind)).map(finding => finding.port);
@@ -460,7 +460,7 @@ export function adtVerdict(result, protocol = 'https:') {
   return { url: '', reason: `no port answered on ${host}` };
 }
 
-// A portless URL means 443, which on-premise ICMs rarely serve; VSP's `detect`
+// A portless URL means 443, which on-premise ICMs rarely serve; runtime `detect`
 // probes the conventional ADT ports and reports which one answers. A host that
 // accepts every port makes each probe wait out its HTTP timeouts, so the full
 // sweep gets minutes.
@@ -484,10 +484,10 @@ export async function detectAdtUrl(binary, { url, client, instance, env = proces
   } catch (error) {
     const why = error.killed ? `timed out after ${Math.round(timeoutMs / 1000)} s` : (typeof error.code === 'string' ? error.code : `exit code ${error.code}`);
     const blocked = ['EACCES', 'EPERM', 'UNKNOWN'].includes(error.code) ? '; antivirus or application control may block it' : '';
-    return { url: '', reason: `VSP detect could not run (${why}) from ${binary}${blocked}` };
+    return { url: '', reason: `Runtime detect could not run (${why}) from ${binary}${blocked}` };
   }
   try { return adtVerdict(JSON.parse(stdout), configured.protocol); }
-  catch { return { url: '', reason: 'VSP detect returned unreadable output' }; }
+  catch { return { url: '', reason: 'Runtime detect returned unreadable output' }; }
 }
 
 // Application servers appear by their SM51 names, host_SID_NN.

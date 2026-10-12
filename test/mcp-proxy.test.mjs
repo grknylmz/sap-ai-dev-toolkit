@@ -14,7 +14,7 @@ const publicName = (destination, name) => `${destination}_${snakeCaseName(name)}
 const fixture = fileURLToPath(new URL('./fixtures/fake-vsp.mjs', import.meta.url));
 const HIDDEN_VSP_TOOLS = [
   'AnalyzeABAPCode', 'DebuggerListen', 'DeleteBreakpoint', 'DeleteObject', 'ExecuteABAP', 'ReleaseTransport',
-  'DeleteTransport', 'SAP', 'ListSQLTraces', 'PublishServiceBinding', 'UnpublishServiceBinding'
+  'DeleteTransport', 'SAP', 'ListSQLTraces', 'UI5UploadFile', 'UI5DeleteFile', 'UI5CreateApp', 'UI5DeleteApp'
 ];
 
 
@@ -238,7 +238,7 @@ test('merges paged tools and routes calls to the selected child', async t => {
     }
   }
   assert.equal(listed.result.tools.filter(tool => tool.name.startsWith('alpha_')).length, PUBLIC_VSP_TOOLS.size + localWorkflowTools.length);
-  assert.equal(PUBLIC_VSP_TOOLS.size + localWorkflowTools.length, 61);
+  assert.equal(PUBLIC_VSP_TOOLS.size + localWorkflowTools.length, 67);
   for (const tool of listed.result.tools) {
     assert.match(tool.name, /^[a-z0-9_-]+$/, `public tool names must be lowercase: ${tool.name}`);
     assert.ok(tool.name.length <= 128, `public tool names must stay within the MCP limit: ${tool.name}`);
@@ -495,7 +495,7 @@ test('streams lifecycle and tool-call events to the client as MCP log notificati
   await serving;
   const logs = output.filter(message => message.method === 'notifications/message');
   assert.ok(logs.length > 0, 'proxy events must reach the client as notifications/message');
-  assert.ok(logs.some(message => message.params.level === 'info' && String(message.params.data).includes('VSP MCP session initialized')), 'startup events buffered before initialize must flush');
+  assert.ok(logs.some(message => message.params.level === 'info' && String(message.params.data).includes('runtime MCP session initialized')), 'startup events buffered before initialize must flush');
   assert.ok(logs.some(message => String(message.params.data).includes('tools/call GetSource started')), 'tool-call start must be logged');
   assert.ok(logs.some(message => String(message.params.data).includes('tools/call GetSource completed')), 'tool-call completion must be logged');
   assert.ok(logs.every(message => typeof message.params.logger === 'string' && MCP_LOG_LEVELS.includes(message.params.level)), 'every log notification carries a logger and a valid level');
