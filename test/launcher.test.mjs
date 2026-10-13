@@ -32,7 +32,7 @@ function runLauncher(args, env, script = launcher) {
     child.on('exit', (code, signal) => resolve({ code, signal, stdout, stderr }));
   });
 }
-function runLauncherTty(env, input, args = ['--setup'], wizardAnswer = 'e\r') {
+function runLauncherTty(env, input, args = ['--setup'], wizardAnswer = 'e\r', assetsAnswer = '\r') {
   return new Promise((resolve, reject) => {
     // Quoted paths: the Windows node install lives under "C:\Program Files".
     const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(launcher)} ${args.join(' ')}`;
@@ -41,6 +41,7 @@ function runLauncherTty(env, input, args = ['--setup'], wizardAnswer = 'e\r') {
     let stderr = '';
     let inputSent = false;
     let wizardAnswerSent = false;
+    let assetsAnswerSent = false;
     const timeout = setTimeout(() => child.kill('SIGKILL'), 15000);
     child.stdout.on('data', chunk => {
       stdout += chunk.toString();
@@ -52,12 +53,16 @@ function runLauncherTty(env, input, args = ['--setup'], wizardAnswer = 'e\r') {
       }
       if (!inputSent && stdout.includes('Select destinations')) {
         inputSent = true;
-        child.stdin.end(input);
+        child.stdin.write(input);
+      }
+      if (!assetsAnswerSent && stdout.includes('Install bundled agents and skills for')) {
+        assetsAnswerSent = true;
+        setTimeout(() => child.stdin.end(assetsAnswer), 400);
       }
     });
     child.stderr.on('data', chunk => { stderr += chunk.toString(); });
     child.on('error', error => { clearTimeout(timeout); reject(error); });
-    child.on('exit', (code, signal) => { clearTimeout(timeout); resolve({ code, signal, stdout, stderr, inputSent }); });
+    child.on('exit', (code, signal) => { clearTimeout(timeout); resolve({ code, signal, stdout, stderr, inputSent, assetsAnswerSent }); });
   });
 }
 
@@ -74,9 +79,14 @@ function runLauncherTtyScripted(env, steps, args = ['--setup']) {
     let stdout = '';
     let stderr = '';
     const sent = new Set();
+    let assetsAnswerSent = false;
     const timeout = setTimeout(() => child.kill('SIGKILL'), 15000);
     child.stdout.on('data', chunk => {
       stdout += chunk.toString();
+      if (!assetsAnswerSent && stdout.includes('Install bundled agents and skills for')) {
+        assetsAnswerSent = true;
+        setTimeout(() => child.stdin.end('\r'), 400);
+      }
       for (const [index, step] of steps.entries()) {
         if (!sent.has(index) && stdout.includes(step.when)) {
           sent.add(index);
@@ -85,14 +95,13 @@ function runLauncherTtyScripted(env, steps, args = ['--setup']) {
           // can land before the field is listening.
           setTimeout(() => {
             child.stdin.write(step.input);
-            if (sent.size === steps.length && step.end !== false) child.stdin.end();
           }, 400);
         }
       }
     });
     child.stderr.on('data', chunk => { stderr += chunk.toString(); });
     child.on('error', error => { clearTimeout(timeout); reject(error); });
-    child.on('exit', (code, signal) => { clearTimeout(timeout); resolve({ code, signal, stdout, stderr, sent: sent.size }); });
+    child.on('exit', (code, signal) => { clearTimeout(timeout); resolve({ code, signal, stdout, stderr, sent: sent.size, assetsAnswerSent }); });
   });
 }
 
@@ -711,10 +720,13 @@ test('setup subprocess writes one isolated MCP entry per selected destination', 
     response.end();
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  const env = { ...process.env, PATH: pathEntry(bin), H2O_URL: `http://127.0.0.1:${server.address().port}`, SAP_AI_DEV_TOOLKIT_SKIP_PROBE: 'true', SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config };
+  const env = { ...process.env, HOME: directory, USERPROFILE: directory, PATH: pathEntry(bin), H2O_URL: `http://127.0.0.1:${server.address().port}`, SAP_AI_DEV_TOOLKIT_SKIP_PROBE: 'true', SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config };
   try {
     const first = await runLauncherTty(env, 'a\r', ['--setup', '--npx']);
     assert.equal(first.code, 0, `${first.stdout}\n${first.stderr}`);
+    assert.equal(first.assetsAnswerSent, true, `${first.stdout}\n${first.stderr}`);
+    assert.match(`${first.stdout}\n${first.stderr}`, /Install bundled agents and skills for/);
+    await readFile(join(directory, '.copilot', 'agents', 'abap-developer.agent.md'), 'utf8');
     let current = JSON.parse(await readFile(config, 'utf8'));
     let generated = Object.entries(current.servers).filter(([, entry]) => entry.BAS_EXT === 'true');
     assert.deepEqual(generated.map(([, entry]) => entry.env.SAP_AI_DEV_TOOLKIT_DESTINATION), ['alpha-system', 'beta-system'], `${first.stdout}\n${first.stderr}`);
@@ -729,6 +741,7 @@ test('setup subprocess writes one isolated MCP entry per selected destination', 
     // An empty selection needs a second Enter before it removes the entries.
     const second = await runLauncherTty(env, '\r\r', ['--setup', '--npx']);
     assert.equal(second.code, 0, `${second.stdout}\\n${second.stderr}`);
+    assert.equal(second.assetsAnswerSent, true, `${second.stdout}\\n${second.stderr}`);
     current = JSON.parse(await readFile(config, 'utf8'));
     generated = Object.keys(current.servers).filter(name => name !== 'unrelated');
     assert.deepEqual(generated, []);
@@ -753,9 +766,12 @@ test('interactive local no-arg launcher starts setup instead of VSP', async () =
     const result = await runLauncherTty(env, '', []);
     const logs = `${result.stdout}\n${result.stderr}`;
     assert.equal(result.code, 0, logs);
+    assert.equal(result.assetsAnswerSent, true, logs);
+    assert.match(logs, /Install bundled agents and skills for/);
     assert.match(logs, /starting local interactive setup/);
     assert.match(logs, /Looking for local SAP GUI system configuration/);
     assert.match(logs, /No SAP GUI systems were found on this computer/);
+    await readFile(join(directory, '.copilot', 'agents', 'abap-developer.agent.md'), 'utf8');
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
@@ -821,6 +837,9 @@ test('local setup discovers SAP GUI systems, prompts for ADT URL, and writes log
       ...(isWindows ? [windowsAuthStep('Local ABAP')] : [])
     ], ['--setup', '--npx']);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal(result.assetsAnswerSent, true, `${result.stdout}\n${result.stderr}`);
+    assert.match(`${result.stdout}\n${result.stderr}`, /Install bundled agents and skills for/);
+    await readFile(join(directory, '.copilot', 'agents', 'abap-developer.agent.md'), 'utf8');
     assert.equal(result.sent, isWindows ? 4 : 3);
     const current = JSON.parse(await readFile(config, 'utf8'));
     assert.deepEqual(Object.keys(current.servers).sort(), ['a4h-100', 'unrelated']);

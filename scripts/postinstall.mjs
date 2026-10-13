@@ -1,202 +1,24 @@
-import { open, readFile } from 'node:fs/promises';
-import { closeSync, openSync, realpathSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { readFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { installBinary } from '../src/binary.mjs';
 import { detectAdtUrl } from '../src/local-sap-gui.mjs';
 import { runSetup } from '../src/setup.mjs';
-import { installUserAssetsForHarnesses } from '../src/install-user-assets.mjs';
-import { installMcpServersForHarnesses } from '../src/harness-mcp-config.mjs';
-import { DEFAULT_HARNESS_IDS, HARNESSES, HARNESS_ENV_VAR, NON_INTERACTIVE_HARNESS_IDS, envHarnessSelection, harnessRoot } from '../src/harnesses.mjs';
-import { ReadStream as TTYReadStream, WriteStream as TTYWriteStream } from 'node:tty';
-import { homedir } from 'node:os';
-import { checkboxPrompt, colorText, formatStatus, startProgress } from '../src/terminal-ui.mjs';
+import { colorText, startProgress } from '../src/terminal-ui.mjs';
 import { brandedEnvValue, withBrandedEnvironment } from '../src/branding.mjs';
 import { generatedServerName } from '../src/mcp-config.mjs';
 import { redactText } from '../src/redact.mjs';
+import { announce, runHarnessSetup, withInstallTerminal } from '../src/harness-setup.mjs';
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
 const runtimeEnv = withBrandedEnvironment(process.env);
 
-async function announce(message, tone = 'info') {
-  const content = message.replace(/^sap-ai-dev-toolkit:\s*/, '');
-  // Windows cannot open CONOUT$ as a writable console stream from a
-  // piped npm script (libuv normalizes the device name, and the resulting
-  // handle drops writes), so output goes through stderr unconditionally.
-  if (process.platform === 'win32') {
-    console.error(formatStatus(content, tone, process.stderr));
-    return;
-  }
-  let terminal;
-  try {
-    terminal = await open('/dev/tty', 'w');
-    await terminal.write(`${formatStatus(content, tone, true)}\n`);
-  } catch {
-    console.error(formatStatus(content, tone, process.stderr));
-  } finally {
-    await terminal?.close().catch(() => {});
-  }
-}
-
-function openControllingTerminal() {
-  if (process.platform === 'win32') {
-    // npm can pipe lifecycle script streams even when the install was
-    // launched from an interactive Windows console. Verify console access,
-    // then attach Node TTY streams to its standard console devices.
-    const probe = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', '[Console]::OpenStandardInput(); [Console]::OpenStandardOutput()'], { stdio: 'ignore', windowsHide: true });
-    if (probe.error || probe.status !== 0) throw new Error('interactive console is unavailable');
-    const inputFd = openSync('CONIN$', 'r');
-    let outputFd;
-    try {
-      outputFd = openSync('CONOUT$', 'w');
-      return { input: new TTYReadStream(inputFd), output: new TTYWriteStream(outputFd) };
-    } catch (error) {
-      closeSync(inputFd);
-      if (outputFd !== undefined) closeSync(outputFd);
-      throw error;
-    }
-  }
-  const inputFd = openSync('/dev/tty', 'r');
-  let outputFd;
-  try {
-    outputFd = openSync('/dev/tty', 'w');
-    return { input: new TTYReadStream(inputFd), output: new TTYWriteStream(outputFd) };
-  } catch (error) {
-    closeSync(inputFd);
-    if (outputFd !== undefined) closeSync(outputFd);
-    throw error;
-  }
-}
-
-async function withInstallTerminal(action) {
-  if (process.stdin.isTTY && process.stdout.isTTY) {
-    return action({ input: process.stdin, output: process.stdout });
-  }
-  let terminal;
-  try {
-    terminal = openControllingTerminal();
-  } catch {
-    return action(null);
-  }
-  try {
-    return await action(terminal);
-  } finally {
-    terminal.input.destroy();
-    terminal.output.destroy();
-  }
-}
-
 async function runInstallSetup(binary) {
   const detect = binary ? target => detectAdtUrl(binary, { ...target, env: runtimeEnv }) : undefined;
   return withInstallTerminal(terminal => runSetup({ env: runtimeEnv, ...(terminal || {}), detectAdtUrl: detect }));
 }
-
-function harnessSelectionLabels(ids) {
-  return HARNESSES.filter(harness => ids.includes(harness.id)).map(harness => harness.label).join(', ');
-}
-
-async function resolveHarnessOverride() {
-  try {
-    return envHarnessSelection(runtimeEnv);
-  } catch (error) {
-    await announce(`${error.message} Ignoring ${HARNESS_ENV_VAR}.`, 'warning');
-    return null;
-  }
-}
-
-async function installSelectedHarnessAssets(ids) {
-  const { results, failures } = await installUserAssetsForHarnesses(ids, { root });
-  for (const failure of failures) {
-    await announce(`${failure.label}: bundled agent and skill installation failed: ${failure.error.message}`, 'error');
-  }
-  for (const assets of results) {
-    const installed = assets.installed + assets.updated;
-    const removed = assets.removed || 0;
-    const cleanup = removed > 0 ? `; ${removed} duplicate or legacy file${removed === 1 ? '' : 's'} removed` : '';
-    await announce(`${assets.label}: ${installed} file${installed === 1 ? '' : 's'} installed or updated in ${assets.root}; ${assets.unchanged} already current${cleanup}.`, 'success');
-    if (assets.conflicts.length > 0) {
-      const paths = assets.conflicts.map(path => join(assets.root, path)).join(', ');
-      await announce(`${assets.label}: existing customizations were preserved; review these paths: ${paths}`, 'warning');
-    }
-  }
-  const total = results.reduce((sum, assets) => sum + assets.installed + assets.updated, 0);
-  if (results.length > 0) {
-    await announce(`Installed ${total} files across ${results.length} harness${results.length === 1 ? '' : 'es'}.`, 'success');
-  }
-}
-
-async function runHarnessAssetInstall() {
-  const home = process.env.HOME || homedir();
-  const override = await resolveHarnessOverride();
-  return withInstallTerminal(async terminal => {
-    let selected = override;
-    if (!terminal) {
-      if (!selected) selected = NON_INTERACTIVE_HARNESS_IDS;
-      await announce(`Installing bundled agents and skills for ${harnessSelectionLabels(selected)} by default because no interactive terminal is available.`, 'progress');
-      await installSelectedHarnessAssets(selected);
-      return selected;
-    }
-    if (!selected) selected = DEFAULT_HARNESS_IDS;
-    await announce([
-      'The bundled agents and skills can be installed for several AI coding harnesses.',
-      '',
-      'Space = select or deselect · a = toggle all · Enter = confirm. Pressing Enter without changes installs the pre-checked harnesses; confirming with none selected skips this step.',
-      '',
-      `${colorText('📁 Target folders:', 'cyan', true)}`,
-      ...HARNESSES.map(harness => `   ${harnessRoot(harness, { home, env: runtimeEnv })} — ${harness.label} (${harness.supportsAgents ? 'skills + agents' : 'skills only'})`),
-      ''
-    ].join('\n'), 'copilot');
-    let answer;
-    try {
-      answer = await checkboxPrompt({
-        message: colorText('🤖 Install bundled agents and skills for', 'magenta', terminal.output),
-        choices: HARNESSES.map(harness => ({
-          value: harness.id,
-          name: `${harness.label} (${harness.supportsAgents ? 'skills + agents' : 'skills'})`,
-          checked: selected.includes(harness.id)
-        })),
-        required: false,
-        shortcuts: { all: 'a' }
-      }, { input: terminal.input, output: terminal.output });
-    } catch (error) {
-      if (error.message === 'Prompt interrupted') {
-        await announce('Bundled agents and skills were skipped because the prompt was interrupted. Your files were not changed.', 'info');
-        return [];
-      }
-      throw error;
-    }
-    if (answer.length === 0) {
-      await announce('Bundled agents and skills were skipped. Your files were not changed.', 'info');
-      return [];
-    }
-    await installSelectedHarnessAssets(answer);
-    return answer;
-  });
-}
-
-async function wireHarnessMcpServers(ids, servers) {
-  const entries = servers && Object.keys(servers).length ? servers : null;
-  if (!entries || !ids?.length) return;
-  const hasLocalSapGui = Object.values(entries).some(entry => entry?.env?.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE === 'sap-gui-local');
-  if (hasLocalSapGui) {
-    await announce('Local SAP GUI MCP entries use VS Code input prompts for SAP login, so automatic wiring into non-VS Code harness MCP files was skipped. Configure those harnesses manually if they support secure runtime prompts.', 'info');
-    return;
-  }
-  const { results, failures } = await installMcpServersForHarnesses(ids, entries, { env: runtimeEnv });
-  for (const result of results) {
-    if (!result.supported) {
-      await announce(`${result.label}: MCP auto-wiring skipped. ${result.skipped}`, 'info');
-      continue;
-    }
-    await announce(`${result.label}: wired ${result.servers} MCP server${result.servers === 1 ? '' : 's'} in ${result.path}.`, 'success');
-  }
-  for (const failure of failures) {
-    await announce(`${failure.label}: MCP auto-wiring failed: ${failure.error.message}`, 'error');
-  }
-}
-
 
 function probeCell(destination) {
   const probe = destination.probe || {};
@@ -347,17 +169,7 @@ async function main() {
     await announce('Rerun sap-ai-dev --setup.', 'info');
   }
 
-  let harnessIds = [];
-  try {
-    harnessIds = await runHarnessAssetInstall();
-  } catch (error) {
-    await announce(`Bundled agent and skill installation failed: ${error.message}`, 'error');
-  }
-  try {
-    if (setupCompleted) await wireHarnessMcpServers(harnessIds, setupResult?.servers);
-  } catch (error) {
-    await announce(`Harness MCP auto-wiring failed: ${error.message}`, 'error');
-  }
+  await runHarnessSetup(setupResult?.servers, { env: runtimeEnv, root, wire: setupCompleted });
   if (setupCompleted) await announceSetup(setupResult);
 }
 if (process.argv[1] && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(resolve(process.argv[1]))) {

@@ -41,11 +41,13 @@ SAP AI Dev Toolkit connects your AI coding assistant to the SAP development tool
 
 ## ⚡ Quick start
 
-The default installation is a single npx command — no global install, nothing left behind except the generated MCP configuration:
+Run the setup wizard without a global install:
 
 ```sh
 npx --yes --ignore-scripts sap-ai-dev-toolkit --setup
 ```
+
+Interactive setup configures the selected destinations, then asks which AI harnesses should receive the bundled agents and skills. This prompt is part of `--setup`, so it still appears when `--ignore-scripts` skips npm lifecycle scripts. Without an interactive terminal, assets install for GitHub Copilot by default.
 
 Prefer a persistent global install instead?
 
@@ -405,7 +407,7 @@ The package includes five user-invocable custom agents (**SAP Solution Architect
 
 ### 📥 Install agents and skills for your user
 
-During npm postinstall, after the destination or local SAP GUI setup step, the installer prints a 🤖 notice and a checkbox picker asking which AI coding harnesses should receive the bundled agents and skills. **Space** selects or deselects, **a** toggles all, **Enter** confirms. **GitHub Copilot** and **Claude Code** are pre-checked, so pressing **Enter** without changes installs both; confirming with none selected skips the step and leaves your files unchanged.
+During npm postinstall, or after interactive `sap-ai-dev --setup` in BAS or on a local PC, the installer prints a 🤖 notice and a checkbox picker asking which AI coding harnesses should receive the bundled agents and skills. **Space** selects or deselects, **a** toggles all, **Enter** confirms. **GitHub Copilot** and **Claude Code** are pre-checked, so pressing **Enter** without changes installs both; confirming with none selected skips the step and leaves your files unchanged.
 
 | Harness | Skills land in | Agents land in | MCP auto-wiring |
 | --- | --- | --- | --- |
@@ -421,7 +423,7 @@ All 14 skills use the portable `SKILL.md` format and are installed verbatim. The
 
 MCP auto-wiring preserves unrelated servers in each harness config and replaces only entries previously managed by `sap-ai-dev-toolkit`. Generated entries carry `SAP_AI_DEV_TOOLKIT_MANAGED=true` in their server environment so future reinstalls can reconcile them without touching user-owned MCP servers.
 
-These user-level customizations are available across workspaces opened by the same OS user (or the same BAS user in a dev space). The harness may need a window reload to discover new files. A non-interactive install skips the picker and installs for GitHub Copilot only; override with `SAP_AI_DEV_TOOLKIT_HARNESSES` (comma-separated harness ids). `npm install --ignore-scripts` skips the postinstall wizard entirely.
+These user-level customizations are available across workspaces opened by the same OS user (or the same BAS user in a dev space). The harness may need a window reload to discover new files. A non-interactive postinstall or setup run installs for GitHub Copilot only; override with `SAP_AI_DEV_TOOLKIT_HARNESSES` (comma-separated harness ids). `npm install --ignore-scripts` skips postinstall, but running `sap-ai-dev --setup` still offers harness installation after destination setup.
 
 On reinstall or package upgrade, unchanged add-on-managed files are updated per harness. Existing customizations and files edited since the previous install are preserved; postinstall reports paths that need manual review instead of overwriting them.
 

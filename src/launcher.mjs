@@ -11,6 +11,7 @@ import { binaryTarget, cacheDirectory, downloadBinary, findBinary } from './bina
 import { MCPProxy } from './mcp-proxy.mjs';
 import { configuredVersionHandoff, installMcpConfig, npxPackageLauncher, repairManagedMcpConfig } from './mcp-config.mjs';
 import { runSetup } from './setup.mjs';
+import { runHarnessSetup } from './harness-setup.mjs';
 import { resolveConfiguredCloudFoundryDestination } from './cf-destination.mjs';
 import { createTlsServerNameAdtProxy } from './tls-adt-proxy.mjs';
 import { findSsoBrowsers } from './sso-browsers.mjs';
@@ -415,7 +416,8 @@ async function main() {
       const launcher = npxPackageLauncher(pkg.version);
       setupOptions.install = (selected, options) => installMcpConfig(selected, { ...options, ...launcher });
     }
-    await runSetup(setupOptions);
+    const result = await runSetup(setupOptions);
+    await runHarnessSetup(result?.servers, { env: runtimeEnv, root });
     return;
   }
   if (check || list) {
@@ -460,7 +462,8 @@ async function main() {
   if (!runtimeEnv.H2O_URL) {
     if (args().length === 0 && process.stdin.isTTY && process.stdout.isTTY) {
       console.error('sap-ai-dev: no BAS environment detected; starting local interactive setup. Use --help for other commands.');
-      await runSetup({ detectAdtUrl: detectLocalAdtUrl });
+      const result = await runSetup({ detectAdtUrl: detectLocalAdtUrl });
+      await runHarnessSetup(result?.servers, { env: runtimeEnv, root });
       return;
     }
     const binary = await binaryOrError();
