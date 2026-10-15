@@ -100,6 +100,25 @@ test('rejects a browser when its remote debugging endpoint cannot be controlled'
   assert.equal(child.signalCode, 'SIGTERM');
 });
 
+test('uses platform-appropriate process options for Windows, macOS, and Linux probes', async () => {
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    const child = fakeBrowserProcess();
+    let options;
+    const result = await probeSsoBrowser({ name: 'Browser', path: '/browser' }, {
+      platform,
+      spawnBrowser: (_path, _args, spawnOptions) => {
+        options = spawnOptions;
+        return child;
+      },
+      controlRemote: async () => {}
+    });
+    assert.deepEqual(result, { usable: true }, platform);
+    assert.equal(options.windowsHide, true, platform);
+    assert.equal(options.detached, platform !== 'win32', platform);
+    assert.equal(child.signalCode, 'SIGTERM', platform);
+  }
+});
+
 test('only returns SSO browsers whose remote control probe succeeds', async () => {
   const chrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
   const edge = '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge';

@@ -144,21 +144,29 @@ function waitForClose(child, timeoutMs) {
   });
 }
 
+async function signalBrowserTree(child, platform, signal) {
+  if (platform === 'win32' && child.pid) {
+    try {
+      await execFileAsync('taskkill', [
+        '/pid', String(child.pid), '/t',
+        ...(signal === 'SIGKILL' ? ['/f'] : [])
+      ], { windowsHide: true, timeout: 1000 });
+      return;
+    } catch {}
+  }
+  try {
+    if (platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch {
+    try { child.kill(signal); } catch {}
+  }
+}
+
 async function stopBrowser(child, platform) {
   if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  try {
-    if (platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGTERM');
-    else child.kill('SIGTERM');
-  } catch {
-    try { child.kill('SIGTERM'); } catch {}
-  }
+  await signalBrowserTree(child, platform, 'SIGTERM');
   if (await waitForClose(child, 1000)) return;
-  try {
-    if (platform !== 'win32' && child.pid) process.kill(-child.pid, 'SIGKILL');
-    else child.kill('SIGKILL');
-  } catch {
-    try { child.kill('SIGKILL'); } catch {}
-  }
+  await signalBrowserTree(child, platform, 'SIGKILL');
   await waitForClose(child, 1000);
 }
 
