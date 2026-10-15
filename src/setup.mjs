@@ -8,6 +8,7 @@ import { adtBaseUrl, adtPort, defaultAdtUrl, discoverSapGuiSystems, hasExplicitP
 import { discoverCloudFoundryDestinations, getCloudFoundryTarget, deleteManagedCloudFoundryServiceKeys, findOrphanedCloudFoundryServiceKeys } from './cf-destination.mjs';
 import { SAP_DEVELOPMENT_MCP_SERVERS, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, installMcpConfig, readMcpConfig, resolveMcpConfigPath } from './mcp-config.mjs';
 import { discoverCertificateDnsNames } from './tls-adt-proxy.mjs';
+import { findRemoteControllableSsoBrowsers } from './sso-browsers.mjs';
 
 const SETUP_COMMAND = 'sap-ai-dev --setup';
 
@@ -64,6 +65,45 @@ async function chooseLocalAuthMode(destination, { input = stdin, output = stdout
       { name: 'Username/password', value: 'basic', shortcut: 'p' }
     ]
   }, { input, output });
+}
+
+function createSsoBrowserSelector({ discoverSsoBrowsers, input, output, env }) {
+  let selectedPath;
+  let selectionComplete = false;
+  return async destination => {
+    if (selectionComplete) return selectedPath;
+    selectionComplete = true;
+    print(output, formatStatus('Checking installed browsers for remote DevTools access.', 'progress', output, 'SSO'));
+    let result;
+    try {
+      result = await discoverSsoBrowsers({ env });
+    } catch (error) {
+      const reason = String(error?.message || error).replace(/\s+/g, ' ').slice(0, 240);
+      print(output, formatStatus(`Browser control check failed (${reason}). Setup will keep automatic browser discovery.`, 'warning', output, 'SSO'));
+      return undefined;
+    }
+    const { browsers = [], unavailable = [] } = result || {};
+    if (!browsers.length) {
+      const details = unavailable.map(browser => `${browser.name}: ${browser.reason}`).join('; ').slice(0, 300);
+      print(output, formatStatus(`No remotely controllable SSO browser was found${details ? ` (${details})` : ''}. Setup will keep automatic browser discovery.`, 'warning', output, 'SSO'));
+      return undefined;
+    }
+    if (browsers.length === 1) {
+      selectedPath = browsers[0].path;
+      print(output, formatStatus(`Using ${browsers[0].name}; it responded to a remote DevTools command.`, 'success', output, 'SSO browser'));
+      return selectedPath;
+    }
+    selectedPath = await selectPrompt({
+      message: `Browser for SSO (${destination.name})`,
+      defaultValue: browsers[0].path,
+      choices: browsers.map((browser, index) => ({
+        name: `${browser.name} (${browser.path})`,
+        value: browser.path,
+        shortcut: String(index + 1)
+      }))
+    }, { input, output });
+    return selectedPath;
+  };
 }
 
 async function confirmCloudFoundryImport({ input = stdin, output = stdout } = {}) {
@@ -238,7 +278,7 @@ async function confirmPrompt(message, { input = stdin, output = stdout } = {}) {
   return !/^n(?:o)?$/i.test(String(answer || '').trim());
 }
 
-function buildLocalClientDestination(destination, client, authMode, { multipleClients = false, duplicateSystemName = false } = {}) {
+function buildLocalClientDestination(destination, client, authMode, { multipleClients = false, duplicateSystemName = false, browserPath } = {}) {
   const name = localClientDestinationName(destination, client, { multipleClients, duplicateSystemName });
   const localDestination = { ...destination, name, serverName: name, client };
   const userInputId = `sap-ai-dev-${localDestination.serverName || localDestination.name}-user`.toLowerCase().replace(/[^a-z0-9_-]+/g, '-');
@@ -248,7 +288,7 @@ function buildLocalClientDestination(destination, client, authMode, { multipleCl
     { id: passwordInputId, type: 'promptString', description: `SAP password for ${localDestination.name}`, password: true }
   ];
   if (authMode === 'sso') {
-    localDestination.childEnv = { SAP_AUTH_MODE: 'sso' };
+    localDestination.childEnv = { SAP_AUTH_MODE: 'sso', ...(browserPath ? { SAP_BROWSER_EXEC: browserPath } : {}) };
     localDestination.inputs = [];
   } else {
     localDestination.childEnv = {
@@ -285,7 +325,7 @@ async function maybeConfigureTlsSelfHeal(destination, promptLabel, { input = std
 // collects the minimal ADT configuration directly from the user and produces
 // the same local destination shape as the SAP GUI flow, so installation,
 // credential inputs, and TLS handling stay identical.
-async function runManualEntryWizard({ env = process.env, input = stdin, output = stdout, detectAdtUrl } = {}) {
+async function runManualEntryWizard({ env = process.env, input = stdin, output = stdout, detectAdtUrl, selectSsoBrowser } = {}) {
   print(output, '');
   print(output, colorText('✍️  Manual system entry — skip discovery, add your SAP system directly', 'magenta', output));
   print(output, colorText('   The ADT URL is the base URL that Eclipse ADT or VS Code ADT tools use, for example https://myhost.example:44300.', 'cyan', output));
@@ -338,10 +378,11 @@ async function runManualEntryWizard({ env = process.env, input = stdin, output =
     } else {
       if (authMode === 'sso') warnSsoIpHost(destination, name, output);
       else await maybeConfigureTlsSelfHeal(destination, name, { input, output });
+      const browserPath = authMode === 'sso' ? await selectSsoBrowser(destination) : undefined;
       destination.authentication = localAuthenticationLabel(authMode);
       destination.authMode = authMode;
       for (const client of clients) {
-        expanded.push(buildLocalClientDestination(destination, client, authMode, { multipleClients: clients.length > 1 }));
+        expanded.push(buildLocalClientDestination(destination, client, authMode, { multipleClients: clients.length > 1, browserPath }));
       }
       print(output, formatStatus(`Added ${name} (client${clients.length === 1 ? '' : 's'} ${clients.join(', ')}).`, 'success', output, 'Manual entry'));
     }
@@ -469,7 +510,7 @@ function printConnectionInstructions(output, result) {
 
 // Checkbox selection over the discovered destinations plus, outside BAS, the
 // per-system confirmation prompts (clients, ADT URL, TLS self-heal, login).
-async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin, output = stdout, env = process.env, detectAdtUrl, previousAdtUrls = new Map() } = {}) {
+async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin, output = stdout, env = process.env, detectAdtUrl, previousAdtUrls = new Map(), selectSsoBrowser } = {}) {
   const orderedDestinations = [...destinations].sort((left, right) => {
     const leftRank = left.disabledReason ? 2 : (left.probe?.available === false ? 1 : 0);
     const rightRank = right.disabledReason ? 2 : (right.probe?.available === false ? 1 : 0);
@@ -495,7 +536,7 @@ async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin
   print(output, colorText('  Space = select/deselect · a = toggle all · m = add a system manually · Enter = confirm.', 'cyan', output));
   print(output, colorText('  💡 No system listed, or need an extra one? Press m to skip discovery and add any SAP system manually.', 'magenta', output));
   print(output, '');
-  const addManually = async () => (await runManualEntryWizard({ env, input, output, detectAdtUrl })).map(destination => ({
+  const addManually = async () => (await runManualEntryWizard({ env, input, output, detectAdtUrl, selectSsoBrowser })).map(destination => ({
     value: destination,
     name: `${destination.name} (manual, client ${destination.client})`
   }));
@@ -549,10 +590,11 @@ async function chooseDiscoveredDestinations(destinations, { isBas, input = stdin
       }
       if (authMode === 'sso') warnSsoIpHost(destination, promptLabel, output);
       else await maybeConfigureTlsSelfHeal(destination, promptLabel, { input, output });
+      const browserPath = authMode === 'sso' ? await selectSsoBrowser(destination) : undefined;
       destination.authentication = localAuthenticationLabel(authMode);
       destination.authMode = authMode;
       for (const client of clients) {
-        expanded.push(buildLocalClientDestination(destination, client, authMode, { multipleClients: clients.length > 1, duplicateSystemName }));
+        expanded.push(buildLocalClientDestination(destination, client, authMode, { multipleClients: clients.length > 1, duplicateSystemName, browserPath }));
       }
     }
     selected = expanded;
@@ -570,7 +612,8 @@ export async function runSetup({
   confirmCfImport = confirmCloudFoundryImport,
   install = installMcpConfig,
   includeSapDevelopmentToolsPrompt = false,
-  detectAdtUrl
+  detectAdtUrl,
+  discoverSsoBrowsers = findRemoteControllableSsoBrowsers
 } = {}) {
   const isBas = Boolean(env.H2O_URL);
   if (!isBas && (!input.isTTY || !output.isTTY)) {
@@ -581,6 +624,7 @@ export async function runSetup({
     print(output, formatStatus(`Interactive setup needs a terminal. Rerun ${SETUP_COMMAND} from a terminal.`, 'warning', output, 'SAP AI Dev Toolkit'));
     return { skipped: true, reason: 'non-tty' };
   }
+  const selectSsoBrowser = createSsoBrowserSelector({ discoverSsoBrowsers, input, output, env });
   print(output, '');
   print(output, colorText('💡 Tip: you can skip auto-discovery and add a system manually — press m in the destination picker, or take the wizard offer when nothing is found.', 'magenta', output));
   if (!isBas) print(output, formatStatus('Looking for local SAP GUI system configuration.', 'progress', output, 'Setup'));
@@ -721,11 +765,11 @@ export async function runSetup({
       ]
     }, { input, output });
     if (choice !== 'manual') return await exitWithoutDestinations();
-    selected = await runManualEntryWizard({ env, input, output, detectAdtUrl });
+    selected = await runManualEntryWizard({ env, input, output, detectAdtUrl, selectSsoBrowser });
     additiveSetup = true;
     if (!selected.length) return await exitWithoutDestinations();
   } else {
-    selected = await chooseDiscoveredDestinations(destinations, { isBas, input, output, env, detectAdtUrl, previousAdtUrls });
+    selected = await chooseDiscoveredDestinations(destinations, { isBas, input, output, env, detectAdtUrl, previousAdtUrls, selectSsoBrowser });
     additiveSetup = selected.length > 0;
   }
 
