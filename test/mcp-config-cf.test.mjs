@@ -190,14 +190,16 @@ test('writes local SAP GUI SSO entries without username or password inputs', asy
     client: '100',
     systemId: 'S4H',
     authentication: 'SSO',
-    childEnv: { SAP_AUTH_MODE: 'sso' },
+    childEnv: { SAP_AUTH_MODE: 'sso', SAP_BROWSER_EXEC: '/browser/chrome' },
     inputs: []
   }], { env: { PATH: directory }, path });
 
   assert.equal(installed.servers['s4h-100'].env.SAP_AUTH_MODE, 'sso');
+  assert.equal(installed.servers['s4h-100'].env.SAP_BROWSER_EXEC, '/browser/chrome');
   assert.equal(installed.servers['s4h-100'].env.SAP_USER, undefined);
   assert.equal(installed.servers['s4h-100'].env.SAP_PASSWORD, undefined);
   const config = await readMcpConfig(path);
+  assert.equal(config.servers['s4h-100'].env.SAP_BROWSER_EXEC, '/browser/chrome');
   assert.deepEqual(config.inputs || [], []);
 });
 

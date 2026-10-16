@@ -495,6 +495,7 @@ test('manual SSO entry without a port takes the ADT URL that port detection foun
     input,
     output,
     discoverLocalSapGui: async () => [],
+    discoverSsoBrowsers: async () => ({ browsers: [{ name: 'Microsoft Edge', path: '/browser/edge' }], unavailable: [] }),
     detectAdtUrl: async target => { probes.push(target); return { url: 'https://q7c.example:44310', reason: '' }; },
     install: async selected => { installed.push(...selected); return { servers: {} }; }
   });
@@ -503,8 +504,88 @@ test('manual SSO entry without a port takes the ADT URL that port detection foun
   await pending;
   assert.deepEqual(probes, [{ url: 'https://q7c.example', client: '100' }]);
   assert.equal(installed[0].childEnv.SAP_AUTH_MODE, 'sso');
+  assert.equal(installed[0].childEnv.SAP_BROWSER_EXEC, '/browser/edge');
   assert.equal(installed[0].url, 'https://q7c.example:44310');
   assert.match(output.text(), /ADT answers at https:\/\/q7c\.example:44310/);
+});
+
+test('SSO setup offers remotely controllable browsers and applies the choice to every SAP client', async () => {
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = manualWizardOutput();
+  const installed = [];
+  const pending = runSetup({
+    env: { HOME: '/tmp/manual-sso-browser-choice-test', SAP_AI_DEV_TOOLKIT_ENABLE_WINDOWS_SSO_SETUP: 'true' },
+    input,
+    output,
+    discoverLocalSapGui: async () => [],
+    discoverSsoBrowsers: async () => ({
+      browsers: [
+        { name: 'Microsoft Edge', path: '/browser/edge' },
+        { name: 'Google Chrome', path: '/browser/chrome' }
+      ],
+      unavailable: [{ name: 'Brave', path: '/browser/brave', reason: 'DevTools is disabled' }]
+    }),
+    detectAdtUrl: async () => ({ url: 'https://q7c.example:44310', reason: '' }),
+    install: async selected => { installed.push(...selected); return { servers: {} }; }
+  });
+  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example:44310\r', '100,200\r', '\r', '2\r', 'n\r']);
+  await pending;
+  assert.equal(installed.length, 2);
+  assert.deepEqual(installed.map(destination => destination.client), ['100', '200']);
+  assert.deepEqual(installed.map(destination => destination.childEnv.SAP_BROWSER_EXEC), ['/browser/chrome', '/browser/chrome']);
+  assert.match(output.text(), /Browser for SSO \(Q7C\)/);
+});
+
+test('SSO setup warns and continues without pinning when no browser is remotely controllable', async () => {
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = manualWizardOutput();
+  const installed = [];
+  const pending = runSetup({
+    env: { HOME: '/tmp/manual-sso-no-browser-test', SAP_AI_DEV_TOOLKIT_ENABLE_WINDOWS_SSO_SETUP: 'true' },
+    input,
+    output,
+    discoverLocalSapGui: async () => [],
+    discoverSsoBrowsers: async () => ({
+      browsers: [],
+      unavailable: [{ name: 'Microsoft Edge', path: '/browser/edge', reason: 'DevTools is disabled' }]
+    }),
+    detectAdtUrl: async () => ({ url: 'https://q7c.example:44310', reason: '' }),
+    install: async selected => { installed.push(...selected); return { servers: {} }; }
+  });
+  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example:44310\r', '100\r', '\r', 'n\r']);
+  await pending;
+  assert.equal(installed.length, 1);
+  assert.equal(installed[0].childEnv.SAP_BROWSER_EXEC, undefined);
+  assert.match(output.text(), /No remotely controllable SSO browser was found/);
+});
+
+test('discovered local SSO destinations persist the selected remotely controllable browser', async () => {
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = manualWizardOutput();
+  const installed = [];
+  const pending = runSetup({
+    env: { HOME: '/tmp/discovered-sso-browser-choice-test', SAP_AI_DEV_TOOLKIT_ENABLE_WINDOWS_SSO_SETUP: 'true' },
+    input,
+    output,
+    discoverLocalSapGui: async () => [{ name: 'A4H', host: 'a4h.example', systemId: 'A4H', instance: '00', client: '100' }],
+    discoverSsoBrowsers: async () => ({ browsers: [
+      { name: 'Microsoft Edge', path: '/browser/edge' },
+      { name: 'Google Chrome', path: '/browser/chrome' }
+    ], unavailable: [] }),
+    detectAdtUrl: async () => ({ url: 'https://a4h.example:44300', reason: '' }),
+    install: async selected => { installed.push(...selected); return { servers: {} }; }
+  });
+  await answerManualWizard(input, [' \r', '100\r', 'https://a4h.example:44300\r', '\r', '2\r']);
+  await pending;
+  assert.equal(installed.length, 1);
+  assert.equal(installed[0].authentication, 'SSO');
+  assert.equal(installed[0].childEnv.SAP_BROWSER_EXEC, '/browser/chrome');
 });
 
 test('SSO port detection sweeps every port, then asks until a port answers', async () => {
@@ -519,6 +600,7 @@ test('SSO port detection sweeps every port, then asks until a port answers', asy
     input,
     output,
     discoverLocalSapGui: async () => [],
+    discoverSsoBrowsers: async () => ({ browsers: [{ name: 'Microsoft Edge', path: '/browser/edge' }], unavailable: [] }),
     detectAdtUrl: async target => {
       probes.push(target);
       return target.ports?.[0] === 8422 ? { url: 'https://q7c.example:8422', reason: '' } : { url: '', reason: 'no port answered on q7c.example' };
@@ -549,6 +631,7 @@ test('long port scans show a short spinner with elapsed time instead of a frozen
     input,
     output,
     discoverLocalSapGui: async () => [],
+    discoverSsoBrowsers: async () => ({ browsers: [{ name: 'Microsoft Edge', path: '/browser/edge' }], unavailable: [] }),
     detectAdtUrl: () => new Promise(resolve => setTimeout(() => resolve({ url: 'https://q7c.example:44310', reason: '' }), 1300)),
     install: async () => ({ servers: {} })
   });

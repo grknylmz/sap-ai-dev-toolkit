@@ -1,8 +1,9 @@
-import { execFile } from 'node:child_process';
-import { access, constants } from 'node:fs/promises';
-import { homedir } from 'node:os';
-import { posix, win32 } from 'node:path';
+import { execFile, spawn } from 'node:child_process';
+import { access, constants, mkdtemp, rm } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { join, posix, win32 } from 'node:path';
 import { promisify } from 'node:util';
+import { WebSocket } from 'undici';
 
 const execFileAsync = promisify(execFile);
 
@@ -57,6 +58,155 @@ async function fileExists(path) {
   } catch {
     return false;
   }
+}
+
+function remoteDebuggingEndpoint(output) {
+  return /DevTools listening on (ws:\/\/[^\s]+)/.exec(output)?.[1] || '';
+}
+
+function waitForRemoteDebuggingEndpoint(child, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let output = '';
+    let settled = false;
+    const finish = (error, endpoint) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      child.stdout?.off('data', onData);
+      child.stderr?.off('data', onData);
+      child.off('error', onError);
+      child.off('close', onClose);
+      if (error) reject(error);
+      else resolve(endpoint);
+    };
+    const onData = chunk => {
+      output = `${output}${chunk}`.slice(-8192);
+      const endpoint = remoteDebuggingEndpoint(output);
+      if (endpoint) finish(null, endpoint);
+    };
+    const onError = error => finish(error);
+    const onClose = (code, signal) => finish(new Error(`browser exited before exposing DevTools (code ${code ?? 'unknown'}, signal ${signal || 'none'})`));
+    const timer = setTimeout(() => finish(new Error(`browser did not expose DevTools within ${timeoutMs}ms`)), timeoutMs);
+    child.stdout?.on('data', onData);
+    child.stderr?.on('data', onData);
+    child.once('error', onError);
+    child.once('close', onClose);
+  });
+}
+
+function controlBrowser(endpoint, timeoutMs) {
+  const url = new URL(endpoint);
+  if (url.protocol !== 'ws:' || !['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname)) {
+    throw new Error('browser exposed a non-local DevTools endpoint');
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const socket = new WebSocket(url.href);
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try { socket.close(); } catch {}
+      if (error) reject(error);
+      else resolve();
+    };
+    const timer = setTimeout(() => finish(new Error(`DevTools command timed out after ${timeoutMs}ms`)), timeoutMs);
+    socket.addEventListener('open', () => socket.send(JSON.stringify({ id: 1, method: 'Browser.getVersion' })));
+    socket.addEventListener('message', event => {
+      let response;
+      try { response = JSON.parse(event.data); }
+      catch { return finish(new Error('DevTools returned an invalid response')); }
+      if (response.id !== 1) return;
+      if (response.error) return finish(new Error(response.error.message || 'DevTools rejected Browser.getVersion'));
+      if (!response.result?.product) return finish(new Error('DevTools returned no browser version'));
+      finish();
+    });
+    socket.addEventListener('error', () => finish(new Error('could not connect to the browser DevTools endpoint')));
+    socket.addEventListener('close', () => {
+      if (!settled) finish(new Error('browser closed the DevTools connection'));
+    });
+  });
+}
+
+function waitForClose(child, timeoutMs) {
+  return new Promise(resolve => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve(true);
+    const timer = setTimeout(() => {
+      child.off('close', onClose);
+      resolve(false);
+    }, timeoutMs);
+    const onClose = () => {
+      clearTimeout(timer);
+      resolve(true);
+    };
+    child.once('close', onClose);
+  });
+}
+
+async function signalBrowserTree(child, platform, signal) {
+  if (platform === 'win32' && child.pid) {
+    try {
+      await execFileAsync('taskkill', [
+        '/pid', String(child.pid), '/t',
+        ...(signal === 'SIGKILL' ? ['/f'] : [])
+      ], { windowsHide: true, timeout: 1000 });
+      return;
+    } catch {}
+  }
+  try {
+    if (platform !== 'win32' && child.pid) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch {
+    try { child.kill(signal); } catch {}
+  }
+}
+
+async function stopBrowser(child, platform) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  await signalBrowserTree(child, platform, 'SIGTERM');
+  if (await waitForClose(child, 1000)) return;
+  await signalBrowserTree(child, platform, 'SIGKILL');
+  await waitForClose(child, 1000);
+}
+
+export async function probeSsoBrowser(browser, {
+  platform = process.platform,
+  timeoutMs = 5000,
+  spawnBrowser = spawn,
+  controlRemote = controlBrowser
+} = {}) {
+  let profile;
+  let child;
+  try {
+    profile = await mkdtemp(join(tmpdir(), 'sap-ai-dev-sso-probe-'));
+    child = spawnBrowser(browser.path, [
+      `--user-data-dir=${profile}`,
+      '--remote-debugging-port=0',
+      '--headless=new',
+      '--no-first-run',
+      '--no-default-browser-check',
+      'about:blank'
+    ], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, detached: platform !== 'win32' });
+    const endpoint = await waitForRemoteDebuggingEndpoint(child, timeoutMs);
+    await controlRemote(endpoint, timeoutMs);
+    return { usable: true };
+  } catch (error) {
+    const reason = String(error?.message || error).replace(/\s+/g, ' ').slice(0, 240);
+    return { usable: false, reason };
+  } finally {
+    await stopBrowser(child, platform);
+    if (profile) await rm(profile, { recursive: true, force: true });
+  }
+}
+
+export async function findRemoteControllableSsoBrowsers({ probe = probeSsoBrowser, ...options } = {}) {
+  const candidates = await findSsoBrowsers(options);
+  const results = await Promise.all(candidates.map(async browser => ({ browser, ...await probe(browser) })));
+  return {
+    browsers: results.filter(result => result.usable).map(result => result.browser),
+    unavailable: results.filter(result => !result.usable).map(({ browser, reason }) => ({ ...browser, reason }))
+  };
 }
 
 // Every Chromium-based browser the runtime can drive, best first; SAP_BROWSER_EXEC pins one ahead of the rest.

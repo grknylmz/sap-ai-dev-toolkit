@@ -620,10 +620,30 @@ index 0000000..5e880bd
 +	}
 +}
 diff --git a/pkg/adt/http.go b/pkg/adt/http.go
-index 0b4d9f1..3473536 100755
+index 0b4d9f1..f0b5b51 100755
 --- a/pkg/adt/http.go
 +++ b/pkg/adt/http.go
-@@ -499,6 +499,7 @@ func (t *Transport) fetchCSRFTokenFor(ctx context.Context, stateful bool) error
+@@ -313,7 +313,7 @@ func (t *Transport) request(ctx context.Context, path string, opts *RequestOptio
+ 	// The same expiry reaches a plain read as a successful-looking response that
+ 	// was in fact served by the identity provider. Nothing downstream would
+ 	// recognise the logon page it carries, so catch it here by origin.
+-	if resp.StatusCode < 400 && t.canReauth() && t.redirectedAwayFromSAP(resp) {
++	if t.canReauth() && ((resp.StatusCode < 400 && t.redirectedAwayFromSAP(resp)) || isSSOLoginResponse(resp, body)) {
+ 		t.setCSRFToken("")
+ 		t.setSessionID("")
+ 		if err := t.callReauthFunc(ctx); err != nil {
+@@ -448,6 +448,10 @@ func (t *Transport) retryRequest(ctx context.Context, path string, opts *Request
+ 	}
+ 	traceHTTPResponse(resp, body)
+ 
++	if t.canReauth() && (t.redirectedAwayFromSAP(resp) || isSSOLoginResponse(resp, body)) {
++		return nil, fmt.Errorf("SSO session is still unauthenticated after re-authentication on %s", path)
++	}
++
+ 	if resp.StatusCode >= 400 {
+ 		return nil, &APIError{
+ 			StatusCode: resp.StatusCode,
+@@ -499,6 +503,7 @@ func (t *Transport) fetchCSRFTokenFor(ctx context.Context, stateful bool) error
  // allowReauth exists to break a cycle: re-authenticating ends with a token
  // fetch of its own, and that fetch must not start another re-authentication.
  func (t *Transport) fetchCSRFTokenWithReauth(ctx context.Context, allowReauth bool, stateful bool) error {
@@ -631,7 +651,7 @@ index 0b4d9f1..3473536 100755
  	token, status, redirected, err := t.probeCSRFToken(ctx, http.MethodHead, stateful)
  	if err != nil {
  		return err
-@@ -513,6 +514,29 @@ func (t *Transport) fetchCSRFTokenWithReauth(ctx context.Context, allowReauth bo
+@@ -513,6 +518,29 @@ func (t *Transport) fetchCSRFTokenWithReauth(ctx context.Context, allowReauth bo
  		if err != nil {
  			return err
  		}
@@ -661,7 +681,16 @@ index 0b4d9f1..3473536 100755
  		if !isCSRFToken(token) {
  			// An expired SSO session rarely announces itself as a 401. ICF sends
  			// the request on to the identity provider, the redirect chain is
-@@ -537,6 +561,9 @@ func (t *Transport) fetchCSRFTokenWithReauth(ctx context.Context, allowReauth bo
+@@ -520,7 +548,7 @@ func (t *Transport) fetchCSRFTokenWithReauth(ctx context.Context, allowReauth bo
+ 			// 200 — with no CSRF token in it, because it is not ADT answering.
+ 			// A live ADT session always yields a token, so its absence here is
+ 			// the signal, and a hop to a foreign host is the confirmation.
+-			if allowReauth && t.canReauth() && getStatus != http.StatusForbidden {
++			if allowReauth && t.canReauth() && (getStatus != http.StatusForbidden || redirected || getRedirected) {
+ 				reason := fmt.Sprintf("no CSRF token (HEAD %d, GET %d)", status, getStatus)
+ 				if redirected || getRedirected {
+ 					reason = "the identity provider answered instead of SAP"
+@@ -537,6 +565,9 @@ func (t *Transport) fetchCSRFTokenWithReauth(ctx context.Context, allowReauth bo
  				}
  				return t.fetchCSRFTokenWithReauth(ctx, false, stateful)
  			}
@@ -671,7 +700,7 @@ index 0b4d9f1..3473536 100755
  			switch getStatus {
  			case http.StatusUnauthorized:
  				return fmt.Errorf("authentication failed (401): check username/password")
-@@ -556,7 +583,11 @@ func (t *Transport) fetchCSRFTokenWithReauth(ctx context.Context, allowReauth bo
+@@ -556,7 +587,11 @@ func (t *Transport) fetchCSRFTokenWithReauth(ctx context.Context, allowReauth bo
  // returns the token (empty when the server did not supply one), the status, and
  // whether the answer came from somewhere other than the SAP host.
  func (t *Transport) probeCSRFToken(ctx context.Context, method string, stateful bool) (token string, status int, redirected bool, err error) {
@@ -684,6 +713,42 @@ index 0b4d9f1..3473536 100755
  	if err != nil {
  		return "", 0, false, fmt.Errorf("building URL: %w", err)
  	}
+@@ -596,12 +631,34 @@ func (t *Transport) probeCSRFToken(ctx context.Context, method string, stateful
+ 		return "", 0, false, fmt.Errorf("executing request: %w", err)
+ 	}
+ 	defer resp.Body.Close()
++	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
++	if err != nil {
++		return "", 0, false, fmt.Errorf("reading CSRF response: %w", err)
++	}
+ 	// Drain the body so the connection can be reused.
+ 	_, _ = io.Copy(io.Discard, resp.Body)
+ 	traceHTTPResponse(resp, nil)
+ 	t.adoptServerCookies(resp)
+ 
+-	return resp.Header.Get("X-CSRF-Token"), resp.StatusCode, t.redirectedAwayFromSAP(resp), nil
++	return resp.Header.Get("X-CSRF-Token"), resp.StatusCode, t.redirectedAwayFromSAP(resp) || isSSOLoginResponse(resp, body), nil
++}
++
++func isSSOLoginResponse(resp *http.Response, body []byte) bool {
++	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
++		return false
++	}
++	page := strings.ToLower(strings.TrimSpace(string(body)))
++	html := strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/html") ||
++		strings.HasPrefix(page, "<!doctype html") || strings.HasPrefix(page, "<html")
++	if !html || !strings.Contains(page, "<form") {
++		return false
++	}
++	for _, marker := range []string{"samlrequest", "samlresponse", "sap-system-login", "sap-password", `type="password"`, `type='password'`} {
++		if strings.Contains(page, marker) {
++			return true
++		}
++	}
++	return false
+ }
+ 
+ // redirectedAwayFromSAP reports whether a response was ultimately served by
 diff --git a/pkg/adt/http_csrf_discovery_test.go b/pkg/adt/http_csrf_discovery_test.go
 new file mode 100644
 index 0000000..80741da
@@ -746,6 +811,98 @@ index 0000000..80741da
 +	}
 +}
 +
+diff --git a/pkg/adt/http_sso_same_host_test.go b/pkg/adt/http_sso_same_host_test.go
+new file mode 100644
+index 0000000..0c39b96
+--- /dev/null
++++ b/pkg/adt/http_sso_same_host_test.go
+@@ -0,0 +1,86 @@
++package adt
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++)
++
++func TestSameHostLoginPageRefreshesSSO(t *testing.T) {
++	for _, method := range []string{http.MethodGet, http.MethodPost} {
++		for _, status := range []int{http.StatusOK, http.StatusUnauthorized, http.StatusForbidden} {
++			t.Run(method+"/"+http.StatusText(status), func(t *testing.T) {
++				refreshes := 0
++				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					cookie, err := r.Cookie("SAP_SESSIONID")
++					if err != nil || cookie.Value != "fresh" {
++						w.Header().Set("Content-Type", "text/html; charset=utf-8")
++						w.WriteHeader(status)
++						_, _ = io.WriteString(w, `<html><body><form action="/sap/saml2/sp/acs"><input name="SAMLRequest" value="fixture"></form></body></html>`)
++						return
++					}
++					w.Header().Set("X-CSRF-Token", "fresh-token")
++					w.Header().Set("Content-Type", "application/xml")
++					_, _ = io.WriteString(w, "<source>authenticated</source>")
++				}))
++				defer server.Close()
++				transport := NewTransportWithClient(&Config{
++					BaseURL: server.URL,
++					Cookies: map[string]string{"SAP_SESSIONID": "expired"},
++					ReauthFunc: func(context.Context) (map[string]string, error) {
++						refreshes++
++						return map[string]string{"SAP_SESSIONID": "fresh"}, nil
++					},
++				}, server.Client())
++				response, err := transport.Request(context.Background(), "/sap/bc/adt/source", &RequestOptions{Method: method})
++				if err != nil {
++					t.Fatalf("request failed: %v", err)
++				}
++				if refreshes != 1 || string(response.Body) != "<source>authenticated</source>" {
++					t.Fatalf("refreshes=%d body=%q, want one SSO refresh and authenticated source", refreshes, response.Body)
++				}
++			})
++		}
++	}
++}
++
++func TestOrdinaryForbiddenDoesNotRefreshSSO(t *testing.T) {
++	refreshes := 0
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		w.WriteHeader(http.StatusForbidden)
++		_, _ = io.WriteString(w, "Missing development authorization")
++	}))
++	defer server.Close()
++	transport := NewTransportWithClient(&Config{BaseURL: server.URL, ReauthFunc: func(context.Context) (map[string]string, error) {
++		refreshes++
++		return nil, nil
++	}}, server.Client())
++	_, err := transport.Request(context.Background(), "/sap/bc/adt/source", &RequestOptions{Method: http.MethodGet})
++	if err == nil || refreshes != 0 {
++		t.Fatalf("err=%v refreshes=%d, want authorization error without SSO refresh", err, refreshes)
++	}
++}
++
++func TestSSOLoginPageAfterRefreshFailsWithoutLoop(t *testing.T) {
++	refreshes := 0
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if r.URL.Path == "/sap/bc/adt/source" {
++			w.Header().Set("Content-Type", "text/html")
++			_, _ = io.WriteString(w, `<html><form><input type="password"></form></html>`)
++			return
++		}
++		w.Header().Set("X-CSRF-Token", "fresh-token")
++	}))
++	defer server.Close()
++	transport := NewTransportWithClient(&Config{BaseURL: server.URL, ReauthFunc: func(context.Context) (map[string]string, error) {
++		refreshes++
++		return map[string]string{"SAP_SESSIONID": "fresh"}, nil
++	}}, server.Client())
++	_, err := transport.Request(context.Background(), "/sap/bc/adt/source", &RequestOptions{Method: http.MethodGet})
++	if err == nil || !strings.Contains(err.Error(), "still unauthenticated") || refreshes != 1 {
++		t.Fatalf("err=%v refreshes=%d, want explicit failure after one refresh", err, refreshes)
++	}
++}
 diff --git a/pkg/adt/servicebinding_publish_test.go b/pkg/adt/servicebinding_publish_test.go
 new file mode 100644
 index 0000000..93c19f9
