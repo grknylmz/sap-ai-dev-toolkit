@@ -344,7 +344,7 @@ test('harness MCP paths target supported user-level JSON configs', () => {
   assert.equal(harnessMcpConfigPath('gemini-cli', { home }), join(home, '.gemini', 'settings.json'));
   assert.equal(harnessMcpConfigPath('omp', { home }), join(home, '.omp', 'agent', 'mcp.json'));
   assert.equal(harnessMcpConfigPath('pi-coding-agent', { home }), join(home, '.pi', 'agent', 'mcp.json'));
-  assert.equal(harnessMcpConfigPath('windsurf', { home }), join(home, '.config', 'devin', 'mcp_config.json'));
+  assert.equal(harnessMcpConfigPath('windsurf', { home, env: {} }), join(home, '.config', 'devin', 'mcp_config.json'));
   assert.equal(harnessMcpConfigPath('windsurf', { home, env: { XDG_CONFIG_HOME: join('/', 'xdg') } }), join('/', 'xdg', 'devin', 'mcp_config.json'));
   assert.equal(harnessMcpConfigPath('windsurf', { home, env: { APPDATA: join('/', 'appdata') }, platform: 'win32' }), join('/', 'appdata', 'devin', 'mcp_config.json'));
   assert.equal(harnessMcpConfigPath('windsurf', { home, env: {}, platform: 'win32' }), join(home, 'AppData', 'Roaming', 'devin', 'mcp_config.json'));
