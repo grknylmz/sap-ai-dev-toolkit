@@ -137,7 +137,7 @@ async function withLiveClient(t) {
   return client;
 }
 
-test('live S4H MCP exposes a curated ABAP lifecycle surface up to 68 tools', { skip: LIVE ? false : 'set SAP_AI_DEV_LIVE_S4H=1 to run against a live BAS/S4H destination' }, async t => {
+test('live S4H MCP exposes a curated ABAP lifecycle surface up to 72 tools', { skip: LIVE ? false : 'set SAP_AI_DEV_LIVE_S4H=1 to run against a live BAS/S4H destination' }, async t => {
   const client = await withLiveClient(t);
   const listed = await client.request('tools/list', {});
   const tools = listed.tools || [];
@@ -145,17 +145,17 @@ test('live S4H MCP exposes a curated ABAP lifecycle surface up to 68 tools', { s
   const toolName = name => snakeCaseName(name);
 
   assert.ok(tools.length > 25, `expected a useful ABAP lifecycle surface, got ${tools.length}`);
-  assert.ok(tools.length <= 68, `curated destination tool count must stay at or below 68, got ${tools.length}`);
+  assert.ok(tools.length <= 72, `curated destination tool count must stay at or below 72, got ${tools.length}`);
   assert.ok(tools.every(tool => !tool.name.startsWith(`${SLUG}_`)), 'single-destination tools are unprefixed; the server identity selects the destination');
 
   for (const required of [
     'LintABAP', 'GetSystemInfo', 'GetConnectionInfo', 'GetFeatures',
     'SearchObject', 'GrepObjects', 'GrepPackages', 'GetSource', 'WriteSource', 'EditSource', 'CompareSource',
     'SyntaxCheck', 'PrettyPrint', 'Activate', 'RunUnitTests', 'RunATCCheck', 'GetInactiveObjects',
-    'GetClass', 'GetProgram', 'GetPackage', 'GetTable', 'GetTableContents', 'RunQuery',
+    'GetClass', 'GetProgram', 'GetPackage', 'GetStructure', 'GetTypeInfo', 'GetMessages', 'GetTable', 'GetTableContents', 'RunQuery',
     'GetTransport', 'GetTransportInfo', 'ListTransports', 'CreateTransport', 'LockObject', 'UnlockObject',
     'GetApplicationLog', 'PrepareABAPChangeSet', 'ApplyABAPChangeSet', 'CheckTransportReadiness', 'PlanABAPCloudMigration',
-    'CreateObject', 'CreateTable', 'PublishServiceBinding', 'UnpublishServiceBinding', 'UI5ListApps', 'UI5GetApp', 'UI5GetFileContent'
+    'CreateObject', 'CreatePackage', 'CreateTable', 'PublishServiceBinding', 'UnpublishServiceBinding', 'UI5ListApps', 'UI5GetApp', 'UI5GetFileContent'
   ]) {
     assert.ok(names.has(toolName(required)), `expected curated lifecycle tool ${required}`);
   }

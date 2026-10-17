@@ -238,7 +238,7 @@ test('merges paged tools and routes calls to the selected child', async t => {
     }
   }
   assert.equal(listed.result.tools.filter(tool => tool.name.startsWith('alpha_')).length, PUBLIC_VSP_TOOLS.size + localWorkflowTools.length);
-  assert.equal(PUBLIC_VSP_TOOLS.size + localWorkflowTools.length, 68);
+  assert.equal(PUBLIC_VSP_TOOLS.size + localWorkflowTools.length, 72);
   for (const tool of listed.result.tools) {
     assert.match(tool.name, /^[a-z0-9_-]+$/, `public tool names must be lowercase: ${tool.name}`);
     assert.ok(tool.name.length <= 128, `public tool names must stay within the MCP limit: ${tool.name}`);
@@ -253,6 +253,10 @@ test('merges paged tools and routes calls to the selected child', async t => {
     GetUserTransports: [],
     GetTransportInfo: ['object_url', 'dev_class'],
     ActivateMultiple: ['objects'],
+    CreatePackage: ['name', 'description'],
+    GetStructure: ['structure_name'],
+    GetTypeInfo: ['type_name'],
+    GetMessages: ['message_class'],
     GetApplicationLog: []
   };
   for (const [toolName, required] of Object.entries(requiredArguments)) {
@@ -294,6 +298,10 @@ test('merges paged tools and routes calls to the selected child', async t => {
       type: 'delete',
       params: { type: 'delete' }
     }],
+    ['CreatePackage', { name: '$ZPROXY_TEST', description: 'Proxy package visibility fixture' }],
+    ['GetStructure', { structure_name: 'ZPROXY_STRUCT' }],
+    ['GetTypeInfo', { type_name: 'ZPROXY_TYPE' }],
+    ['GetMessages', { message_class: 'ZPROXY_MSG' }],
     ['ActivateMultiple', { objects: ['PROG ZDEMO'] }],
     ['CreateTable', {
       name: 'ZPROXY_TOOL_TEST',

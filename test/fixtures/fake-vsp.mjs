@@ -184,6 +184,20 @@ function toolDefinition(name) {
       properties: { object_url: { type: 'string' }, dev_class: { type: 'string' } },
       required: ['object_url', 'dev_class']
     },
+    CreatePackage: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        description: { type: 'string' },
+        parent: { type: 'string' },
+        transport: { type: 'string' },
+        software_component: { type: 'string' }
+      },
+      required: ['name', 'description']
+    },
+    GetStructure: { type: 'object', properties: { structure_name: { type: 'string' } }, required: ['structure_name'] },
+    GetTypeInfo: { type: 'object', properties: { type_name: { type: 'string' } }, required: ['type_name'] },
+    GetMessages: { type: 'object', properties: { message_class: { type: 'string' } }, required: ['message_class'] },
     GetUserTransports: {
       type: 'object',
       properties: { user_name: { type: 'string' } },
