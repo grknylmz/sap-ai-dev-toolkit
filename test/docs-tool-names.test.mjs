@@ -54,7 +54,7 @@ function isToolShaped(token) {
 
 test('agents and skills only reference tools from the curated tools.md surface', async () => {
   const curated = await curatedToolNames();
-  assert.equal(curated.size, 72, 'tools.md curated sections must list 59 upstream + 9 workflow + 4 HANA tools');
+  assert.equal(curated.size, 73, 'tools.md curated sections must list 60 upstream + 9 workflow + 4 HANA tools');
 
   const drift = [];
   for (const path of await assetPaths()) {

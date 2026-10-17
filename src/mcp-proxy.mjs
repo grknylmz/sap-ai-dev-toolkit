@@ -78,6 +78,7 @@ export const PUBLIC_VSP_TOOLS = new Set([
   'ActivateMultiple',
   'CompareSource',
   'CreateObject',
+  'CreateTable',
   'CreateTransport',
   'DebuggerAttach',
   'DebuggerDetach',

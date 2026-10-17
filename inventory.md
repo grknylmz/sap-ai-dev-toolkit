@@ -6,14 +6,14 @@ This inventory reflects the current SAP AI Dev Toolkit proxy behavior in `src/mc
 
 | Status | Count | Notes |
 | --- | ---: | --- |
-| Upstream tools | Up to 59 | Curated from the child tool list and exposed in lowercase snake_case, unprefixed (`get_source`) on single-destination servers; a destination slug prefix (`demo-abap_get_source`) appears only when one server fronts multiple destinations. |
+| Upstream tools | Up to 60 | Curated from the child tool list and exposed in lowercase snake_case, unprefixed (`get_source`) on single-destination servers; a destination slug prefix (`demo-abap_get_source`) appears only when one server fronts multiple destinations. |
 | Local lint tool | 1 per destination | `LintABAP` analyzes caller-supplied ABAP source in memory; it is exposed publicly as `lint_abap`. |
 | Workflow tools | Up to 6 per destination | Review/apply change sets, transport evidence, Clean Core release assessment, and read-only RAP regression suites. Some are exposed only when their upstream capabilities are registered. |
 | Convenience mapping | Dynamic | `GetApplicationLog` maps to the upstream `SAP(action="analyze", type="application_log")` operation when the SAP router is registered. |
 | Intentionally filtered tools | Dynamic | Destructive, broad-router, trace, and unsupported operations are hidden from direct calls. |
 | Mode-dependent | Dynamic | Focused/expert mode and backend capabilities determine which tools are registered. |
 
-The maximum fixture surface is 67 tools per destination when expert-mode capabilities and all local workflows are available. Multiple selected destinations create separate MCP servers; this add-on cannot inspect VS Code's aggregate tool budget or per-chat tool binding.
+The maximum fixture surface is 68 tools per destination when expert-mode capabilities and all local workflows are available. Multiple selected destinations create separate MCP servers; this add-on cannot inspect VS Code's aggregate tool budget or per-chat tool binding.
 
 ## Known upstream tools
 

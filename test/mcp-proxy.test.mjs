@@ -238,7 +238,7 @@ test('merges paged tools and routes calls to the selected child', async t => {
     }
   }
   assert.equal(listed.result.tools.filter(tool => tool.name.startsWith('alpha_')).length, PUBLIC_VSP_TOOLS.size + localWorkflowTools.length);
-  assert.equal(PUBLIC_VSP_TOOLS.size + localWorkflowTools.length, 67);
+  assert.equal(PUBLIC_VSP_TOOLS.size + localWorkflowTools.length, 68);
   for (const tool of listed.result.tools) {
     assert.match(tool.name, /^[a-z0-9_-]+$/, `public tool names must be lowercase: ${tool.name}`);
     assert.ok(tool.name.length <= 128, `public tool names must stay within the MCP limit: ${tool.name}`);
@@ -295,6 +295,12 @@ test('merges paged tools and routes calls to the selected child', async t => {
       params: { type: 'delete' }
     }],
     ['ActivateMultiple', { objects: ['PROG ZDEMO'] }],
+    ['CreateTable', {
+      name: 'ZPROXY_TOOL_TEST',
+      description: 'Proxy tool visibility fixture',
+      package: '$TMP',
+      fields: '[{"name":"ID","type":"CHAR32","key":true}]'
+    }],
     ['CreateTransport', {}]
   ];
   for (const [index, [name, arguments_]] of additionalCalls.entries()) {

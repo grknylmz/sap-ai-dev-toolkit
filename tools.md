@@ -1,6 +1,6 @@
 # Curated SAP tools exposed through the BAS proxy
 
-The proxy no longer advertises every tool provided by the SAP runtime. To keep the developer-lifecycle MCP surface manageable, each generated one-destination server exposes a curated set of upstream tools plus local workflow tools (currently 67 tools when all upstream capabilities are registered).
+The proxy no longer advertises every tool provided by the SAP runtime. To keep the developer-lifecycle MCP surface manageable, each generated one-destination server exposes a curated set of upstream tools plus local workflow tools (currently 68 tools when all upstream capabilities are registered).
 
 The names below are the logical tool names. Publicly they are exposed in lowercase snake_case without a prefix (`get_table_contents`, `run_query`) because each generated MCP server is scoped to one destination; only when a single server fronts multiple destinations does each name gain its destination slug (`demo-abap_get_table_contents`) to stay unambiguous. BAS/VS Code chat tool references bind only lowercase identifiers, so mixed-case names never reach the model.
 
@@ -12,6 +12,7 @@ Hidden upstream tools are not directly callable through the proxy. Local workflo
 - `ActivateMultiple`
 - `CompareSource`
 - `CreateObject`
+- `CreateTable`
 - `CreateTransport`
 - `DebuggerAttach`
 - `DebuggerDetach`
@@ -67,6 +68,8 @@ Hidden upstream tools are not directly callable through the proxy. Local workflo
 - `UnlockObject`
 - `UnpublishServiceBinding`
 - `WriteSource`
+
+`CreateTable` creates a transparent DDIC table, writes its generated DDL source, and activates it. The upstream VSP package and transport mutation checks still apply. Authorization-object creation is not supported by the pinned backend and remains unavailable.
 
 ## Hidden from direct proxy calls
 
