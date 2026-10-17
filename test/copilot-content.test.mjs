@@ -102,6 +102,19 @@ function assertLocalFirstPolicy(markdown, path) {
   assert.match(markdown, /before (?:they are )?sent to the SAP system|before sending to SAP|check and lint before sending/i, `${path} must require local checks before the SAP transfer`);
 }
 
+function assertProjectLintPreflight(markdown, path) {
+  assert.match(markdown, /LintABAPProject.{0,80}`lint_abap_project`/is, `${path} must name the workspace lint tool and its live MCP name`);
+  assert.match(markdown, /before sending.{0,80}SAP|before (?:the )?SAP transfer/i, `${path} must run workspace lint before SAP transfer`);
+  assert.match(markdown, /configured root|workspace root|workspace directory/i, `${path} must verify the scanned workspace root`);
+  assert.match(markdown, /targetRelease/i, `${path} must verify the configured target release`);
+  assert.match(markdown, /dependencies\.missingFolders/i, `${path} must inspect missing local dependencies`);
+  assert.match(markdown, /syntaxRules\.disabled/i, `${path} must inspect disabled syntax rules`);
+  assert.match(markdown, /status.{0,40}clean|clean.{0,40}status/is, `${path} must gate on the project lint status`);
+  assert.match(markdown, /static analysis only.{0,80}(?:not|does not).{0,30}(?:activation|runtime)/is, `${path} must not equate project lint with SAP activation/runtime evidence`);
+  assert.match(markdown, /exact-source `?LintABAP`?.{0,100}activation|`?LintABAP`?.{0,100}exact object set/is, `${path} must preserve exact-source lint before activation`);
+  assert.match(markdown, /LintABAPProject.{0,250}unavailable.{0,100}(?:report|skipped)/is, `${path} must report when the project tool is unavailable`);
+}
+
 function assertNoUnsafeTransportClaims(markdown, path) {
   const releaseMentions = markdown.match(/ReleaseTransport|release\/deletion|release and deletion|release is unavailable|release action/gi) || [];
   assert.ok(releaseMentions.length > 0 || !/transport/i.test(markdown), `${path} transport guidance should explicitly handle release limitations when transport is discussed`);
@@ -140,6 +153,18 @@ test('all bundled agents enforce lint before ABAP activation', async () => {
     assert.match(markdown, /LintABAP.{0,200}(?:successfully|must succeed)|successful `LintABAP`/is, `${path} must require a successful lint run`);
     assert.match(markdown, /exact (?:reviewed )?(?:object )?set|exact activation request/i, `${path} must scope activation to the linted objects`);
     assert.match(markdown, /(?:activation is never a substitute for testing|must not be used merely to run tests|never activate merely to run tests|never activate.*testing)/i, `${path} must forbid activation as a testing shortcut`);
+  }
+});
+
+test('ABAP-capable agents and skills require the workspace lint preflight when local project sources exist', async () => {
+  const projectLintSkillNames = [...new Set([...abapStyleSkillNames, 'cds-development'])];
+  for (const name of abapStyleAgentNames) {
+    const path = join(agentsRoot, name);
+    assertProjectLintPreflight(await readMarkdown(path), path);
+  }
+  for (const name of projectLintSkillNames) {
+    const path = join(skillsRoot, name, 'SKILL.md');
+    assertProjectLintPreflight(await readMarkdown(path), path);
   }
 });
 
