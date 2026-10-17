@@ -1,7 +1,7 @@
 import { spawn as nodeSpawn } from 'node:child_process';
 import { once } from 'node:events';
 import { sanitizeChildEnv, slugifyDestination } from './bas-discovery.mjs';
-import { ABAP_LINT_TOOL, runABAPLint } from './abaplint.mjs';
+import { ABAP_LINT_PROJECT_TOOL, ABAP_LINT_TOOL, runABAPLint, runABAPLintProject } from './abaplint.mjs';
 import { createEngineeringTools } from './engineering-tools.mjs';
 import { brandedEnvValue } from './branding.mjs';
 import { diagnosticText, redactText } from './redact.mjs';
@@ -698,6 +698,12 @@ export class MCPProxy {
         });
       }
     }
+    const projectLintName = snakeCaseName(ABAP_LINT_PROJECT_TOOL.name);
+    publish(projectLintName, {
+      handler: arguments_ => runABAPLintProject(arguments_, {
+        workspaceRoot: brandedEnvValue(this.env, 'WORKSPACE_ROOT') || process.cwd()
+      })
+    }, { ...ABAP_LINT_PROJECT_TOOL, name: projectLintName });
     if (!merged.length && this.children.length) throw new Error('No destination child provided tools');
     // Swap atomically so a concurrent tools/call never sees a partial map.
     this.namespace = namespace;

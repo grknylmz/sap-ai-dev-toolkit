@@ -107,7 +107,7 @@ async function runDoctor(destinations) {
       // unprefixed (get_source, run_query); match the slug-prefixed form too
       // in case this ever runs against a multi-destination server.
       const toolPrefix = `${slugifyDestination(destination.name)}_`;
-      const localSegments = new Set(['lint_abap', 'get_application_log', 'prepare_abap_change_set', 'apply_abap_change_set', 'check_transport_readiness', 'plan_abap_cloud_migration', 'generate_rap_regression_suite', 'run_rap_regression_suite']);
+      const localSegments = new Set(['lint_abap', 'lint_abap_project', 'get_application_log', 'prepare_abap_change_set', 'apply_abap_change_set', 'check_transport_readiness', 'plan_abap_cloud_migration', 'generate_rap_regression_suite', 'run_rap_regression_suite']);
       const isUpstreamTool = tool => (tool.name.startsWith(toolPrefix) ? tool.name.slice(toolPrefix.length) : tool.name);
       const upstreamCount = tools.filter(tool => !localSegments.has(isUpstreamTool(tool))).length;
       checks.push(doctorRow(destination.name, 'MCP tools/list', upstreamCount ? 'passed' : 'failed', `${upstreamCount} upstream tools and ${tools.length} total MCP tools returned; chat-picker binding is host-managed`));

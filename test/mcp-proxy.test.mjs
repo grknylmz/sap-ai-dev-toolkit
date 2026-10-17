@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -400,6 +400,83 @@ test('runs LintABAP locally and returns parser findings', async t => {
 
   const entries = (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
   assert.equal(entries.some(entry => entry.event === 'call' && entry.name === 'LintABAP'), false);
+});
+
+test('scans a configured workspace locally and reports that activation was not performed', async t => {
+  const { directory, log, proxy } = await fixtureProxy();
+  const projectRoot = join(directory, 'abap-project');
+  await mkdir(projectRoot);
+  await writeFile(join(projectRoot, '.abaplint.jsonc'), '{\n  // Target release for the local syntax pass.\n  "syntax": { "version": { "release": "v758", "language": "Normal" }, },\n}\n');
+  await writeFile(join(projectRoot, 'zparser_error.prog.abap'), 'blah blah.\n');
+  proxy.env.SAP_AI_DEV_TOOLKIT_WORKSPACE_ROOT = projectRoot;
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+
+  await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } });
+  const listed = await proxy.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} });
+  assert.ok(listed.result.tools.some(tool => tool.name === 'lint_abap_project'));
+  const called = await proxy.handle({
+    jsonrpc: '2.0',
+    id: 3,
+    method: 'tools/call',
+    params: { name: 'lint_abap_project', arguments: {} }
+  });
+  assert.equal(called.result.isError, false);
+  const report = JSON.parse(called.result.content[0].text);
+  assert.equal(report.status, 'issues');
+  assert.equal(report.scope, 'workspace-static');
+  assert.equal(report.activation, 'not-performed');
+  assert.equal(report.configSource, '.abaplint.jsonc');
+  assert.equal(report.targetRelease, 'v758');
+  assert.equal(report.filesChecked, 1);
+  assert.ok(report.issues.some(issue => issue.rule === 'parser_error' && issue.filename === 'zparser_error.prog.abap'));
+
+  const entries = (await readFile(log, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
+  assert.equal(entries.some(entry => entry.event === 'call'), false);
+});
+
+test('workspace lint rejects a directory outside its configured root', async t => {
+  const { directory, proxy } = await fixtureProxy();
+  const projectRoot = join(directory, 'abap-project');
+  await mkdir(projectRoot);
+  proxy.env.SAP_AI_DEV_TOOLKIT_WORKSPACE_ROOT = projectRoot;
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+
+  await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } });
+  const called = await proxy.handle({
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'lint_abap_project', arguments: { directory: '../' } }
+  });
+  assert.equal(called.result.isError, true);
+  assert.match(JSON.parse(called.result.content[0].text).error, /relative path inside the configured workspace root/);
+});
+
+test('workspace lint reports incomplete when configured dependency files are missing', async t => {
+  const { directory, proxy } = await fixtureProxy();
+  const projectRoot = join(directory, 'abap-project');
+  await mkdir(projectRoot);
+  await writeFile(join(projectRoot, 'abaplint.json'), JSON.stringify({
+    syntax: { version: { release: 'v758', language: 'Normal' } },
+    dependencies: [{ url: 'https://example.invalid/deps', folder: 'deps', files: '/src/**/*.*' }],
+    rules: { parser_error: true, check_syntax: true }
+  }));
+  await writeFile(join(projectRoot, 'zpreflight.prog.abap'), 'REPORT zpreflight.\n');
+  proxy.env.SAP_AI_DEV_TOOLKIT_WORKSPACE_ROOT = projectRoot;
+  t.after(async () => { await proxy.close(); await rm(directory, { recursive: true, force: true }); });
+
+  await proxy.handle({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05' } });
+  const called = await proxy.handle({
+    jsonrpc: '2.0',
+    id: 2,
+    method: 'tools/call',
+    params: { name: 'lint_abap_project', arguments: {} }
+  });
+  assert.equal(called.result.isError, false);
+  const report = JSON.parse(called.result.content[0].text);
+  assert.equal(report.status, 'incomplete');
+  assert.deepEqual(report.dependencies.missingFolders, ['deps']);
+  assert.equal(report.activation, 'not-performed');
 });
 test('exposes local lint when a destination tool listing fails', async t => {
   const { directory, proxy } = await fixtureProxy();

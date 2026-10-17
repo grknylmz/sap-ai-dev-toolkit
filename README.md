@@ -15,7 +15,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/SAP-Business%20Application%20Studio-0A6ED1?style=flat-square&logo=sap&logoColor=white" alt="SAP Business Application Studio">
-  <img src="https://img.shields.io/badge/AI%20agents-Copilot%20%7C%20Claude%20%7C%20Codex%20%7C%20Cursor%20%7C%20Gemini%20%7C%20opencode%20%7C%20Pi-000000?style=flat-square" alt="Works with GitHub Copilot, Claude Code, OpenAI Codex, Cursor, Gemini CLI, opencode, and Pi Coding Agent">
+  <img src="https://img.shields.io/badge/AI%20agents-Copilot%20%7C%20Claude%20%7C%20Codex%20%7C%20Cursor%20%7C%20Gemini%20%7C%20opencode%20%7C%20Pi%20%7C%20OMP%20%7C%20Cline%20%7C%20Roo%20%7C%20Windsurf-000000?style=flat-square" alt="Works with GitHub Copilot, Claude Code, OpenAI Codex, Cursor, Gemini CLI, opencode, Pi Coding Agent, Oh My Pi, Cline, Roo Code, and Windsurf">
   <img src="https://img.shields.io/badge/MCP-enabled-7B61FF?style=flat-square" alt="MCP enabled">
   <img src="https://img.shields.io/badge/SAP%20ADT-connected-0A6ED1?style=flat-square&logo=sap&logoColor=white" alt="SAP ADT connected">
   <img src="https://img.shields.io/badge/ABAP-CDS%20%7C%20RAP-EA4AAA?style=flat-square" alt="ABAP CDS RAP">
@@ -89,7 +89,7 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 
 **Included skills:** `abap-development` · `abap-testing-quality` · `cds-development` · `rap-development` · `abap-debugging` · `abap-runtime-analysis` · `rap-service-delivery` · `sap-standard-api-analysis` · `clean-core-extensibility` · `sap-sdlc-orchestration` · `sap-transport-release` · `hana-cloud-inspection` · `hana-cloud-native-development` · `hana-cloud-validation`
 
-Agents and skills install for the harnesses you pick during global installation: a multi-select offers GitHub Copilot and Claude Code pre-checked, plus OpenAI Codex, Cursor, Gemini CLI, opencode, and Pi Coding Agent. In non-interactive installs they are installed for GitHub Copilot only; run `sap-ai-dev --setup` afterwards to configure destinations or local SAP GUI systems. Repository-scoped installation instructions appear below.
+Agents and skills install for the harnesses you pick during global installation: a multi-select offers GitHub Copilot and Claude Code pre-checked, plus OpenAI Codex, Cursor, Gemini CLI, opencode, Pi Coding Agent, Oh My Pi (OMP), Cline, Roo Code, and Windsurf / Devin Desktop. In non-interactive installs they are installed for GitHub Copilot only; run `sap-ai-dev --setup` afterwards to configure destinations or local SAP GUI systems. Repository-scoped installation instructions appear below.
 
 ## ✨ Your SAP development cockpit, inside your AI assistant
 
@@ -334,7 +334,7 @@ sap-ai-dev --setup
 5. Choose Windows / smart card SSO or username/password when the prompt is available.
 6. Start each generated MCP server from VS Code's **MCP: List Servers** command.
 
-The same postinstall offers the bundled agents and skills for several AI coding harnesses in a checkbox picker. **GitHub Copilot** and **Claude Code** start pre-checked, so pressing **Enter** alone installs both; **Space** selects or deselects a harness, **a** toggles all seven, and confirming with none selected skips the step without changing files. When MCP setup succeeds, the generated managed MCP servers are also mirrored into selected harnesses that have a stable user-level JSON MCP configuration (Claude Code, Cursor, Gemini CLI, and Pi Coding Agent). GitHub Copilot continues to use the VS Code/BAS MCP configuration written during setup. With no interactive terminal, the assets are installed for GitHub Copilot only; set `SAP_AI_DEV_TOOLKIT_HARNESSES` to a comma-separated list of harness ids (`github-copilot`, `claude-code`, `codex`, `cursor`, `gemini-cli`, `opencode`, `pi-coding-agent`) to choose non-interactively.
+The same postinstall offers the bundled agents and skills for several AI coding harnesses in a checkbox picker. **GitHub Copilot** and **Claude Code** start pre-checked, so pressing **Enter** alone installs both; **Space** selects or deselects a harness, **a** toggles all eleven, and confirming with none selected skips the step without changing files. When MCP setup succeeds, generated managed MCP servers are also mirrored into selected harnesses with documented user-level JSON configuration (Claude Code, Cursor, Gemini CLI, Pi Coding Agent, OMP, and Windsurf / Devin Desktop). GitHub Copilot continues to use the VS Code/BAS MCP configuration written during setup. With no interactive terminal, the assets are installed for GitHub Copilot only; set `SAP_AI_DEV_TOOLKIT_HARNESSES` to a comma-separated list of harness ids (`github-copilot`, `claude-code`, `codex`, `cursor`, `gemini-cli`, `opencode`, `pi-coding-agent`, `omp`, `cline`, `roo-code`, `windsurf`) to choose non-interactively.
 
 Some current npm versions also require install hooks to be approved. If npm reports that `sap-ai-dev-toolkit`'s `postinstall` was blocked, allow it during a fresh install with `npm install --global --allow-scripts=sap-ai-dev-toolkit sap-ai-dev-toolkit`, or run `sap-ai-dev --setup` from an interactive terminal after installation.
 
@@ -418,6 +418,10 @@ During npm postinstall, or after interactive `sap-ai-dev --setup` in BAS or on a
 | Gemini CLI | `$HOME/.gemini/skills/` | — | `$HOME/.gemini/settings.json` |
 | opencode | `$XDG_CONFIG_HOME/opencode/skills/` (default `$HOME/.config/opencode/skills/`) | `$XDG_CONFIG_HOME/opencode/agents/<id>.md` (as subagents) | Not changed automatically |
 | Pi Coding Agent | `$PI_CODING_AGENT_DIR/skills/` (default `$HOME/.pi/agent/skills/`) | `$PI_CODING_AGENT_DIR/prompts/<id>.md` (as `/` prompt commands) | `$PI_CODING_AGENT_DIR/mcp.json` (default `$HOME/.pi/agent/mcp.json`) |
+| Oh My Pi (OMP) | `$HOME/.omp/agent/skills/` (overridden by `PI_CONFIG_DIR` or `PI_CODING_AGENT_DIR`) | — | `$HOME/.omp/agent/mcp.json` (same overrides) |
+| Cline | `$HOME/.cline/skills/` | — | Not changed automatically |
+| Roo Code | `$HOME/.roo/skills/` | — | Not changed automatically |
+| Windsurf / Devin Desktop | `$XDG_CONFIG_HOME/devin/skills/` (default `$HOME/.config/devin/skills/`); Windows: `$HOME/.codeium/windsurf/skills/` | — | `$XDG_CONFIG_HOME/devin/mcp_config.json` (default `$HOME/.config/devin/mcp_config.json`); Windows: `%APPDATA%\devin\mcp_config.json` |
 
 All 14 skills use the portable `SKILL.md` format and are installed verbatim. The 5 agents use Copilot's `.agent.md` format, so they are installed as native custom agents for harnesses with a custom-agent mechanism (GitHub Copilot, Claude Code, opencode), with frontmatter adapted where needed. Pi receives equivalent prompt templates (`/abap-developer`, `/sap-solution-architect`, and so on) because Pi exposes reusable personas through prompts rather than a separate custom-agent file type. Selecting several harnesses duplicates the small markdown payloads on disk.
 

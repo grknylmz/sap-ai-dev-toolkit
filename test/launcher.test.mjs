@@ -1009,10 +1009,11 @@ test('local setup can write SSO auth mode without login inputs', async () => {
       { when: 'Select destinations', input: ' \r', end: false },
       { when: 'SAP client(s) for SSO ABAP', input: '\r', end: false },
       { when: 'ADT URL for SSO ABAP', input: '\r', end: false },
-      { when: 'Authentication for SSO ABAP', input: '\r' }
+      { when: 'Authentication for SSO ABAP', input: '\r' },
+      { when: 'Browser for SSO (SSO ABAP)', input: '\r' }
     ], ['--setup', '--npx']);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
-    assert.equal(result.sent, 4);
+    assert.equal(result.sent, result.stdout.includes('Browser for SSO (SSO ABAP)') ? 5 : 4);
     const current = JSON.parse(await readFile(config, 'utf8'));
     assert.equal(current.servers['s4h-100'].env.SAP_AUTH_MODE, 'sso');
     assert.equal(current.servers['s4h-100'].env.SAP_USER, undefined);
@@ -1048,9 +1049,11 @@ test('local SSO setup writes the detected ADT port for a load-balanced SAP GUI s
       { when: 'Select destinations', input: ' \r', end: false },
       { when: 'SAP client(s) for LB ABAP', input: '\r', end: false },
       { when: 'ADT URL for LB ABAP', input: '\r', end: false },
-      { when: 'Authentication for LB ABAP', input: '\r' }
+      { when: 'Authentication for LB ABAP', input: '\r' },
+      { when: 'Browser for SSO (LB ABAP)', input: '\r' }
     ], ['--setup', '--npx']);
     assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    assert.equal(result.sent, result.stdout.includes('Browser for SSO (LB ABAP)') ? 5 : 4);
     assert.match(result.stdout, /ADT answers at https:\/\/t4d\.example\.com:44310/);
     const current = JSON.parse(await readFile(config, 'utf8'));
     assert.equal(current.servers['t4d-100'].env.SAP_AUTH_MODE, 'sso');

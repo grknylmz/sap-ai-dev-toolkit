@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import {
   DEFAULT_HARNESS_IDS,
   HARNESSES,
@@ -49,8 +49,8 @@ function sha256(content) {
   return createHash('sha256').update(content).digest('hex');
 }
 
-test('harness registry covers the seven supported harnesses in canonical order', () => {
-  assert.deepEqual(HARNESSES.map(harness => harness.id), ['github-copilot', 'claude-code', 'codex', 'cursor', 'gemini-cli', 'opencode', 'pi-coding-agent']);
+test('harness registry covers the eleven supported harnesses in canonical order', () => {
+  assert.deepEqual(HARNESSES.map(harness => harness.id), ['github-copilot', 'claude-code', 'codex', 'cursor', 'gemini-cli', 'opencode', 'pi-coding-agent', 'omp', 'cline', 'roo-code', 'windsurf']);
   assert.deepEqual(HARNESSES.filter(harness => harness.supportsAgents).map(harness => harness.id), ['github-copilot', 'claude-code', 'opencode', 'pi-coding-agent']);
   assert.deepEqual(DEFAULT_HARNESS_IDS, ['github-copilot', 'claude-code']);
   assert.deepEqual(NON_INTERACTIVE_HARNESS_IDS, ['github-copilot']);
@@ -68,26 +68,37 @@ test('harness roots resolve to the documented user-level directories', () => {
   assert.equal(harnessRoot(harnessById('opencode'), { home, env: { XDG_CONFIG_HOME: '   ' } }), join(home, '.config', 'opencode'));
   assert.equal(harnessRoot(harnessById('pi-coding-agent'), { home }), join(home, '.pi', 'agent'));
   assert.equal(harnessRoot(harnessById('pi-coding-agent'), { home, env: { PI_CODING_AGENT_DIR: join('/', 'pi-agent') } }), join('/', 'pi-agent'));
+  assert.equal(harnessRoot(harnessById('omp'), { home }), join(home, '.omp', 'agent'));
+  assert.equal(harnessRoot(harnessById('omp'), { home, env: { PI_CONFIG_DIR: '.omp-custom' } }), join(home, '.omp-custom', 'agent'));
+  assert.equal(harnessRoot(harnessById('omp'), { home, env: { PI_CONFIG_DIR: '.omp-custom', PI_CODING_AGENT_DIR: join('/', 'omp-agent') } }), join('/', 'omp-agent'));
+  assert.equal(harnessRoot(harnessById('omp'), { home, env: { PI_CODING_AGENT_DIR: 'omp-agent' } }), resolve('omp-agent'));
+  assert.equal(harnessRoot(harnessById('cline'), { home }), join(home, '.cline'));
+  assert.equal(harnessRoot(harnessById('roo-code'), { home }), join(home, '.roo'));
+  assert.equal(harnessRoot(harnessById('windsurf'), { home, env: {} }), join(home, '.config', 'devin'));
+  assert.equal(harnessRoot(harnessById('windsurf'), { home, env: { XDG_CONFIG_HOME: join('/', 'xdg') } }), join('/', 'xdg', 'devin'));
+  assert.equal(harnessRoot(harnessById('windsurf'), { home, env: {}, platform: 'win32' }), join(home, '.codeium', 'windsurf'));
 });
 
 test('harnessById rejects unknown ids with the valid id list', () => {
-  assert.throws(() => harnessById('windsurf'), /Unknown harness id: windsurf\. Valid harness ids: github-copilot, claude-code, codex, cursor, gemini-cli, opencode, pi-coding-agent\./);
+  assert.throws(() => harnessById('unknown-harness'), /Unknown harness id: unknown-harness\. Valid harness ids: github-copilot, claude-code, codex, cursor, gemini-cli, opencode, pi-coding-agent, omp, cline, roo-code, windsurf\./);
 });
 
 test('parseHarnessSelection normalizes, dedupes, and orders selections', () => {
   assert.deepEqual(parseHarnessSelection('claude-code'), ['claude-code']);
   assert.deepEqual(parseHarnessSelection(' Cursor, github-copilot ,cursor'), ['github-copilot', 'cursor']);
   assert.deepEqual(parseHarnessSelection('Codex'), ['codex']);
+  assert.deepEqual(parseHarnessSelection('Windsurf, omp, Roo-Code, Cline'), ['omp', 'cline', 'roo-code', 'windsurf']);
   assert.deepEqual(parseHarnessSelection(',, '), []);
-  assert.throws(() => parseHarnessSelection('windsurf'), /Unknown harness id: windsurf\. Valid harness ids: github-copilot, claude-code, codex, cursor, gemini-cli, opencode, pi-coding-agent\./);
-  assert.throws(() => parseHarnessSelection('codex, windsurf, gemini'), /Unknown harness ids: windsurf, gemini\. Valid harness ids:/);
+  assert.throws(() => parseHarnessSelection('unknown-harness'), /Unknown harness id: unknown-harness\. Valid harness ids:/);
+  assert.throws(() => parseHarnessSelection('codex, unknown-harness, gemini'), /Unknown harness ids: unknown-harness, gemini\. Valid harness ids:/);
 });
 
 test('envHarnessSelection reads the branded override and treats blank values as unset', () => {
   assert.equal(envHarnessSelection({}), null);
   assert.equal(envHarnessSelection({ [HARNESS_ENV_VAR]: '  ' }), null);
   assert.deepEqual(envHarnessSelection({ [HARNESS_ENV_VAR]: 'gemini-cli,opencode' }), ['gemini-cli', 'opencode']);
-  assert.throws(() => envHarnessSelection({ [HARNESS_ENV_VAR]: 'windsurf' }), /Unknown harness id: windsurf/);
+  assert.deepEqual(envHarnessSelection({ [HARNESS_ENV_VAR]: 'windsurf,omp,cline,roo-code' }), ['omp', 'cline', 'roo-code', 'windsurf']);
+  assert.throws(() => envHarnessSelection({ [HARNESS_ENV_VAR]: 'unknown-harness' }), /Unknown harness id: unknown-harness/);
 });
 
 test('agentMarkdownName rewrites agent file names to plain markdown', () => {
@@ -142,12 +153,17 @@ test('installUserAssets writes the expected tree for every harness', async t => 
   assert.deepEqual((await readdir(join(home, '.claude', 'agents'))).sort(), ['abap-developer.md', 'sap-solution-architect.md']);
   assert.equal((await stat(join(home, '.claude', 'skills', 'example', 'SKILL.md'))).isFile(), true);
 
-  for (const id of ['codex', 'cursor', 'gemini-cli']) {
+  for (const id of ['codex', 'cursor', 'gemini-cli', 'omp', 'cline', 'roo-code']) {
     const result = await installUserAssets({ harness: harnessById(id), home, root });
     assert.equal(result.installed, 1, id);
     assert.deepEqual((await readdir(result.root)).sort(), [MANIFEST_NAME, 'skills'], id);
     assert.equal((await stat(join(result.root, 'skills', 'example', 'SKILL.md'))).isFile(), true);
   }
+
+  const windsurf = await installUserAssets({ harness: harnessById('windsurf'), home, root, env: { XDG_CONFIG_HOME: xdg } });
+  assert.equal(windsurf.root, join(xdg, 'devin'));
+  assert.equal(windsurf.installed, 1);
+  assert.equal((await stat(join(xdg, 'devin', 'skills', 'example', 'SKILL.md'))).isFile(), true);
 
   const opencode = await installUserAssets({ harness: harnessById('opencode'), home, root, env: { XDG_CONFIG_HOME: xdg } });
   assert.equal(opencode.root, join(xdg, 'opencode'));
@@ -312,10 +328,11 @@ test('installUserAssetsForHarnesses isolates harness failures and reports result
 
   await rm(join(home, '.cursor'), { recursive: true, force: true });
   await writeFile(join(home, '.cursor'), 'not a directory', { flag: 'wx' });
-  const broken = await installUserAssetsForHarnesses(['gemini-cli', 'cursor', 'windsurf'], { home, root });
+  await writeFile(join(home, '.cline'), 'not a directory', { flag: 'wx' });
+  const broken = await installUserAssetsForHarnesses(['gemini-cli', 'cursor', 'cline'], { home, root });
   assert.equal(broken.results.length, 1);
   assert.equal(broken.results[0].harness, 'gemini-cli');
-  assert.deepEqual(broken.failures.map(failure => failure.id), ['cursor', 'windsurf']);
+  assert.deepEqual(broken.failures.map(failure => failure.id), ['cursor', 'cline']);
   assert.equal(broken.failures[0].label, 'Cursor');
 });
 
@@ -325,7 +342,14 @@ test('harness MCP paths target supported user-level JSON configs', () => {
   assert.equal(harnessMcpConfigPath('claude-code', { home }), join(home, '.claude.json'));
   assert.equal(harnessMcpConfigPath('cursor', { home }), join(home, '.cursor', 'mcp.json'));
   assert.equal(harnessMcpConfigPath('gemini-cli', { home }), join(home, '.gemini', 'settings.json'));
+  assert.equal(harnessMcpConfigPath('omp', { home }), join(home, '.omp', 'agent', 'mcp.json'));
   assert.equal(harnessMcpConfigPath('pi-coding-agent', { home }), join(home, '.pi', 'agent', 'mcp.json'));
+  assert.equal(harnessMcpConfigPath('windsurf', { home }), join(home, '.config', 'devin', 'mcp_config.json'));
+  assert.equal(harnessMcpConfigPath('windsurf', { home, env: { XDG_CONFIG_HOME: join('/', 'xdg') } }), join('/', 'xdg', 'devin', 'mcp_config.json'));
+  assert.equal(harnessMcpConfigPath('windsurf', { home, env: { APPDATA: join('/', 'appdata') }, platform: 'win32' }), join('/', 'appdata', 'devin', 'mcp_config.json'));
+  assert.equal(harnessMcpConfigPath('windsurf', { home, env: {}, platform: 'win32' }), join(home, 'AppData', 'Roaming', 'devin', 'mcp_config.json'));
+  assert.equal(harnessMcpConfigPath('cline', { home }), null);
+  assert.equal(harnessMcpConfigPath('roo-code', { home }), null);
 });
 
 test('installMcpServersForHarnesses wires managed servers and preserves unrelated entries', async t => {
@@ -357,10 +381,19 @@ test('installMcpServersForHarnesses wires managed servers and preserves unrelate
       stale: { command: 'sap-ai-dev', env: { SAP_AI_DEV_TOOLKIT_DESTINATION: 'OLD' } }
     }
   }));
+  const ompConfig = join(home, '.omp', 'agent', 'mcp.json');
+  const windsurfConfig = join(home, '.config', 'devin', 'mcp_config.json');
+  await mkdir(dirname(ompConfig), { recursive: true });
+  await mkdir(dirname(windsurfConfig), { recursive: true });
+  await writeFile(ompConfig, JSON.stringify({ $schema: 'https://example.test/mcp-schema.json', mcpServers: { mine: { command: 'node', args: ['omp.js'] } } }));
+  await writeFile(windsurfConfig, JSON.stringify({ mcpServers: { mine: { command: 'node', args: ['windsurf.js'] } } }));
 
-  const result = await installMcpServersForHarnesses(['github-copilot', 'cursor', 'gemini-cli', 'pi-coding-agent'], servers, { home, env });
+  const result = await installMcpServersForHarnesses(['github-copilot', 'cursor', 'gemini-cli', 'pi-coding-agent', 'windsurf'], servers, { home, env });
   assert.deepEqual(result.failures, []);
   assert.equal(result.results.find(entry => entry.harness === 'github-copilot').supported, false);
+
+  const ompResult = await installMcpServersForHarnesses(['omp'], servers, { home, env: {} });
+  assert.deepEqual(ompResult.failures, []);
 
   const cursor = JSON.parse(await readFile(join(home, '.cursor', 'mcp.json'), 'utf8'));
   assert.deepEqual(Object.keys(cursor.mcpServers).sort(), ['cap-tools', 'demo-abap', 'mine']);
@@ -374,6 +407,16 @@ test('installMcpServersForHarnesses wires managed servers and preserves unrelate
   assert.equal(gemini.mcpServers['demo-abap'].command, 'sap-ai-dev');
   const pi = JSON.parse(await readFile(join(directory, 'pi-agent', 'mcp.json'), 'utf8'));
   assert.equal(pi.mcpServers['cap-tools'].command, 'npx');
+
+  const omp = JSON.parse(await readFile(ompConfig, 'utf8'));
+  assert.equal(omp.$schema, 'https://example.test/mcp-schema.json');
+  assert.deepEqual(Object.keys(omp.mcpServers).sort(), ['cap-tools', 'demo-abap', 'mine']);
+  assert.equal(omp.mcpServers['demo-abap'].env.SAP_AI_DEV_TOOLKIT_MANAGED, 'true');
+
+  const windsurf = JSON.parse(await readFile(windsurfConfig, 'utf8'));
+  assert.deepEqual(Object.keys(windsurf.mcpServers).sort(), ['cap-tools', 'demo-abap', 'mine']);
+  assert.equal(windsurf.mcpServers.mine.args[0], 'windsurf.js');
+  assert.equal(windsurf.mcpServers['demo-abap'].env.SAP_AI_DEV_TOOLKIT_MANAGED, 'true');
 });
 
 test('installMcpServersForHarnesses refuses to overwrite user-owned MCP entries', async t => {

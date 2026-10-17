@@ -7,7 +7,7 @@ import { decodeJsonFileBuffer } from './mcp-config.mjs';
 
 const MANAGED_ENV = 'SAP_AI_DEV_TOOLKIT_MANAGED';
 
-function mcpServersPath(harness, { home = process.env.HOME || homedir(), env = process.env } = {}) {
+function mcpServersPath(harness, { home = process.env.HOME || homedir(), env = process.env, platform = process.platform } = {}) {
   switch (harness.id) {
     case 'claude-code':
       return join(home, '.claude.json');
@@ -15,8 +15,16 @@ function mcpServersPath(harness, { home = process.env.HOME || homedir(), env = p
       return join(harnessRoot(harness, { home, env }), 'mcp.json');
     case 'gemini-cli':
       return join(harnessRoot(harness, { home, env }), 'settings.json');
+    case 'omp':
+      return join(harnessRoot(harness, { home, env }), 'mcp.json');
     case 'pi-coding-agent':
       return join(harnessRoot(harness, { home, env }), 'mcp.json');
+    case 'windsurf': {
+      const configRoot = platform === 'win32'
+        ? (typeof env?.APPDATA === 'string' && env.APPDATA.trim() ? env.APPDATA.trim() : join(home, 'AppData', 'Roaming'))
+        : (typeof env?.XDG_CONFIG_HOME === 'string' && env.XDG_CONFIG_HOME.trim() ? env.XDG_CONFIG_HOME.trim() : join(home, '.config'));
+      return join(configRoot, 'devin', 'mcp_config.json');
+    }
     default:
       return null;
   }

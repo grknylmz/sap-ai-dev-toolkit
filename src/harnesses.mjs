@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 export const HARNESS_ENV_VAR = 'SAP_AI_DEV_TOOLKIT_HARNESSES';
 export const DEFAULT_HARNESS_IDS = ['github-copilot', 'claude-code'];
@@ -36,6 +36,19 @@ export function agentMarkdownName(fileName) {
 export function piCodingAgentRoot({ home = process.env.HOME || homedir(), env = process.env } = {}) {
   const override = typeof env?.PI_CODING_AGENT_DIR === 'string' ? env.PI_CODING_AGENT_DIR.trim() : '';
   return override || join(home, '.pi', 'agent');
+}
+
+export function ompAgentRoot({ home = process.env.HOME || homedir(), env = process.env } = {}) {
+  const agentOverride = typeof env?.PI_CODING_AGENT_DIR === 'string' ? env.PI_CODING_AGENT_DIR.trim() : '';
+  if (agentOverride) return resolve(agentOverride);
+  const configDirectory = typeof env?.PI_CONFIG_DIR === 'string' ? env.PI_CONFIG_DIR.trim() : '';
+  return join(home, configDirectory || '.omp', 'agent');
+}
+
+export function windsurfSkillsRoot({ home = process.env.HOME || homedir(), env = process.env, platform = process.platform } = {}) {
+  if (platform === 'win32') return join(home, '.codeium', 'windsurf');
+  const override = typeof env?.XDG_CONFIG_HOME === 'string' ? env.XDG_CONFIG_HOME.trim() : '';
+  return join(override || join(home, '.config'), 'devin');
 }
 
 export function claudeCodeAgentDocument(source) {
@@ -86,7 +99,11 @@ export const HARNESSES = [
   { id: 'cursor', label: 'Cursor', directory: '.cursor', supportsAgents: false },
   { id: 'gemini-cli', label: 'Gemini CLI', directory: '.gemini', supportsAgents: false },
   { id: 'opencode', label: 'opencode', directory: 'opencode', configHome: true, supportsAgents: true, agentFileName: agentMarkdownName, agentDocument: opencodeAgentDocument },
-  { id: 'pi-coding-agent', label: 'Pi Coding Agent', directory: '.pi/agent', supportsAgents: true, agentTargetPrefix: 'prompts', agentFileName: agentMarkdownName, agentDocument: piCodingAgentPromptDocument, root: piCodingAgentRoot }
+  { id: 'pi-coding-agent', label: 'Pi Coding Agent', directory: '.pi/agent', supportsAgents: true, agentTargetPrefix: 'prompts', agentFileName: agentMarkdownName, agentDocument: piCodingAgentPromptDocument, root: piCodingAgentRoot },
+  { id: 'omp', label: 'Oh My Pi (OMP)', directory: '.omp/agent', supportsAgents: false, root: ompAgentRoot },
+  { id: 'cline', label: 'Cline', directory: '.cline', supportsAgents: false },
+  { id: 'roo-code', label: 'Roo Code', directory: '.roo', supportsAgents: false },
+  { id: 'windsurf', label: 'Windsurf / Devin Desktop', directory: 'devin', supportsAgents: false, root: windsurfSkillsRoot }
 ];
 
 export function harnessById(id) {
@@ -97,8 +114,8 @@ export function harnessById(id) {
   return harness;
 }
 
-export function harnessRoot(harness, { home = process.env.HOME || homedir(), env = process.env } = {}) {
-  if (harness.root) return harness.root({ home, env });
+export function harnessRoot(harness, { home = process.env.HOME || homedir(), env = process.env, platform = process.platform } = {}) {
+  if (harness.root) return harness.root({ home, env, platform });
   if (harness.configHome) {
     const override = typeof env?.XDG_CONFIG_HOME === 'string' ? env.XDG_CONFIG_HOME.trim() : '';
     return join(override || join(home, '.config'), harness.directory);

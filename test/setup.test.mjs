@@ -869,7 +869,8 @@ test('non-TTY postinstall honors the harness environment override', async () => 
     ...process.env,
     HOME: directory,
     SAP_AI_DEV_TOOLKIT_BINARY: '/bin/true',
-    SAP_AI_DEV_TOOLKIT_HARNESSES: 'claude-code,gemini-cli'
+    SAP_AI_DEV_TOOLKIT_HARNESSES: 'claude-code,gemini-cli,omp,cline,roo-code,windsurf',
+    XDG_CONFIG_HOME: join(directory, 'xdg-config')
   };
   delete env.H2O_URL;
   delete env.npm_config_ignore_scripts;
@@ -885,10 +886,14 @@ test('non-TTY postinstall honors the harness environment override', async () => 
     });
     const logs = `${result.stdout}\n${result.stderr}`;
     assert.equal(result.code, 0, logs);
-    assert.match(logs, /Installing bundled agents and skills for Claude Code, Gemini CLI by default because no interactive terminal is available/);
+    assert.match(logs, /Installing bundled agents and skills for Claude Code, Gemini CLI, Oh My Pi \(OMP\), Cline, Roo Code, Windsurf \/ Devin Desktop by default because no interactive terminal is available/);
     await assertUserClaudeAssets(directory);
     const geminiSkills = (await readdir(join(directory, '.gemini', 'skills'))).sort();
     assert.equal(geminiSkills.length, 14);
+    for (const root of [join(directory, '.omp', 'agent'), join(directory, '.cline'), join(directory, '.roo'), join(directory, 'xdg-config', 'devin')]) {
+      assert.equal((await readdir(join(root, 'skills'))).length, 14, root);
+      assert.equal((await stat(join(root, 'skills', 'abap-development', 'SKILL.md'))).isFile(), true, root);
+    }
     await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
   } finally {
     await rm(directory, { recursive: true, force: true });
@@ -901,7 +906,7 @@ test('non-TTY postinstall warns about an unknown harness override and falls back
     ...process.env,
     HOME: directory,
     SAP_AI_DEV_TOOLKIT_BINARY: '/bin/true',
-    SAP_AI_DEV_TOOLKIT_HARNESSES: 'windsurf'
+    SAP_AI_DEV_TOOLKIT_HARNESSES: 'unknown-harness'
   };
   delete env.H2O_URL;
   delete env.npm_config_ignore_scripts;
@@ -917,7 +922,7 @@ test('non-TTY postinstall warns about an unknown harness override and falls back
     });
     const logs = `${result.stdout}\n${result.stderr}`;
     assert.equal(result.code, 0, logs);
-    assert.match(logs, /Unknown harness id: windsurf\. Valid harness ids: github-copilot, claude-code, codex, cursor, gemini-cli, opencode, pi-coding-agent\. Ignoring SAP_AI_DEV_TOOLKIT_HARNESSES/);
+    assert.match(logs, /Unknown harness id: unknown-harness\. Valid harness ids: github-copilot, claude-code, codex, cursor, gemini-cli, opencode, pi-coding-agent, omp, cline, roo-code, windsurf\. Ignoring SAP_AI_DEV_TOOLKIT_HARNESSES/);
     await assertUserCopilotAssets(directory);
     await assert.rejects(stat(join(directory, '.claude')), { code: 'ENOENT' });
   } finally {
