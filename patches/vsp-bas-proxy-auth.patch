@@ -148,6 +148,23 @@ index 5007935..3b1fdd8 100755
  	cookieFile, _ := cmd.Flags().GetString("cookie-file")
  	cookieString, _ := cmd.Flags().GetString("cookie-string")
  
+diff --git a/internal/mcp/handlers_source.go b/internal/mcp/handlers_source.go
+index d23089b..8e7e5ff 100644
+--- a/internal/mcp/handlers_source.go
++++ b/internal/mcp/handlers_source.go
+@@ -132,10 +132,10 @@ func (s *Server) registerGetSource() {
+ // registerWriteSource registers the unified WriteSource tool
+ func (s *Server) registerWriteSource() {
+ 	s.mcpServer.AddTool(mcp.NewTool("WriteSource",
+-		mcp.WithDescription("Unified tool for writing ABAP source code with automatic create/update detection. Supports PROG, CLAS, INTF, INCL, and RAP types (DDLS, BDEF, SRVD)."),
++		mcp.WithDescription("Unified tool for writing ABAP source code with automatic create/update detection. Supports PROG, CLAS, INTF, INCL, RAP types (DDLS, BDEF, SRVD), and updates to existing DDIC tables (TABL). New tables must be created with CreateTable."),
+ 		mcp.WithString("object_type",
+ 			mcp.Required(),
+-			mcp.Description("Object type: PROG (program), CLAS (class), INTF (interface), INCL (include), DDLS (CDS view), BDEF (behavior definition), SRVD (service definition)"),
++			mcp.Description("Object type: PROG (program), CLAS (class), INTF (interface), INCL (include), DDLS (CDS view), BDEF (behavior definition), SRVD (service definition), or TABL (existing DDIC table update only)"),
+ 		),
+ 		mcp.WithString("name",
+ 			mcp.Required(),
 diff --git a/internal/mcp/server.go b/internal/mcp/server.go
 index 9337857..11fc940 100644
 --- a/internal/mcp/server.go
@@ -290,7 +307,7 @@ index 7740e56..b4c2faf 100755
 +	}
 +}
 diff --git a/internal/mcp/tools_register.go b/internal/mcp/tools_register.go
-index dd433d6..5553b7f 100644
+index dd433d6..d9ea365 100644
 --- a/internal/mcp/tools_register.go
 +++ b/internal/mcp/tools_register.go
 @@ -837,6 +837,19 @@ func (s *Server) registerDevTools(shouldRegister func(string) bool) {
@@ -313,6 +330,24 @@ index dd433d6..5553b7f 100644
  			),
  		), s.handleActivateMultiple)
  	}
+@@ -1070,7 +1083,7 @@ func (s *Server) registerCRUDTools(shouldRegister func(string) bool) {
+ 
+ 	if shouldRegister("CreateTable") {
+ 		s.mcpServer.AddTool(mcp.NewTool("CreateTable",
+-			mcp.WithDescription("Create a DDIC transparent table from a simple JSON definition. Handles full workflow: create → set source → activate. Supports common ABAP types: CHAR, NUMC, INT4, DEC, STRING, TIMESTAMPL, UUID, etc."),
++			mcp.WithDescription("Create a DDIC transparent table from a simple JSON definition. Handles full workflow: create → set source → activate. Supports common ABAP types: CHAR, NUMC, INT4, DEC, STRING, TIMESTAMPL, UUID, etc. Client-dependent tables get one implicit CLIENT key; supplied CLIENT or MANDT fields are treated as that same key."),
+ 			mcp.WithString("name",
+ 				mcp.Required(),
+ 				mcp.Description("Table name (uppercase, max 30 chars, must start with Z/Y)"),
+@@ -1084,7 +1097,7 @@ func (s *Server) registerCRUDTools(shouldRegister func(string) bool) {
+ 			),
+ 			mcp.WithString("fields",
+ 				mcp.Required(),
+-				mcp.Description("JSON array of fields: [{\"name\":\"ID\",\"type\":\"CHAR32\",\"key\":true},{\"name\":\"VALUE\",\"type\":\"STRING\"}]. Types: CHAR/CHARnn, NUMC/NUMCnn, INT4, DEC, STRING, TIMESTAMPL, UUID, DATS, TIMS, or data element name."),
++				mcp.Description("JSON array of user fields: [{\"name\":\"ID\",\"type\":\"CHAR32\",\"key\":true},{\"name\":\"VALUE\",\"type\":\"STRING\"}]. Do not include CLIENT or MANDT; the client key is added automatically. Types: CHAR/CHARnn, NUMC/NUMCnn, INT4, DEC, STRING, TIMESTAMPL, UUID, DATS, TIMS, or data element name."),
+ 			),
+ 			mcp.WithString("transport",
+ 				mcp.Description("Transport request number (optional for $TMP)"),
 diff --git a/pkg/adt/browser_auth.go b/pkg/adt/browser_auth.go
 index ea3c1a9..5bc7a01 100644
 --- a/pkg/adt/browser_auth.go
@@ -436,7 +471,7 @@ index 0000000..1ed3c2b
 +	}
 +}
 diff --git a/pkg/adt/crud.go b/pkg/adt/crud.go
-index f412fb1..15ac38a 100755
+index f412fb1..8021a5a 100755
 --- a/pkg/adt/crud.go
 +++ b/pkg/adt/crud.go
 @@ -1250,7 +1250,12 @@ func (c *Client) publishUnpublishServiceBinding(ctx context.Context, action, ser
@@ -453,6 +488,23 @@ index f412fb1..15ac38a 100755
  
  	resp, err := c.transport.Request(ctx, path, &RequestOptions{
  		Method:      http.MethodPost,
+@@ -1427,11 +1432,15 @@ func generateTableDDL(opts CreateTableOptions) string {
+ 	sb.WriteString("@AbapCatalog.dataMaintenance : #ALLOWED\n")
+ 	sb.WriteString(fmt.Sprintf("define table %s {\n\n", strings.ToLower(opts.Name)))
+ 
+-	// Auto-add MANDT as first key field (standard SAP practice)
++	// The table's implicit client field is named CLIENT in DDL; callers may
++	// provide CLIENT or MANDT, but the schema must contain it only once.
+ 	sb.WriteString("  key client : abap.clnt not null;\n")
+ 
+ 	// User-defined fields
+ 	for _, f := range opts.Fields {
++		if strings.EqualFold(strings.TrimSpace(f.Name), "CLIENT") || strings.EqualFold(strings.TrimSpace(f.Name), "MANDT") {
++			continue
++		}
+ 		fieldName := strings.ToLower(f.Name)
+ 		fieldType := mapFieldType(f)
+ 
 diff --git a/pkg/adt/features.go b/pkg/adt/features.go
 index 13aa4b0..8fb7376 100755
 --- a/pkg/adt/features.go
@@ -620,7 +672,7 @@ index 0000000..5e880bd
 +	}
 +}
 diff --git a/pkg/adt/http.go b/pkg/adt/http.go
-index 0b4d9f1..f0b5b51 100755
+index 0b4d9f1..e420573 100755
 --- a/pkg/adt/http.go
 +++ b/pkg/adt/http.go
 @@ -313,7 +313,7 @@ func (t *Transport) request(ctx context.Context, path string, opts *RequestOptio
@@ -723,7 +775,8 @@ index 0b4d9f1..f0b5b51 100755
 +	}
  	// Drain the body so the connection can be reused.
  	_, _ = io.Copy(io.Discard, resp.Body)
- 	traceHTTPResponse(resp, nil)
+-	traceHTTPResponse(resp, nil)
++	traceHTTPResponse(resp, body)
  	t.adoptServerCookies(resp)
  
 -	return resp.Header.Get("X-CSRF-Token"), resp.StatusCode, t.redirectedAwayFromSAP(resp), nil
@@ -751,10 +804,10 @@ index 0b4d9f1..f0b5b51 100755
  // redirectedAwayFromSAP reports whether a response was ultimately served by
 diff --git a/pkg/adt/http_csrf_discovery_test.go b/pkg/adt/http_csrf_discovery_test.go
 new file mode 100644
-index 0000000..80741da
+index 0000000..ee932b3
 --- /dev/null
 +++ b/pkg/adt/http_csrf_discovery_test.go
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,55 @@
 +package adt
 +
 +import (
@@ -810,7 +863,6 @@ index 0000000..80741da
 +		t.Fatalf("expected both endpoint failures, got %v", err)
 +	}
 +}
-+
 diff --git a/pkg/adt/http_sso_same_host_test.go b/pkg/adt/http_sso_same_host_test.go
 new file mode 100644
 index 0000000..0c39b96
@@ -1288,5 +1340,34 @@ index 0000000..1385d6d
 +				break
 +			}
 +		}
++	}
++}
+diff --git a/pkg/adt/workflows_source_tabl_test.go b/pkg/adt/workflows_source_tabl_test.go
+index 220e91b..61e1691 100644
+--- a/pkg/adt/workflows_source_tabl_test.go
++++ b/pkg/adt/workflows_source_tabl_test.go
+@@ -44,3 +44,24 @@ func TestCreatingATableFromSourceSaysWhatDoesWork(t *testing.T) {
+ 		t.Errorf("the refusal should name the route that does work, got %q", result.Message)
+ 	}
+ }
++
++func TestCreateTableEmitsOnlyTheAutomaticClientField(t *testing.T) {
++	source := generateTableDDL(CreateTableOptions{
++		Name: "ZADK_SESSION",
++		Fields: []TableField{
++			{Name: "MANDT", Type: "mandt", IsKey: true},
++			{Name: "CLIENT", Type: "abap.clnt", IsKey: true},
++			{Name: "SESSION_ID", Type: "CHAR", Length: 32, IsKey: true},
++		},
++	})
++
++	if got := strings.Count(source, "key client : abap.clnt not null;"); got != 1 {
++		t.Fatalf("got %d client keys, want exactly 1:\n%s", got, source)
++	}
++	if strings.Contains(source, "key mandt :") || strings.Contains(source, "key client : abap.clnt not null;\n  key client :") {
++		t.Fatalf("generated DDL contains a duplicate client field:\n%s", source)
++	}
++	if !strings.Contains(source, "key session_id : abap.char(32) not null;") {
++		t.Fatalf("generated DDL lost the business key:\n%s", source)
 +	}
 +}

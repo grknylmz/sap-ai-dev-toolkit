@@ -8,12 +8,12 @@ This inventory reflects the current SAP AI Dev Toolkit proxy behavior in `src/mc
 | --- | ---: | --- |
 | Upstream tools | Up to 64 | Curated from the child tool list and exposed in lowercase snake_case, unprefixed (`get_source`) on single-destination servers; a destination slug prefix (`demo-abap_get_source`) appears only when one server fronts multiple destinations. |
 | Local lint tool | 1 per destination | `LintABAP` analyzes caller-supplied ABAP source in memory; it is exposed publicly as `lint_abap`. |
-| Workflow tools | Up to 6 per destination | Review/apply change sets, transport evidence, Clean Core release assessment, and read-only RAP regression suites. Some are exposed only when their upstream capabilities are registered. |
+| Workflow tools | Up to 8 per destination | Review/apply change sets, transport evidence, Clean Core release assessment, RAP regression suites, guarded table updates, and empty-DDLS cleanup. Some require upstream capabilities. |
 | Convenience mapping | Dynamic | `GetApplicationLog` maps to the upstream `SAP(action="analyze", type="application_log")` operation when the SAP router is registered. |
 | Intentionally filtered tools | Dynamic | Destructive, broad-router, trace, and unsupported operations are hidden from direct calls. |
 | Mode-dependent | Dynamic | Focused/expert mode and backend capabilities determine which tools are registered. |
 
-The maximum fixture surface is 72 tools per destination when expert-mode capabilities and all local workflows are available. Multiple selected destinations create separate MCP servers; this add-on cannot inspect VS Code's aggregate tool budget or per-chat tool binding.
+The maximum fixture surface is 74 destination-scoped tools per destination when expert-mode capabilities and all local workflows are available, plus one workspace-scoped `LintABAPProject` tool per MCP server. Multiple selected destinations create separate MCP servers; this add-on cannot inspect VS Code's aggregate tool budget or per-chat tool binding.
 
 ## Known upstream tools
 
@@ -168,6 +168,8 @@ These logical names are exposed through MCP in lowercase snake_case (`lint_abap`
 - `PlanABAPCloudMigration` — batch-check API release state for supplied ADT object URIs and prioritize recognized unreleased APIs.
 - `GenerateRAPRegressionSuite` — read service metadata and emit reusable GET-only smoke cases for entity sets.
 - `RunRAPRegressionSuite` — execute saved cases with status, content-type, and JSON-path assertions over the connected destination.
+- `UpdateTable` — compare the current DDL with the reviewed source, then update and activate one Z/Y table using VSP's locked source-hash check.
+- `DeleteEmptyDDLS` — delete only a blank Z/Y DDLS source after exact confirmation; generic `DeleteObject` remains hidden.
 
 ## Notes
 

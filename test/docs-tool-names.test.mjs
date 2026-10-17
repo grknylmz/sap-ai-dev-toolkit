@@ -8,7 +8,7 @@ const agentsRoot = join(root, '.github', 'agents');
 const skillsRoot = join(root, '.github', 'skills');
 
 // Hidden upstream tools the bundled docs legitimately mention as not exposed.
-const allowedHiddenMentions = new Set(['DeleteBreakpoint', 'DebuggerListen']);
+const allowedHiddenMentions = new Set(['DeleteBreakpoint', 'DebuggerListen', 'DeleteObject']);
 
 // tools.md list sections that define the curated surface.
 const curatedSections = new Set([
@@ -54,7 +54,7 @@ function isToolShaped(token) {
 
 test('agents and skills only reference tools from the curated tools.md surface', async () => {
   const curated = await curatedToolNames();
-  assert.equal(curated.size, 77, 'tools.md curated sections must list 64 upstream + 9 workflow + 4 HANA tools');
+  assert.equal(curated.size, 79, 'tools.md curated sections must list 64 upstream + 11 workflow + 4 HANA tools');
 
   const drift = [];
   for (const path of await assetPaths()) {

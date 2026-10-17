@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import http from 'node:http';
 import { createEngineeringTools } from '../src/engineering-tools.mjs';
 
@@ -175,6 +176,128 @@ test('PlanABAPCloudMigration classifies release evidence and orders not-released
   assert.equal(result.failures, 1);
   assert.deepEqual(result.migration_review_order.map(entry => entry.release_state), ['not-released', 'released']);
   assert.equal(result.results.find(entry => entry.name === 'ZBAD').status, 'invalid');
+});
+
+const SESSION_TABLE_SOURCE = [
+  "@EndUserText.label : 'ADK session'",
+  'define table zadk_session {',
+  '  key client : abap.clnt not null;',
+  '  key mandt : mandt not null;',
+  '  key session_id : abap.char(128) not null;',
+  '}'
+].join('\r\n') + '\r\n';
+
+const FIXED_SESSION_TABLE_SOURCE = [
+  "@EndUserText.label : 'ADK session'",
+  'define table zadk_session {',
+  '  key client : abap.clnt not null;',
+  '  key session_id : abap.char(128) not null;',
+  '}'
+].join('\n');
+
+function abapSourceHash(source) {
+  const canonical = source.replace(/\r\n/g, '\n').replace(/\n+$/g, '');
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+test('UpdateTable uses the reviewed source hash and refuses stale or unconfirmed edits', async () => {
+  const { calls, handlers } = fakeEntry({
+    tools: ['GetTable', 'WriteSource'],
+    respond: name => name === 'GetTable'
+      ? textResult(SESSION_TABLE_SOURCE)
+      : textResult(JSON.stringify({ success: true, objectType: 'TABL', objectName: 'ZADK_SESSION' }))
+  });
+  const result = await handlers.get('UpdateTable')({
+    table_name: 'zadk_session',
+    expected_source: SESSION_TABLE_SOURCE,
+    replacement_source: FIXED_SESSION_TABLE_SOURCE,
+    confirmation: 'UPDATE TABLE ZADK_SESSION',
+    transport: 'A4HK900123'
+  });
+
+  assert.equal(result.isError, false);
+  const updateReport = JSON.parse(result.content[0].text);
+  assert.equal(updateReport.status, 'updated');
+  assert.equal(updateReport.expected_source_hash, abapSourceHash(SESSION_TABLE_SOURCE));
+  assert.equal(updateReport.target_source_hash, abapSourceHash(FIXED_SESSION_TABLE_SOURCE));
+  assert.deepEqual(calls, [
+    { name: 'GetTable', arguments: { table_name: 'ZADK_SESSION' } },
+    {
+      name: 'WriteSource',
+      arguments: {
+        object_type: 'TABL',
+        name: 'ZADK_SESSION',
+        source: FIXED_SESSION_TABLE_SOURCE,
+        mode: 'update',
+        expected_source_hash: abapSourceHash(SESSION_TABLE_SOURCE),
+        transport: 'A4HK900123'
+      }
+    }
+  ]);
+
+  const stale = await handlers.get('UpdateTable')({
+    table_name: 'ZADK_SESSION',
+    expected_source: 'stale source',
+    replacement_source: FIXED_SESSION_TABLE_SOURCE,
+    confirmation: 'UPDATE TABLE ZADK_SESSION'
+  });
+  assert.equal(stale.isError, true);
+  assert.match(stale.content[0].text, /changed since review/);
+  assert.equal(calls.filter(call => call.name === 'WriteSource').length, 1);
+
+  const unconfirmed = await handlers.get('UpdateTable')({
+    table_name: 'ZADK_SESSION',
+    expected_source: SESSION_TABLE_SOURCE,
+    replacement_source: FIXED_SESSION_TABLE_SOURCE,
+    confirmation: 'yes'
+  });
+  assert.equal(unconfirmed.isError, true);
+  assert.match(unconfirmed.content[0].text, /confirmation must equal/);
+  assert.equal(calls.length, 3, 'confirmation failures must not contact SAP');
+});
+
+test('DeleteEmptyDDLS deletes only an empty customer DDLS after exact confirmation', async () => {
+  const { calls, handlers } = fakeEntry({
+    tools: ['GetSource', 'DeleteObject'],
+    respond: name => name === 'GetSource' ? textResult(' \r\n') : textResult('Object deleted successfully')
+  });
+  const result = await handlers.get('DeleteEmptyDDLS')({
+    name: 'ZADK_SESSION',
+    confirmation: 'DELETE EMPTY DDLS ZADK_SESSION',
+    transport: 'A4HK900123'
+  });
+
+  assert.equal(result.isError, false);
+  assert.equal(JSON.parse(result.content[0].text).status, 'deleted');
+  assert.deepEqual(calls, [
+    { name: 'GetSource', arguments: { object_type: 'DDLS', name: 'ZADK_SESSION', include_context: false } },
+    {
+      name: 'DeleteObject',
+      arguments: { object_url: '/sap/bc/adt/ddic/ddl/sources/zadk_session', transport: 'A4HK900123' }
+    }
+  ]);
+});
+
+test('DeleteEmptyDDLS refuses non-empty sources and wrong confirmations', async () => {
+  const { calls, handlers } = fakeEntry({
+    tools: ['GetSource', 'DeleteObject'],
+    respond: () => textResult('define view entity zadk_session as select from ...')
+  });
+  const notEmpty = await handlers.get('DeleteEmptyDDLS')({
+    name: 'ZADK_SESSION',
+    confirmation: 'DELETE EMPTY DDLS ZADK_SESSION'
+  });
+  assert.equal(notEmpty.isError, true);
+  assert.match(notEmpty.content[0].text, /not empty/);
+  assert.deepEqual(calls.map(call => call.name), ['GetSource']);
+
+  const unconfirmed = await handlers.get('DeleteEmptyDDLS')({
+    name: 'ZADK_SESSION',
+    confirmation: 'delete it'
+  });
+  assert.equal(unconfirmed.isError, true);
+  assert.match(unconfirmed.content[0].text, /confirmation must equal/);
+  assert.equal(calls.length, 1, 'confirmation failures must not contact SAP');
 });
 
 // ---- RAP regression suites ----

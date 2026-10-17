@@ -1,6 +1,6 @@
 # Curated SAP tools exposed through the BAS proxy
 
-The proxy no longer advertises every tool provided by the SAP runtime. To keep the developer-lifecycle MCP surface manageable, each generated one-destination server exposes a curated set of upstream tools plus local workflow tools (currently 72 tools when all upstream capabilities are registered).
+The proxy no longer advertises every tool provided by the SAP runtime. To keep the developer-lifecycle MCP surface manageable, each generated one-destination server exposes a curated set of upstream tools plus local workflow tools (up to 75 tools: 74 destination-scoped tools plus one workspace-scoped project-lint tool).
 
 The names below are the logical tool names. Publicly they are exposed in lowercase snake_case without a prefix (`get_table_contents`, `run_query`) because each generated MCP server is scoped to one destination; only when a single server fronts multiple destinations does each name gain its destination slug (`demo-abap_get_table_contents`) to stay unambiguous. BAS/VS Code chat tool references bind only lowercase identifiers, so mixed-case names never reach the model.
 
@@ -73,11 +73,11 @@ Hidden upstream tools are not directly callable through the proxy. Local workflo
 - `UnpublishServiceBinding`
 - `WriteSource`
 
-`CreatePackage` creates a local package or a transportable package with an explicit transport; it changes SAP state and requires explicit approval. `CreateTable` creates a transparent DDIC table, writes its generated DDL source, and activates it. `GetStructure`, `GetTypeInfo`, and `GetMessages` are read-only metadata lookups. The upstream VSP package and transport mutation checks still apply. The pinned backend does not create structures, table types, or authorization objects.
+`CreatePackage` creates a local package or a transportable package with an explicit transport; it changes SAP state and requires explicit approval. `CreateTable` creates a transparent DDIC table, writes its generated DDL source, and activates it. Client-dependent tables already get the implicit `CLIENT` key; supplied `CLIENT` or `MANDT` fields map to that same key and are not emitted twice. `GetStructure`, `GetTypeInfo`, and `GetMessages` are read-only metadata lookups. The upstream VSP package and transport mutation checks still apply. The pinned backend does not create structures, table types, or authorization objects.
 
 ## Hidden from direct proxy calls
 
-Broad/destructive surfaces such as object deletion, SQL trace, arbitrary SAP router calls, transport release/delete, RFC execution, debugger listen/delete-breakpoint helpers, and one-off generator/update helpers are intentionally not advertised by the BAS proxy. UI5 repository writes are hidden too: the ADT filestore only reads UI5 apps, so deploy them with SAP Fiori tools instead.
+Broad/destructive surfaces such as generic object deletion, SQL trace, arbitrary SAP router calls, transport release/delete, RFC execution, debugger listen/delete-breakpoint helpers, and one-off generator/update helpers are intentionally not advertised by the BAS proxy. The local `DeleteEmptyDDLS` workflow is a narrow exception: it verifies the source is blank and requires exact confirmation before deleting a Z/Y DDLS shell. UI5 repository writes are hidden too: the ADT filestore only reads UI5 apps, so deploy them with SAP Fiori tools instead.
 
 ## Local and destination-scoped workflow tools
 
@@ -86,6 +86,8 @@ The proxy adds local tools to the MCP surface. Some are workspace-wide; others a
 - `LintABAP` — local in-memory ABAP linting.
 - `LintABAPProject` — scan serialized ABAP objects in the configured workspace root (SAP_AI_DEV_TOOLKIT_WORKSPACE_ROOT, defaulting to the MCP server working directory) using the project abaplint config and available local dependency folders. This is static analysis only; it does not contact SAP or activate objects.
 - `GetApplicationLog` — bounded convenience mapping to the upstream SAP application-log route when available.
+- `UpdateTable` — update and activate an existing Z/Y DDIC table from replacement DDL after comparing expected_source with `GetTable`; the write uses VSP's hash check under lock and requires `UPDATE TABLE <TABLE_NAME>` confirmation.
+- `DeleteEmptyDDLS` — delete only a blank Z/Y DDLS source after an emptiness check and exact `DELETE EMPTY DDLS <OBJECT_NAME>` confirmation. It calls the hidden generic delete operation internally.
 - `PrepareABAPChangeSet` and `ApplyABAPChangeSet` — review full-source diffs and recheck source before explicit writes.
 - `CheckTransportReadiness` — collect a whitelisted bundle of transport, dependency, inactive-object, ABAP Unit, and ATC results.
 - `PlanABAPCloudMigration` — batch SAP API release-state checks and prioritize recognized unreleased results.

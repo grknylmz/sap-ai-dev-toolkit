@@ -69,6 +69,30 @@ const TOOLS = {
     ['change_set_id'],
     { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
   ),
+  UpdateTable: textTool(
+    'UpdateTable',
+    'Update and activate an existing Z/Y DDIC table from replacement DDL. The current DDL is re-read and compared with expected_source; VSP checks its source hash again under lock. Requires confirmation exactly equal to UPDATE TABLE <TABLE_NAME>.',
+    {
+      table_name: { type: 'string', minLength: 2, maxLength: 30, pattern: '^[ZzYy][A-Za-z0-9_]{1,29}$' },
+      expected_source: { type: 'string', minLength: 1, maxLength: MAX_CHANGE_BYTES },
+      replacement_source: { type: 'string', minLength: 1, maxLength: MAX_CHANGE_BYTES },
+      transport: { type: 'string', minLength: 1 },
+      confirmation: { type: 'string', minLength: 1, description: 'Must exactly equal UPDATE TABLE <TABLE_NAME>.' }
+    },
+    ['table_name', 'expected_source', 'replacement_source', 'confirmation'],
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
+  ),
+  DeleteEmptyDDLS: textTool(
+    'DeleteEmptyDDLS',
+    'Delete only an empty Z/Y DDLS shell. The source is read first and deletion is refused unless it is blank. Requires confirmation exactly equal to DELETE EMPTY DDLS <OBJECT_NAME>.',
+    {
+      name: { type: 'string', minLength: 2, maxLength: 30, pattern: '^[ZzYy][A-Za-z0-9_]{1,29}$' },
+      transport: { type: 'string', minLength: 1 },
+      confirmation: { type: 'string', minLength: 1, description: 'Must exactly equal DELETE EMPTY DDLS <OBJECT_NAME>.' }
+    },
+    ['name', 'confirmation'],
+    { readOnlyHint: false, destructiveHint: true, idempotentHint: false }
+  ),
   CheckTransportReadiness: textTool(
     'CheckTransportReadiness',
     'Collect a transport request and dependency, inactive-object, ABAP Unit, and ATC evidence bundle. Only registered read/check tools are accepted; inspect findings before handoff.',
@@ -235,6 +259,18 @@ function releaseClassification(result) {
 
 function hashSource(source) {
   return createHash('sha256').update(source).digest('hex');
+}
+
+function adtSourceHash(source) {
+  const canonical = source.replace(/\r\n/g, '\n').replace(/\n+$/g, '');
+  return `sha256:${createHash('sha256').update(canonical).digest('hex')}`;
+}
+
+function customerObjectName(value, label) {
+  if (typeof value !== 'string') throw new Error(`${label} must be a customer object name`);
+  const name = value.trim().toUpperCase();
+  if (!/^[ZY][A-Z0-9_]{1,29}$/.test(name)) throw new Error(`${label} must be a Z/Y customer object name of 2–30 letters, digits, or underscores`);
+  return name;
 }
 
 function containsSource(value, source) {
@@ -516,6 +552,75 @@ export function createEngineeringTools(entry, upstreamTools, { env = process.env
       }
       proposal.status = 'applied';
       return toolJson({ change_set_id: args.change_set_id, status: proposal.status, applied, failures: [] });
+    });
+  }
+
+  if (available.has('GetTable') && available.has('WriteSource')) {
+    add(TOOLS.UpdateTable, async args => {
+      validateObject(args, 'arguments', ['table_name', 'expected_source', 'replacement_source', 'transport', 'confirmation']);
+      const tableName = customerObjectName(args.table_name, 'table_name');
+      if (args.confirmation !== `UPDATE TABLE ${tableName}`) throw new Error(`confirmation must equal UPDATE TABLE ${tableName}`);
+      for (const [label, source] of [['expected_source', args.expected_source], ['replacement_source', args.replacement_source]]) {
+        if (typeof source !== 'string' || !source) throw new Error(`${label} is required`);
+        if (Buffer.byteLength(source, 'utf8') > MAX_CHANGE_BYTES) throw new Error(`${label} exceeds ${MAX_CHANGE_BYTES} bytes`);
+        if (source.split(/\r?\n/).length > 1000) throw new Error(`${label} exceeds the 1,000-line limit`);
+      }
+      if (args.transport !== undefined && (typeof args.transport !== 'string' || !args.transport.trim())) throw new Error('transport must be a nonempty string when supplied');
+      const tableDefinition = /^\s*define\s+table\s+([A-Z0-9_/]+)/im.exec(args.replacement_source);
+      if (!tableDefinition || tableDefinition[1].toUpperCase() !== tableName) throw new Error(`replacement_source must define table ${tableName}`);
+      const expectedHash = adtSourceHash(args.expected_source);
+      if (expectedHash === adtSourceHash(args.replacement_source)) throw new Error('replacement_source does not change the table DDL');
+
+      const currentResult = await remoteTool(entry, 'GetTable', { table_name: tableName }, available, log);
+      const currentSource = sourceFromResult(currentResult);
+      if (currentSource === undefined) throw new Error(`GetTable did not return source for ${tableName}`);
+      const currentHash = adtSourceHash(currentSource);
+      if (currentHash !== expectedHash) throw new Error(`table source changed since review; re-read ${tableName} and prepare a new update`);
+
+      const writeArguments = {
+        object_type: 'TABL',
+        name: tableName,
+        source: args.replacement_source,
+        mode: 'update',
+        expected_source_hash: currentHash,
+        ...(args.transport ? { transport: args.transport.trim() } : {})
+      };
+      const writeResult = await remoteTool(entry, 'WriteSource', writeArguments, available, log);
+      let writeDetails;
+      try {
+        writeDetails = JSON.parse(resultData(writeResult));
+      } catch {
+        throw new Error(`WriteSource returned an unparseable result for ${tableName}; inspect SAP state before retrying`);
+      }
+      if (!object(writeDetails) || writeDetails.success !== true) throw new Error(`WriteSource did not confirm a successful table update for ${tableName}; inspect SAP state before retrying`);
+      return toolJson({
+        status: 'updated',
+        table_name: tableName,
+        expected_source_hash: currentHash,
+        target_source_hash: adtSourceHash(args.replacement_source),
+        result: writeDetails
+      });
+    });
+  }
+
+  if (available.has('GetSource') && available.has('DeleteObject')) {
+    add(TOOLS.DeleteEmptyDDLS, async args => {
+      validateObject(args, 'arguments', ['name', 'transport', 'confirmation']);
+      const name = customerObjectName(args.name, 'name');
+      if (args.confirmation !== `DELETE EMPTY DDLS ${name}`) throw new Error(`confirmation must equal DELETE EMPTY DDLS ${name}`);
+      if (args.transport !== undefined && (typeof args.transport !== 'string' || !args.transport.trim())) throw new Error('transport must be a nonempty string when supplied');
+
+      const sourceResult = await remoteTool(entry, 'GetSource', { object_type: 'DDLS', name, include_context: false }, available, log);
+      const source = sourceFromResult(sourceResult);
+      if (source === undefined) throw new Error(`GetSource did not return source for DDLS ${name}; refusing deletion`);
+      if (source.trim() !== '') throw new Error(`DDLS ${name} is not empty; refusing deletion`);
+
+      const objectUrl = `/sap/bc/adt/ddic/ddl/sources/${encodeURIComponent(name.toLowerCase())}`;
+      await remoteTool(entry, 'DeleteObject', {
+        object_url: objectUrl,
+        ...(args.transport ? { transport: args.transport.trim() } : {})
+      }, available, log);
+      return toolJson({ status: 'deleted', object_type: 'DDLS', name, object_url: objectUrl });
     });
   }
 

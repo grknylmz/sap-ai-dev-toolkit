@@ -608,6 +608,8 @@ These local tools are namespaced by destination. Change-set tools appear when th
 | --- | --- |
 | `PrepareABAPChangeSet` | Stage up to 12 full-source `WriteSource` changes and return line diffs plus SHA-256 fingerprints. Proposals stay in MCP process memory. |
 | `ApplyABAPChangeSet` | Re-read each object and write only when its source still matches the reviewed version. It stops on conflicts or errors and reports partial application; it does not roll back SAP writes. |
+| `UpdateTable` | Compare the current Z/Y table DDL with reviewed source, then update and activate through VSP's source-hash check under lock. Requires exact confirmation. |
+| `DeleteEmptyDDLS` | Delete only a blank Z/Y DDLS shell after checking its source and requiring exact confirmation; generic `DeleteObject` remains hidden. |
 | `CheckTransportReadiness` | Run a caller-selected bundle of transport, dependency, inactive-object, ABAP Unit, and ATC checks. Completed calls may still contain findings. |
 | `PlanABAPCloudMigration` | Batch `GetAPIReleaseState` checks for ADT object URIs and prioritize recognized unreleased APIs ahead of unknown and released states. SAP evidence stays attached. |
 | `GenerateRAPRegressionSuite` | Read `$metadata` and return reusable JSON with a metadata check and one `$top=1` GET for each entity set. |

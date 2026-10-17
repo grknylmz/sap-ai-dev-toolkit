@@ -224,7 +224,8 @@ test('merges paged tools and routes calls to the selected child', async t => {
 
   const localWorkflowTools = [
     'lint_abap', 'get_application_log', 'prepare_abap_change_set', 'apply_abap_change_set',
-    'check_transport_readiness', 'plan_abap_cloud_migration', 'generate_rap_regression_suite', 'run_rap_regression_suite'
+    'check_transport_readiness', 'plan_abap_cloud_migration', 'generate_rap_regression_suite', 'run_rap_regression_suite',
+    'update_table', 'delete_empty_ddls'
   ];
   for (const destination of ['alpha', 'beta']) {
     for (const toolName of PUBLIC_VSP_TOOLS) {
@@ -238,7 +239,7 @@ test('merges paged tools and routes calls to the selected child', async t => {
     }
   }
   assert.equal(listed.result.tools.filter(tool => tool.name.startsWith('alpha_')).length, PUBLIC_VSP_TOOLS.size + localWorkflowTools.length);
-  assert.equal(PUBLIC_VSP_TOOLS.size + localWorkflowTools.length, 72);
+  assert.equal(PUBLIC_VSP_TOOLS.size + localWorkflowTools.length, 74);
   for (const tool of listed.result.tools) {
     assert.match(tool.name, /^[a-z0-9_-]+$/, `public tool names must be lowercase: ${tool.name}`);
     assert.ok(tool.name.length <= 128, `public tool names must stay within the MCP limit: ${tool.name}`);
@@ -257,7 +258,9 @@ test('merges paged tools and routes calls to the selected child', async t => {
     GetStructure: ['structure_name'],
     GetTypeInfo: ['type_name'],
     GetMessages: ['message_class'],
-    GetApplicationLog: []
+    GetApplicationLog: [],
+    UpdateTable: ['table_name', 'expected_source', 'replacement_source', 'confirmation'],
+    DeleteEmptyDDLS: ['name', 'confirmation']
   };
   for (const [toolName, required] of Object.entries(requiredArguments)) {
     const tool = listed.result.tools.find(entry => entry.name === publicName('alpha', toolName));
