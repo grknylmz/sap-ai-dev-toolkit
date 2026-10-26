@@ -23,7 +23,7 @@ The Integration Suite companion is never destination-prefixed; its tools are alr
 - APIM products and key value maps: `apim_list_api_products`, `apim_get_api_product`, `apim_create_api_product`, `apim_update_api_product`, `apim_list_key_value_maps`, `apim_get_key_value_map`, `apim_create_key_value_map`, `apim_set_key_value_map_entries`.
 - Anything else (access policies, JMS queues, applications, developers, certificate store references): the read-only `cpi_odata_get` / `apim_odata_get`; start with path `/$metadata` to see the entity sets.
 
-`cpi_*` tools appear only when CPI credentials are configured and `apim_*` tools only when APIM credentials are configured. Start every session with `integration_connection_info` and `verify: true` to see which side is available, which tenant hosts are bound, and which tool areas the service key lacks a role for. When a side is missing or cannot sign in, ask the user to run `sap-ai-dev --setup-integration` in a terminal (paste, online check, user-only storage) instead of pasting a key into the chat.
+`cpi_*` tools appear only when CPI credentials are configured and `apim_*` tools only when APIM credentials are configured. Start every session with `integration_connection_info` and `verify: true` to see which side is available, which tenant hosts are bound, and which tool areas the service key lacks a role for. When a side is missing, cannot sign in, or lacks roles, ask the user to run `sap-ai-dev --setup-integration` in a terminal: it takes the key from the logged-in Cloud Foundry space (and can create a dedicated instance with the needed roles) or from a pasted key, checks it online, and stores it user-only. Never ask for a key in the chat.
 
 ## Exposing an SAP OData service through API Management
 

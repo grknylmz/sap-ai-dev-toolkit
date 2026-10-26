@@ -26,7 +26,7 @@ function cliError(error) {
   return failure;
 }
 
-async function runCf(args, { env = process.env, execFileImpl = nodeExecFile } = {}) {
+export async function runCf(args, { env = process.env, execFileImpl = nodeExecFile } = {}) {
   try {
     const run = execFileImpl === nodeExecFile ? execFile : promisify(execFileImpl);
     const result = await run('cf', args, {
@@ -86,7 +86,7 @@ export async function getCloudFoundryTarget({ env = process.env, execFileImpl = 
   if (!spaceGuid || /\s/.test(spaceGuid)) {
     return { available: false, reason: 'Cloud Foundry CLI is not authenticated to a targeted space; CF destinations were skipped.' };
   }
-  return { available: true, spaceGuid };
+  return { available: true, spaceGuid, spaceName, orgName: /^\s*org:\s*(.*?)\s*$/im.exec(target)?.[1] || '' };
 }
 
 function missingServiceKey(error) {
@@ -159,7 +159,7 @@ export async function findOrphanedCloudFoundryServiceKeys({ env = process.env, s
   return orphans;
 }
 
-async function cfJson(path, options) {
+export async function cfJson(path, options) {
   const value = await runCf(['curl', path], options);
   try {
     return JSON.parse(value);
@@ -177,7 +177,7 @@ function apiPath(href) {
   }
 }
 
-async function serviceInstances(spaceGuid, options) {
+export async function serviceInstances(spaceGuid, options) {
   const instances = [];
   let path = `/v3/service_instances?space_guids=${encodeURIComponent(spaceGuid)}&per_page=500`;
   const visited = new Set();
@@ -398,7 +398,7 @@ async function readServiceKey(instance, kind, spaceGuid, managedKeys, createdKey
   return { keyName, credentials };
 }
 
-async function serviceKeyCredentials(instanceName, keyName, kind, options) {
+export async function serviceKeyCredentials(instanceName, keyName, kind, options) {
   const raw = await runCf(['service-key', '--json', instanceName, keyName], options);
   let parsed;
   try {

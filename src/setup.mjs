@@ -10,6 +10,7 @@ import { discoverCloudFoundryDestinations, getCloudFoundryTarget, deleteManagedC
 import { SAP_DEVELOPMENT_MCP_SERVERS, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, installMcpConfig, readMcpConfig, resolveMcpConfigPath } from './mcp-config.mjs';
 import { parseIntegrationServiceKey, resolveIntegrationConfig, resolveIntegrationSideFromEnvironment } from './integration-config.mjs';
 import { readStoredIntegrationKeys, storeIntegrationKey } from './integration-credentials.mjs';
+import { INTEGRATION_CF_SERVICES, createIntegrationInstance, findIntegrationInstances, integrationServiceKey } from './cf-integration.mjs';
 import { createIntegrationClients, verificationLines, verifyIntegrationClients } from './integration-verify.mjs';
 import { discoverCertificateDnsNames } from './tls-adt-proxy.mjs';
 import { findRemoteControllableSsoBrowsers } from './sso-browsers.mjs';
@@ -331,23 +332,148 @@ async function printIntegrationVerification(config, { env, output, verifyIntegra
   if (report.ok) {
     print(output, formatStatus(`Integration Suite credentials verified${missing ? `; ${missing} area${missing === 1 ? ' needs' : 's need'} an extra role on the service key` : ''}.`, missing ? 'warning' : 'success', output, 'Integration Suite'));
   } else {
-    print(output, formatStatus('Integration Suite verification failed; fix or replace the service key before using the tools.', 'warning', output, 'Integration Suite'));
+    const signedIn = [report.cpi, report.apim].some(side => side?.signed_in);
+    print(output, formatStatus(signedIn
+      ? 'The key signs in but lacks the roles for the core area; use an instance with the needed roles (the Cloud Foundry option can create one) or replace the key.'
+      : 'Integration Suite sign-in failed; fix or replace the service key before using the tools.', 'warning', output, 'Integration Suite'));
   }
   return report;
 }
 
-// Verify the detected credentials online and let the user paste CPI/APIM service keys. A pasted key is checked
-// online first and saved to the user-only store (never to mcp.json); it is used when the environment has no key.
-async function configureIntegrationCredentials({ env, input, output, verifyIntegration }) {
+const defaultIntegrationCloudFoundry = Object.freeze({
+  getTarget: getCloudFoundryTarget,
+  findInstances: findIntegrationInstances,
+  serviceKey: integrationServiceKey,
+  createInstance: createIntegrationInstance
+});
+
+const SIDE_LABELS = Object.freeze({ CPI: 'Cloud Integration (CPI)', APIM: 'API Management' });
+
+function cfFailure(error) {
+  const detail = String(error?.stderr || error?.message || '').replace(/\s+/g, ' ').trim();
+  return detail ? detail.slice(0, 300) : 'Cloud Foundry CLI command failed';
+}
+
+// Verify one side's key online, then save it user-only. A key that cannot sign in is saved only when confirmed.
+async function acceptIntegrationKey(side, config, { env, input, output, verifyIntegration }) {
+  const choice = side.toLowerCase();
+  const report = await printIntegrationVerification({ [choice]: config }, { env, output, verifyIntegration });
+  if (!report[choice].signed_in && !await confirmPrompt('Save this key anyway? (y/n, Enter=no)', { input, output, defaultYes: false })) return { saved: false, report };
+  const path = await storeIntegrationKey(side, config, env);
+  print(output, formatStatus(`Saved the ${side} key to ${path} (readable only by you; not written to mcp.json).`, 'success', output, 'Integration Suite'));
+  let fromEnvironment = null;
+  try {
+    fromEnvironment = resolveIntegrationSideFromEnvironment(env, side);
+  } catch {
+    // A broken environment value is reported by the status lines.
+  }
+  if (fromEnvironment) print(output, formatStatus(`${side} credentials from ${fromEnvironment.source} in this environment take precedence over the saved key.`, 'warning', output, 'Integration Suite'));
+  return { saved: true, report };
+}
+
+function lacksRoles(side) {
+  return Boolean(side?.signed_in) && (!side.ok || side.checks.some(check => check.result === 'forbidden'));
+}
+
+async function cloudFoundryStep(message, operation, { env, output }) {
+  const stop = startProgress(message, { output, env, label: 'Cloud Foundry' });
+  try {
+    return await operation();
+  } finally {
+    stop();
+  }
+}
+
+// Key from an instance: reuse or create the toolkit's service key, then verify and save it.
+async function useCloudFoundryInstance(side, instanceName, context) {
+  const { env, output, cloudFoundry } = context;
+  const key = await cloudFoundryStep(`Reading service key ${instanceName}/sap-ai-dev-integration`, () => cloudFoundry.serviceKey(instanceName, { env }), context);
+  print(output, formatStatus(`${key.created ? 'Created' : 'Reusing'} service key ${key.keyName} on ${instanceName}.`, 'info', output, 'Cloud Foundry'));
+  return acceptIntegrationKey(side, parseIntegrationServiceKey(side, key.credentials), context);
+}
+
+async function createDedicatedInstance(side, context) {
+  const { env, output, cloudFoundry } = context;
+  const service = INTEGRATION_CF_SERVICES[side];
+  try {
+    await cloudFoundryStep(`Creating ${service.offering}/${service.plan} instance ${service.dedicatedInstance}`, () => cloudFoundry.createInstance(side, { env }), context);
+  } catch (error) {
+    print(output, formatStatus(`Could not create ${service.dedicatedInstance}: ${cfFailure(error)}`, 'warning', output, 'Cloud Foundry'));
+    return null;
+  }
+  print(output, formatStatus(`Created service instance ${service.dedicatedInstance}.`, 'success', output, 'Cloud Foundry'));
+  return useCloudFoundryInstance(side, service.dedicatedInstance, context);
+}
+
+// Use the logged-in CF space: per side pick the matching instance (or offer to create a dedicated one with the
+// roles the tools need), reuse or create the toolkit's service key, verify it online and save it.
+async function useCloudFoundrySpace(target, context) {
+  const { env, input, output, cloudFoundry } = context;
+  let instances;
+  try {
+    instances = await cloudFoundryStep('Looking for Integration Suite service instances in the CF space', () => cloudFoundry.findInstances({ env, spaceGuid: target.spaceGuid }), context);
+  } catch (error) {
+    print(output, formatStatus(`Could not list service instances: ${cfFailure(error)}`, 'warning', output, 'Cloud Foundry'));
+    return;
+  }
+  for (const side of ['CPI', 'APIM']) {
+    const service = INTEGRATION_CF_SERVICES[side];
+    const candidates = instances[side] || [];
+    print(output, '');
+    if (!candidates.length) {
+      print(output, formatStatus(`No ${service.label} instance with plan ${service.plan} (${service.offering}) in this space.`, 'info', output, SIDE_LABELS[side]));
+      if (await confirmPrompt(`Create instance ${service.dedicatedInstance} (${service.offering}, plan ${service.plan}) with the roles the tools need? (y/n, Enter=no)`, { input, output, defaultYes: false })) {
+        await createDedicatedInstance(side, context);
+      }
+      continue;
+    }
+    const dedicated = candidates.find(candidate => candidate.name === service.dedicatedInstance);
+    const instanceName = candidates.length === 1 ? candidates[0].name : await selectPrompt({
+      message: colorText(`☁️ ${SIDE_LABELS[side]}: choose the ${service.offering}/${service.plan} instance to use`, 'cyan', output),
+      defaultValue: (dedicated || candidates[0]).name,
+      choices: [...candidates.map(candidate => ({ name: candidate.name, value: candidate.name })), { name: 'Skip', value: '', shortcut: 's' }]
+    }, { input, output });
+    if (!instanceName) continue;
+    let result;
+    try {
+      result = await useCloudFoundryInstance(side, instanceName, context);
+    } catch (error) {
+      print(output, formatStatus(`Could not use ${instanceName}: ${cfFailure(error)}`, 'warning', output, SIDE_LABELS[side]));
+      continue;
+    }
+    const sideReport = result.report[side.toLowerCase()];
+    if (instanceName !== service.dedicatedInstance && !dedicated && lacksRoles(sideReport)) {
+      print(output, `  The roles of ${instanceName} are fixed on the instance; a new key cannot add them.`);
+      print(output, `  A dedicated instance gets: ${service.parameters.roles ? service.parameters.roles.join(', ') : service.parameters.role}.`);
+      if (await confirmPrompt(`Create instance ${service.dedicatedInstance} with these roles and use it instead? (y/n, Enter=no)`, { input, output, defaultYes: false })) {
+        await createDedicatedInstance(side, context);
+      }
+    }
+  }
+}
+
+// Verify the detected credentials online and let the user take CPI/APIM keys from the logged-in CF space or
+// paste them. A key is checked online first and saved to the user-only store (never to mcp.json); it is used
+// when the environment has no key.
+async function configureIntegrationCredentials({ env, input, output, verifyIntegration, cloudFoundry = defaultIntegrationCloudFoundry }) {
   let status = integrationSuiteCredentialStatus(env);
   if (status.found) await printIntegrationVerification(status.config, { env, output, verifyIntegration });
+  let target = { available: false };
+  try {
+    target = await cloudFoundryStep('Checking the Cloud Foundry login', () => cloudFoundry.getTarget({ env }), { env, output });
+  } catch {
+    // No CF CLI or no login: the CF option is simply not offered.
+  }
+  const context = { env, input, output, verifyIntegration, cloudFoundry };
   for (;;) {
     print(output, '');
+    const space = target.available ? [target.orgName, target.spaceName].filter(Boolean).join(' / ') || target.spaceGuid : '';
     const choice = await selectPrompt({
       message: colorText('🔑 Integration Suite credentials', 'cyan', output),
-      defaultValue: status.found ? 'done' : 'cpi',
+      defaultValue: status.found ? 'done' : (target.available ? 'cf' : 'cpi'),
       choices: [
         { name: status.found ? 'Continue' : 'Continue without credentials (the server will not start until a key is configured)', value: 'done', shortcut: 'c' },
+        ...(target.available ? [{ name: `Use the logged-in Cloud Foundry space (${space}): find the instances, create or reuse service keys, verify`, value: 'cf', shortcut: 'f' }] : []),
         { name: 'Paste a Cloud Integration (CPI) service key — Process Integration Runtime, plan api', value: 'cpi', shortcut: 'p' },
         { name: 'Paste an API Management service key — API Management, plan apiportal-apiaccess', value: 'apim', shortcut: 'a' },
         ...(status.found ? [{ name: 'Check the configured credentials online again', value: 'verify', shortcut: 'v' }] : [])
@@ -358,37 +484,30 @@ async function configureIntegrationCredentials({ env, input, output, verifyInteg
       await printIntegrationVerification(status.config, { env, output, verifyIntegration });
       continue;
     }
-    const side = choice.toUpperCase();
-    const pasted = await textPrompt({
-      message: `Paste the ${side} service key JSON or the path to its .json file`,
-      secret: true,
-      validate: value => {
-        try {
-          pastedServiceKey(side, value, env);
-          return true;
-        } catch (error) {
-          return error.message;
+    if (choice === 'cf') {
+      await useCloudFoundrySpace(target, context);
+    } else {
+      const side = choice.toUpperCase();
+      const pasted = await textPrompt({
+        message: `Paste the ${side} service key JSON or the path to its .json file`,
+        secret: true,
+        validate: value => {
+          try {
+            pastedServiceKey(side, value, env);
+            return true;
+          } catch (error) {
+            return error.message;
+          }
         }
-      }
-    }, { input, output });
-    const config = pastedServiceKey(side, pasted, env);
-    const report = await printIntegrationVerification({ [choice]: config }, { env, output, verifyIntegration });
-    if (!report[choice].signed_in && !await confirmPrompt('Save this key anyway? (y/n, Enter=no)', { input, output, defaultYes: false })) continue;
-    const path = await storeIntegrationKey(side, config, env);
-    print(output, formatStatus(`Saved the ${side} key to ${path} (readable only by you; not written to mcp.json).`, 'success', output, 'Integration Suite'));
-    let fromEnvironment = null;
-    try {
-      fromEnvironment = resolveIntegrationSideFromEnvironment(env, side);
-    } catch {
-      // A broken environment value is reported by the status lines below.
+      }, { input, output });
+      await acceptIntegrationKey(side, pastedServiceKey(side, pasted, env), context);
     }
-    if (fromEnvironment) print(output, formatStatus(`${side} credentials from ${fromEnvironment.source} in this environment take precedence over the saved key.`, 'warning', output, 'Integration Suite'));
     status = integrationSuiteCredentialStatus(env);
     for (const line of status.lines) print(output, `  ${line}`);
   }
 }
 
-async function promptIntegrationSuite({ env, alreadyConfigured, input, output, verifyIntegration = defaultVerifyIntegration, ask = true }) {
+async function promptIntegrationSuite({ env, alreadyConfigured, input, output, verifyIntegration = defaultVerifyIntegration, integrationCloudFoundry, ask = true }) {
   print(output, '');
   print(output, formatStatus('SAP Integration Suite tools (Cloud Integration + API Management).', 'step', output, 'Integration Suite'));
   print(output, '  Adds the sap-ai-integration MCP server: iFlows, value mappings, security material and monitoring in CPI; API providers, proxies, policies, products and key value maps in APIM.');
@@ -405,7 +524,7 @@ async function promptIntegrationSuite({ env, alreadyConfigured, input, output, v
     const defaultYes = status.found;
     if (!await confirmPrompt(`Add the SAP Integration Suite tools? (y/n, Enter=${defaultYes ? 'yes' : 'no'})`, { input, output, defaultYes })) return false;
   }
-  await configureIntegrationCredentials({ env, input, output, verifyIntegration });
+  await configureIntegrationCredentials({ env, input, output, verifyIntegration, ...(integrationCloudFoundry ? { cloudFoundry: integrationCloudFoundry } : {}) });
   return true;
 }
 
@@ -415,7 +534,8 @@ export async function runIntegrationSuiteSetup({
   input = stdin,
   output = stdout,
   install = installMcpConfig,
-  verifyIntegration = defaultVerifyIntegration
+  verifyIntegration = defaultVerifyIntegration,
+  integrationCloudFoundry
 } = {}) {
   if (!input.isTTY || !output.isTTY) {
     print(output, formatStatus('Interactive setup needs a terminal. Rerun sap-ai-dev --setup-integration from a terminal.', 'warning', output, 'SAP AI Dev Toolkit'));
@@ -427,7 +547,7 @@ export async function runIntegrationSuiteSetup({
   } catch {
     // A missing or unreadable config is created or healed by install.
   }
-  await promptIntegrationSuite({ env, alreadyConfigured, input, output, verifyIntegration, ask: false });
+  await promptIntegrationSuite({ env, alreadyConfigured, input, output, verifyIntegration, integrationCloudFoundry, ask: false });
   const result = await install([], { env, sapDevelopmentServers: ['integration-suite'], additive: true });
   print(output, '');
   print(output, formatStatus(`Configured the Integration Suite MCP server${result?.path ? ` in ${result.path}` : ''}.`, 'success', output, 'Integration Suite'));
@@ -771,7 +891,8 @@ export async function runSetup({
   includeSapDevelopmentToolsPrompt = false,
   detectAdtUrl,
   discoverSsoBrowsers = findRemoteControllableSsoBrowsers,
-  verifyIntegration = defaultVerifyIntegration
+  verifyIntegration = defaultVerifyIntegration,
+  integrationCloudFoundry
 } = {}) {
   const isBas = Boolean(env.H2O_URL);
   if (!isBas && (!input.isTTY || !output.isTTY)) {
@@ -943,7 +1064,7 @@ export async function runSetup({
 
   let sapDevelopmentServers = [];
   if (integrationOnly) {
-    await promptIntegrationSuite({ env, alreadyConfigured: integrationSuiteConfigured, input, output, verifyIntegration, ask: false });
+    await promptIntegrationSuite({ env, alreadyConfigured: integrationSuiteConfigured, input, output, verifyIntegration, integrationCloudFoundry, ask: false });
     sapDevelopmentServers = ['integration-suite'];
   } else if (includeSapDevelopmentToolsPrompt) {
     print(output, '');
@@ -963,9 +1084,9 @@ export async function runSetup({
       shortcuts: { all: 'a' }
     }, { input, output });
     if (sapDevelopmentServers.includes('integration-suite')) {
-      await promptIntegrationSuite({ env, alreadyConfigured: integrationSuiteConfigured, input, output, verifyIntegration, ask: false });
+      await promptIntegrationSuite({ env, alreadyConfigured: integrationSuiteConfigured, input, output, verifyIntegration, integrationCloudFoundry, ask: false });
     }
-  } else if (await promptIntegrationSuite({ env, alreadyConfigured: integrationSuiteConfigured, input, output, verifyIntegration })) {
+  } else if (await promptIntegrationSuite({ env, alreadyConfigured: integrationSuiteConfigured, input, output, verifyIntegration, integrationCloudFoundry })) {
     // Without --tools, Integration Suite still gets its own yes/no step instead of being hidden.
     sapDevelopmentServers = ['integration-suite'];
   }

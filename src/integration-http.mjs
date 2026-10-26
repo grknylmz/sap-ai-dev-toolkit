@@ -80,6 +80,22 @@ function setCookiePairs(headers) {
   return values.map(value => value.split(';')[0].trim()).filter(Boolean);
 }
 
+// undici flags EnvHttpProxyAgent as experimental with a process warning that lands in the middle of the
+// setup wizard output; only that warning is dropped, and only while the agent is constructed.
+function envProxyAgent(options) {
+  const emitWarning = process.emitWarning;
+  process.emitWarning = (warning, ...rest) => {
+    const code = typeof rest[0] === 'object' ? rest[0]?.code : rest[1];
+    if (code === 'UNDICI-EHPA') return;
+    emitWarning.call(process, warning, ...rest);
+  };
+  try {
+    return new EnvHttpProxyAgent(options);
+  } finally {
+    process.emitWarning = emitWarning;
+  }
+}
+
 /** Create a tenant-scoped client using OAuth client credentials. */
 export function createServiceClient({
   label,
@@ -97,7 +113,7 @@ export function createServiceClient({
   const httpProxy = env.HTTP_PROXY || env.http_proxy;
   const httpsProxy = env.HTTPS_PROXY || env.https_proxy;
   const dispatcher = httpProxy || httpsProxy
-    ? new EnvHttpProxyAgent({ httpProxy, httpsProxy, noProxy: env.NO_PROXY || env.no_proxy })
+    ? envProxyAgent({ httpProxy, httpsProxy, noProxy: env.NO_PROXY || env.no_proxy })
     : undefined;
   const transportOptions = dispatcher ? { dispatcher } : {};
   let cachedToken = null;

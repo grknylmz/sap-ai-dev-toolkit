@@ -475,7 +475,7 @@ test('manual entry wizard configures a system when nothing was detected', async 
 
 // Drives the manual-entry wizard to the Integration Suite step and answers it with `answers`.
 // Online verification is replaced by `verifyIntegration` (default: every configured side signs in).
-async function runWizardToIntegrationStep(env, answers = [], { verifyIntegration = fakeVerification() } = {}) {
+async function runWizardToIntegrationStep(env, answers = [], { verifyIntegration = fakeVerification(), integrationCloudFoundry = { getTarget: async () => ({ available: false }) } } = {}) {
   const input = new PassThrough();
   input.isTTY = true;
   input.setRawMode = () => {};
@@ -487,6 +487,7 @@ async function runWizardToIntegrationStep(env, answers = [], { verifyIntegration
     output,
     discoverLocalSapGui: async () => [],
     verifyIntegration,
+    integrationCloudFoundry,
     install: async (selected, options) => {
       installs.push(options.sapDevelopmentServers);
       return { path: join(env.HOME, 'mcp.json'), servers: {} };
@@ -1190,4 +1191,47 @@ test('destination picker m shortcut adds a manual system without re-prompting di
   assert.match(text, /skip discovery, add your SAP system directly/);
   assert.match(text, /Q7C \(manual, client 100\)/);
   assert.match(text, /Configured 1 MCP server in/);
+});
+
+test('Integration Suite step: the logged-in CF space supplies the key and a role-less instance is replaced by a dedicated one', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'integration-step-cf-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const calls = [];
+  const keyFor = instance => ({ oauth: { url: 'https://tenant.it-cpi.example', tokenurl: 'https://auth.example/oauth/token', clientid: `id-${instance}`, clientsecret: 'cf-secret-value' } });
+  const integrationCloudFoundry = {
+    getTarget: async () => ({ available: true, spaceGuid: 'space-1', orgName: 'acme', spaceName: 'dev' }),
+    findInstances: async ({ spaceGuid }) => {
+      calls.push(['find', spaceGuid]);
+      return { CPI: [{ guid: 'g1', name: 'isuite-api' }], APIM: [] };
+    },
+    serviceKey: async instance => {
+      calls.push(['key', instance]);
+      return { keyName: 'sap-ai-dev-integration', created: true, credentials: keyFor(instance) };
+    },
+    createInstance: async side => {
+      calls.push(['create', side]);
+      return { name: 'sap-ai-dev-integration-cpi' };
+    }
+  };
+  // The pre-existing instance signs in but cannot read packages; the dedicated one has every role.
+  const verifyIntegration = async config => {
+    const ok = config.cpi.clientId === 'id-sap-ai-dev-integration-cpi';
+    return {
+      ok,
+      cpi: { configured: true, signed_in: true, ok, checks: [{ area: 'Packages and iFlows', status: ok ? 200 : 403, result: ok ? 'ok' : 'forbidden', detail: 'HTTP 403: the service key lacks the role for this area' }] },
+      apim: { configured: false }
+    };
+  };
+  // y = add; Enter = default "Use the logged-in Cloud Foundry space"; y = create dedicated CPI instance;
+  // Enter = do not create an APIM instance; Enter = Continue.
+  const { installs, text } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['y\r', '\r', 'y\r', '\r', '\r'], { verifyIntegration, integrationCloudFoundry });
+  assert.deepEqual(installs, [['integration-suite']]);
+  assert.deepEqual(calls, [['find', 'space-1'], ['key', 'isuite-api'], ['create', 'CPI'], ['key', 'sap-ai-dev-integration-cpi']]);
+  assert.match(text, /Use the logged-in Cloud Foundry space \(acme \/ dev\)/);
+  assert.match(text, /signed in, but Packages and iFlows is not readable/);
+  assert.match(text, /AuthGroup_IntegrationDeveloper/);
+  assert.match(text, /No API Management, API portal instance with plan apiportal-apiaccess/);
+  const stored = JSON.parse(await readFile(join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json'), 'utf8'));
+  assert.equal(stored.cpi.oauth.clientid, 'id-sap-ai-dev-integration-cpi');
+  assert.doesNotMatch(text, /cf-secret-value/);
 });

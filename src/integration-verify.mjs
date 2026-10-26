@@ -109,7 +109,7 @@ export async function verifyIntegrationClients({ cpi, apim } = {}) {
 export function verificationLines(label, host, side) {
   if (!side?.configured) return [];
   if (!side.signed_in) return [`✗ ${label} ${host}: sign-in failed — ${side.error}`];
-  const lines = [`${side.ok ? '✓' : '✗'} ${label} ${host}: signed in`];
+  const lines = [side.ok ? `✓ ${label} ${host}: signed in` : `✗ ${label} ${host}: signed in, but ${side.checks[0]?.area ?? 'the core area'} is not readable with this key`];
   for (const check of side.checks) {
     const mark = check.result === 'ok' ? '✓' : (check.result === 'unavailable' ? '–' : '✗');
     lines.push(`    ${mark} ${check.area}${check.result === 'ok' ? '' : ` — ${check.detail}`}`);
