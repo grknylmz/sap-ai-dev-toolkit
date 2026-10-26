@@ -10,6 +10,8 @@ import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { installMcpConfig, npxMcpLauncher } from '../src/mcp-config.mjs';
 import { adtCandidate, parseSapClientList, runSetup } from '../src/setup.mjs';
+import { parseIntegrationServiceKey } from '../src/integration-config.mjs';
+import { storeIntegrationKey } from '../src/integration-credentials.mjs';
 import { spawnWithPty } from './pty.mjs';
 import { isolatedWindowsEnv, isWindows, pathEntry, withoutIntegrationCredentials, writeFakeCli } from './fake-bin.mjs';
 
@@ -1227,11 +1229,44 @@ test('Integration Suite step: the logged-in CF space supplies the key and a role
   const { installs, text } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['y\r', '\r', 'y\r', '\r', '\r'], { verifyIntegration, integrationCloudFoundry });
   assert.deepEqual(installs, [['integration-suite']]);
   assert.deepEqual(calls, [['find', 'space-1'], ['key', 'isuite-api'], ['create', 'CPI'], ['key', 'sap-ai-dev-integration-cpi']]);
-  assert.match(text, /Use the logged-in Cloud Foundry space \(acme \/ dev\)/);
+  assert.match(text, /Use the logged-in CF space \(acme \/ dev\)/);
   assert.match(text, /signed in, but Packages and iFlows is not readable/);
   assert.match(text, /AuthGroup_IntegrationDeveloper/);
   assert.match(text, /No API Management, API portal instance with plan apiportal-apiaccess/);
   const stored = JSON.parse(await readFile(join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json'), 'utf8'));
   assert.equal(stored.cpi.oauth.clientid, 'id-sap-ai-dev-integration-cpi');
   assert.doesNotMatch(text, /cf-secret-value/);
+});
+
+test('Integration Suite step: a saved key without roles makes "create a dedicated instance" the default fix', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'integration-step-roleless-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const keyFor = id => ({ oauth: { url: 'https://tenant.it-cpi.example', tokenurl: 'https://auth.example/oauth/token', clientid: id, clientsecret: 'cf-secret-value' } });
+  await storeIntegrationKey('CPI', parseIntegrationServiceKey('CPI', keyFor('old-instance-key')), { XDG_CONFIG_HOME: join(home, '.config') });
+  const config = join(home, 'mcp.json');
+  await writeFile(config, JSON.stringify({ servers: { 'integration-suite': { type: 'stdio', command: 'npx', BAS_EXT: 'true', BAS_EXT_KIND: 'sap-development-companion' } } }));
+  const created = [];
+  const integrationCloudFoundry = {
+    getTarget: async () => ({ available: true, spaceGuid: 'space-1', orgName: 'acme', spaceName: 'CIDev' }),
+    createInstance: async side => {
+      created.push(side);
+      return { name: 'sap-ai-dev-integration-cpi' };
+    },
+    serviceKey: async instance => ({ keyName: 'sap-ai-dev-integration', created: true, credentials: keyFor(`id-${instance}`) })
+  };
+  const verifyIntegration = async ({ cpi }) => {
+    const ok = cpi.clientId === 'id-sap-ai-dev-integration-cpi';
+    return {
+      ok,
+      cpi: { configured: true, signed_in: true, ok, checks: [{ area: 'Packages and iFlows', status: ok ? 200 : 403, result: ok ? 'ok' : 'forbidden', detail: 'HTTP 403: the service key lacks the role for this area' }] },
+      apim: { configured: false }
+    };
+  };
+  // Enter = default fix (create the dedicated CPI instance); Enter = Continue once the new key is healthy.
+  const { installs, text } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config }, ['\r', '\r'], { verifyIntegration, integrationCloudFoundry });
+  assert.deepEqual(installs, [['integration-suite']]);
+  assert.deepEqual(created, ['CPI']);
+  assert.match(text, /❯● Create sap-ai-dev-integration-cpi in acme \/ CIDev/);
+  const stored = JSON.parse(await readFile(join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json'), 'utf8'));
+  assert.equal(stored.cpi.oauth.clientid, 'id-sap-ai-dev-integration-cpi');
 });

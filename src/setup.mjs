@@ -355,7 +355,8 @@ function cfFailure(error) {
 }
 
 // Verify one side's key online, then save it user-only. A key that cannot sign in is saved only when confirmed.
-async function acceptIntegrationKey(side, config, { env, input, output, verifyIntegration }) {
+async function acceptIntegrationKey(side, config, context) {
+  const { env, input, output, verifyIntegration } = context;
   const choice = side.toLowerCase();
   const report = await printIntegrationVerification({ [choice]: config }, { env, output, verifyIntegration });
   if (!report[choice].signed_in && !await confirmPrompt('Save this key anyway? (y/n, Enter=no)', { input, output, defaultYes: false })) return { saved: false, report };
@@ -368,6 +369,7 @@ async function acceptIntegrationKey(side, config, { env, input, output, verifyIn
     // A broken environment value is reported by the status lines.
   }
   if (fromEnvironment) print(output, formatStatus(`${side} credentials from ${fromEnvironment.source} in this environment take precedence over the saved key.`, 'warning', output, 'Integration Suite'));
+  context.recordHealth?.(report);
   return { saved: true, report };
 }
 
@@ -457,23 +459,38 @@ async function useCloudFoundrySpace(target, context) {
 // when the environment has no key.
 async function configureIntegrationCredentials({ env, input, output, verifyIntegration, cloudFoundry = defaultIntegrationCloudFoundry }) {
   let status = integrationSuiteCredentialStatus(env);
-  if (status.found) await printIntegrationVerification(status.config, { env, output, verifyIntegration });
+  // Latest verification per side ({ cpi, apim }); updated whenever a key is checked or saved.
+  const health = {};
+  const recordHealth = report => {
+    for (const side of ['cpi', 'apim']) if (report?.[side]?.configured) health[side] = report[side];
+  };
+  if (status.found) recordHealth(await printIntegrationVerification(status.config, { env, output, verifyIntegration }));
   let target = { available: false };
   try {
     target = await cloudFoundryStep('Checking the Cloud Foundry login', () => cloudFoundry.getTarget({ env }), { env, output });
   } catch {
     // No CF CLI or no login: the CF option is simply not offered.
   }
-  const context = { env, input, output, verifyIntegration, cloudFoundry };
+  const context = { env, input, output, verifyIntegration, cloudFoundry, recordHealth };
   for (;;) {
     print(output, '');
     const space = target.available ? [target.orgName, target.spaceName].filter(Boolean).join(' / ') || target.spaceGuid : '';
+    // Sides whose key signs in but lacks roles: a new key cannot fix that, a dedicated instance can.
+    const roleless = ['CPI', 'APIM'].filter(side => lacksRoles(health[side.toLowerCase()]));
+    const healthy = status.found && !roleless.length && Object.values(health).every(side => side.ok);
+    const fixes = target.available
+      ? roleless.map(side => ({
+        name: `Create ${INTEGRATION_CF_SERVICES[side].dedicatedInstance} in ${space} with the roles the ${side} tools need, then use it`,
+        value: `create-${side.toLowerCase()}`
+      }))
+      : [];
     const choice = await selectPrompt({
       message: colorText('🔑 Integration Suite credentials', 'cyan', output),
-      defaultValue: status.found ? 'done' : (target.available ? 'cf' : 'cpi'),
+      defaultValue: healthy ? 'done' : (fixes[0]?.value ?? (target.available ? 'cf' : (status.found ? 'done' : 'cpi'))),
       choices: [
-        { name: status.found ? 'Continue' : 'Continue without credentials (the server will not start until a key is configured)', value: 'done', shortcut: 'c' },
-        ...(target.available ? [{ name: `Use the logged-in Cloud Foundry space (${space}): find the instances, create or reuse service keys, verify`, value: 'cf', shortcut: 'f' }] : []),
+        ...fixes,
+        { name: !status.found ? 'Continue without credentials (the server will not start until a key is configured)' : (healthy ? 'Continue' : 'Continue with the current key (tools in the ✗ areas will fail with HTTP 403)'), value: 'done', shortcut: 'c' },
+        ...(target.available ? [{ name: `Use the logged-in CF space (${space}): find instances, reuse or create keys`, value: 'cf', shortcut: 'f' }] : []),
         { name: 'Paste a Cloud Integration (CPI) service key — Process Integration Runtime, plan api', value: 'cpi', shortcut: 'p' },
         { name: 'Paste an API Management service key — API Management, plan apiportal-apiaccess', value: 'apim', shortcut: 'a' },
         ...(status.found ? [{ name: 'Check the configured credentials online again', value: 'verify', shortcut: 'v' }] : [])
@@ -481,10 +498,12 @@ async function configureIntegrationCredentials({ env, input, output, verifyInteg
     }, { input, output });
     if (choice === 'done') return status;
     if (choice === 'verify') {
-      await printIntegrationVerification(status.config, { env, output, verifyIntegration });
+      recordHealth(await printIntegrationVerification(status.config, { env, output, verifyIntegration }));
       continue;
     }
-    if (choice === 'cf') {
+    if (choice.startsWith('create-')) {
+      await createDedicatedInstance(choice.slice('create-'.length).toUpperCase(), context);
+    } else if (choice === 'cf') {
       await useCloudFoundrySpace(target, context);
     } else {
       const side = choice.toUpperCase();
