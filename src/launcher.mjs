@@ -10,7 +10,7 @@ import { adtBaseUrl, adtPort, detectAdtUrl, discoverSapGuiSystems, hasExplicitPo
 import { binaryTarget, cacheDirectory, downloadBinary, findBinary } from './binary.mjs';
 import { MCPProxy } from './mcp-proxy.mjs';
 import { configuredVersionHandoff, installMcpConfig, npxPackageLauncher, repairManagedMcpConfig } from './mcp-config.mjs';
-import { runSetup } from './setup.mjs';
+import { runIntegrationSuiteSetup, runSetup } from './setup.mjs';
 import { runHarnessSetup } from './harness-setup.mjs';
 import { resolveConfiguredCloudFoundryDestination } from './cf-destination.mjs';
 import { createTlsServerNameAdtProxy } from './tls-adt-proxy.mjs';
@@ -37,6 +37,7 @@ function usage() {
     'Options:',
     '  --setup                  Configure generated BAS MCP servers',
     '  --tools                  Also offer full-stack SAP companion MCP servers (use with --setup)',
+    '  --setup-integration      Only set up the Integration Suite MCP server: paste CPI/APIM service keys and verify them online',
     '  --npx                    Launch configured MCP servers through the pinned npm package (use with --setup)',
     '  --list-destinations      List discovered BAS destinations',
     '  --list-destinations --json  Print redacted JSON status',
@@ -369,6 +370,7 @@ async function configuredLocalSapGuiDestination(env) {
 }
 
 async function main() {
+  const setupIntegration = hasFlag('--setup-integration');
   const setup = hasFlag('--setup');
   const check = hasFlag('--check');
   const list = hasFlag('--list-destinations');
@@ -378,7 +380,7 @@ async function main() {
     process.stdout.write(usage());
     return;
   }
-  if (!setup && !check && !list && !doctor && !demo && await handOffToConfiguredVersion()) return;
+  if (!setup && !setupIntegration && !check && !list && !doctor && !demo && await handOffToConfiguredVersion()) return;
   if (doctor && demo) throw new Error('Use either --doctor or --demo, not both.');
   if (demo) {
     await runOfflineDemo();
@@ -405,6 +407,16 @@ async function main() {
     if (hasFlag('--json')) json(report);
     else for (const row of report.checks) console.log(`[${row.status.toUpperCase()}] ${row.name} — ${row.stage}: ${row.detail || ''}`);
     if (!report.ok) process.exitCode = 1;
+    return;
+  }
+  if (setupIntegration) {
+    const options = {};
+    if (hasFlag('--npx')) {
+      const launcher = npxPackageLauncher(pkg.version);
+      options.install = (selected, installOptions) => installMcpConfig(selected, { ...installOptions, ...launcher });
+    }
+    const result = await runIntegrationSuiteSetup(options);
+    if (!result?.skipped) await runHarnessSetup(result?.servers, { env: runtimeEnv, root });
     return;
   }
   if (setup) {

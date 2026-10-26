@@ -7,9 +7,9 @@ import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { chmod, copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, cp, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { isolatedWindowsEnv, isWindows, pathEntry, writeFakeCli } from './fake-bin.mjs';
+import { isolatedWindowsEnv, isWindows, pathEntry, withoutIntegrationCredentials, writeFakeCli } from './fake-bin.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { binaryTarget } from '../src/binary.mjs';
@@ -36,12 +36,13 @@ function runLauncherTty(env, input, args = ['--setup'], wizardAnswer = 'e\r', as
   return new Promise((resolve, reject) => {
     // Quoted paths: the Windows node install lives under "C:\Program Files".
     const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(launcher)} ${args.join(' ')}`;
-    const child = spawnWithPty(command, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawnWithPty(command, { env: withoutIntegrationCredentials(env), stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     let inputSent = false;
     let wizardAnswerSent = false;
     let assetsAnswerSent = false;
+    let integrationAnswerSent = false;
     const timeout = setTimeout(() => child.kill('SIGKILL'), 15000);
     child.stdout.on('data', chunk => {
       stdout += chunk.toString();
@@ -54,6 +55,10 @@ function runLauncherTty(env, input, args = ['--setup'], wizardAnswer = 'e\r', as
       if (!inputSent && stdout.includes('Select destinations')) {
         inputSent = true;
         child.stdin.write(input);
+      }
+      if (!integrationAnswerSent && stdout.includes('Add the SAP Integration Suite tools?')) {
+        integrationAnswerSent = true;
+        setTimeout(() => child.stdin.write('\r'), 400);
       }
       if (!assetsAnswerSent && stdout.includes('Install bundled agents and skills for')) {
         assetsAnswerSent = true;
@@ -75,14 +80,19 @@ function windowsAuthStep(label, options = {}) {
 function runLauncherTtyScripted(env, steps, args = ['--setup']) {
   return new Promise((resolve, reject) => {
     const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(launcher)} ${args.join(' ')}`;
-    const child = spawnWithPty(command, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawnWithPty(command, { env: withoutIntegrationCredentials(env), stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     const sent = new Set();
+    let integrationAnswerSent = false;
     let assetsAnswerSent = false;
     const timeout = setTimeout(() => child.kill('SIGKILL'), 15000);
     child.stdout.on('data', chunk => {
       stdout += chunk.toString();
+      if (!integrationAnswerSent && stdout.includes('Add the SAP Integration Suite tools?')) {
+        integrationAnswerSent = true;
+        setTimeout(() => child.stdin.write('\r'), 400);
+      }
       if (!assetsAnswerSent && stdout.includes('Install bundled agents and skills for')) {
         assetsAnswerSent = true;
         setTimeout(() => child.stdin.end('\r'), 400);
@@ -322,8 +332,7 @@ async function packageWithoutBinaries(t) {
   await mkdir(join(repoRoot, '.tmp'), { recursive: true });
   const root = await mkdtemp(join(repoRoot, '.tmp', 'package-'));
   t.after(() => rm(root, { recursive: true, force: true }));
-  await mkdir(join(root, 'src'));
-  for (const name of await readdir(join(repoRoot, 'src'))) await copyFile(join(repoRoot, 'src', name), join(root, 'src', name));
+  await cp(join(repoRoot, 'src'), join(root, 'src'), { recursive: true });
   await copyFile(join(repoRoot, 'package.json'), join(root, 'package.json'));
   const { version } = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
   return { launcher: join(root, 'src', 'launcher.mjs'), version };

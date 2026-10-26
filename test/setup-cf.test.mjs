@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { generatedServerName, installMcpConfig } from '../src/mcp-config.mjs';
 import { destinationTable } from '../scripts/postinstall.mjs';
 import { spawnWithPty } from './pty.mjs';
-import { pathEntry, writeFakeCli } from './fake-bin.mjs';
+import { pathEntry, withoutIntegrationCredentials, writeFakeCli } from './fake-bin.mjs';
 
 const setupModule = pathToFileURL(fileURLToPath(new URL('../src/setup.mjs', import.meta.url))).href;
 
@@ -104,15 +104,16 @@ await runSetup({
   return { directory, configPath, callLog, discoveryLog, harness, env };
 }
 
-function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r', selectionSequence = null, promptAnswers = [], wizardAnswer = 'e\r' } = {}) {
+function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r', selectionSequence = null, promptAnswers = [], wizardAnswer = 'e\r', integrationAnswer = '\r' } = {}) {
   return new Promise((resolve, reject) => {
     const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(fixture.harness)}`;
-    const child = spawnWithPty(command, { env: fixture.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawnWithPty(command, { env: withoutIntegrationCredentials(fixture.env), stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     let importSent = false;
     let selectionSent = false;
     let wizardAnswerSent = false;
+    let integrationAnswerSent = false;
     let selectionStepIndex = 0;
     let promptAnswerIndex = 0;
     const timeout = setTimeout(() => child.kill('SIGKILL'), 15000);
@@ -147,18 +148,24 @@ function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r', selec
           selectionStepIndex += 1;
           const finished = selectionStepIndex === selectionSequence.length;
           selectionSent = selectionSent || finished;
-          send(step.input, finished && !promptAnswers.length);
+          send(step.input);
         }
       } else if (!selectionSent && stdout.includes('Select destinations')) {
         selectionSent = true;
-        send(selection, !promptAnswers.length);
+        send(selection);
       }
       if (selectionSent && promptAnswerIndex < promptAnswers.length) {
         const answer = promptAnswers[promptAnswerIndex];
         if (stdout.includes(answer.when)) {
           promptAnswerIndex++;
-          send(answer.value, promptAnswerIndex === promptAnswers.length);
+          send(answer.value);
         }
+      }
+      // Every flow that reaches the destination picker ends with the Integration Suite step;
+      // its answer (Enter = default) is the last input, so stdin closes after it.
+      if (!integrationAnswerSent && stdout.includes('Add the SAP Integration Suite tools?')) {
+        integrationAnswerSent = true;
+        send(integrationAnswer, true);
       }
     });
     child.stderr.on('data', chunk => { stderr += chunk.toString(); });
@@ -168,7 +175,7 @@ function runSetupInPty(fixture, { importAnswer = 'y\r', selection = ' \r', selec
     });
     child.on('exit', (code, signal) => {
       clearTimeout(timeout);
-      resolve({ code, signal, stdout, stderr, importSent, selectionSent, promptAnswersSent: promptAnswerIndex });
+      resolve({ code, signal, stdout, stderr, importSent, selectionSent, promptAnswersSent: promptAnswerIndex, integrationAnswerSent });
     });
   });
 }

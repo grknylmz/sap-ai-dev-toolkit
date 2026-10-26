@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
 import { platform } from 'node:os';
@@ -7,6 +8,9 @@ import { discoverDestinations, remediation } from './bas-discovery.mjs';
 import { adtBaseUrl, adtPort, defaultAdtUrl, discoverSapGuiSystems, hasExplicitPort, hasPathPrefix, messageServerAppServers } from './local-sap-gui.mjs';
 import { discoverCloudFoundryDestinations, getCloudFoundryTarget, deleteManagedCloudFoundryServiceKeys, findOrphanedCloudFoundryServiceKeys } from './cf-destination.mjs';
 import { SAP_DEVELOPMENT_MCP_SERVERS, collectCloudFoundryKeyReferencesFromAllEntries, collectManagedCloudFoundryKeyReferences, installMcpConfig, readMcpConfig, resolveMcpConfigPath } from './mcp-config.mjs';
+import { parseIntegrationServiceKey, resolveIntegrationConfig, resolveIntegrationSideFromEnvironment } from './integration-config.mjs';
+import { readStoredIntegrationKeys, storeIntegrationKey } from './integration-credentials.mjs';
+import { createIntegrationClients, verificationLines, verifyIntegrationClients } from './integration-verify.mjs';
 import { discoverCertificateDnsNames } from './tls-adt-proxy.mjs';
 import { findRemoteControllableSsoBrowsers } from './sso-browsers.mjs';
 
@@ -268,14 +272,167 @@ function warnSsoIpHost(destination, label, output) {
   print(output, formatStatus(`${label} uses an IP address; SSO needs the DNS host name for Kerberos and the browser certificate check. Enter the host name if the sign-in fails.`, 'warning', output, 'SSO'));
 }
 
-async function confirmPrompt(message, { input = stdin, output = stdout } = {}) {
+async function confirmPrompt(message, { input = stdin, output = stdout, defaultYes = true } = {}) {
   const answer = await textPrompt({
     message,
-    placeholder: 'y',
+    placeholder: defaultYes ? 'y' : 'n',
     required: false,
     validate: value => /^(?:|y|yes|n|no)$/i.test(String(value || '').trim()) || 'Enter y or n.'
   }, { input, output });
-  return !/^n(?:o)?$/i.test(String(answer || '').trim());
+  const trimmed = String(answer || '').trim();
+  if (!trimmed) return defaultYes;
+  return !/^n(?:o)?$/i.test(trimmed);
+}
+
+// Credential status for the Integration Suite companion, without exposing any value: which sides
+// (CPI, APIM) resolve from this environment or the stored-key file, and from which source.
+export function integrationSuiteCredentialStatus(env = process.env) {
+  try {
+    const config = resolveIntegrationConfig(env, { stored: readStoredIntegrationKeys(env) });
+    const side = value => (value ? `configured from ${value.source}${value.bindingName ? ` (${value.bindingName})` : ''}, host ${new URL(value.url).host}` : 'not configured');
+    return { found: true, config, lines: [`CPI: ${side(config.cpi)}`, `APIM: ${side(config.apim)}`] };
+  } catch (error) {
+    const message = String(error?.message || '');
+    if (/^Configure CPI/.test(message)) return { found: false, config: null, lines: ['No CPI or APIM credentials were found in this environment.'] };
+    return { found: false, config: null, lines: [`Credentials found but not usable: ${message}`] };
+  }
+}
+
+function defaultVerifyIntegration(config, { env }) {
+  return verifyIntegrationClients(createIntegrationClients(config, { env }));
+}
+
+/** Read a pasted service key: JSON text (line breaks from a multi-line paste are dropped) or a path to a .json file. */
+function pastedServiceKey(side, value, env) {
+  const trimmed = String(value || '').trim();
+  let text = trimmed;
+  if (!trimmed.startsWith('{')) {
+    const path = trimmed.replace(/^~(?=$|[\\/])/, env.HOME || env.USERPROFILE || '~');
+    try {
+      text = readFileSync(path, 'utf8');
+    } catch {
+      throw new Error('Paste the service key JSON (starting with {) or the path to a readable .json file.');
+    }
+  }
+  return parseIntegrationServiceKey(side, text);
+}
+
+async function printIntegrationVerification(config, { env, output, verifyIntegration }) {
+  const stop = startProgress('Signing in to Integration Suite and checking each tool area', { output, env, label: 'Integration Suite' });
+  let report;
+  try {
+    report = await verifyIntegration(config, { env });
+  } finally {
+    stop();
+  }
+  const host = side => (config[side] ? new URL(config[side].url).host : '');
+  for (const line of [...verificationLines('CPI', host('cpi'), report.cpi), ...verificationLines('APIM', host('apim'), report.apim)]) print(output, `  ${line}`);
+  const missing = [report.cpi, report.apim].flatMap(side => side?.checks || []).filter(check => check.result === 'forbidden').length;
+  if (report.ok) {
+    print(output, formatStatus(`Integration Suite credentials verified${missing ? `; ${missing} area${missing === 1 ? ' needs' : 's need'} an extra role on the service key` : ''}.`, missing ? 'warning' : 'success', output, 'Integration Suite'));
+  } else {
+    print(output, formatStatus('Integration Suite verification failed; fix or replace the service key before using the tools.', 'warning', output, 'Integration Suite'));
+  }
+  return report;
+}
+
+// Verify the detected credentials online and let the user paste CPI/APIM service keys. A pasted key is checked
+// online first and saved to the user-only store (never to mcp.json); it is used when the environment has no key.
+async function configureIntegrationCredentials({ env, input, output, verifyIntegration }) {
+  let status = integrationSuiteCredentialStatus(env);
+  if (status.found) await printIntegrationVerification(status.config, { env, output, verifyIntegration });
+  for (;;) {
+    print(output, '');
+    const choice = await selectPrompt({
+      message: colorText('🔑 Integration Suite credentials', 'cyan', output),
+      defaultValue: status.found ? 'done' : 'cpi',
+      choices: [
+        { name: status.found ? 'Continue' : 'Continue without credentials (the server will not start until a key is configured)', value: 'done', shortcut: 'c' },
+        { name: 'Paste a Cloud Integration (CPI) service key — Process Integration Runtime, plan api', value: 'cpi', shortcut: 'p' },
+        { name: 'Paste an API Management service key — API Management, plan apiportal-apiaccess', value: 'apim', shortcut: 'a' },
+        ...(status.found ? [{ name: 'Check the configured credentials online again', value: 'verify', shortcut: 'v' }] : [])
+      ]
+    }, { input, output });
+    if (choice === 'done') return status;
+    if (choice === 'verify') {
+      await printIntegrationVerification(status.config, { env, output, verifyIntegration });
+      continue;
+    }
+    const side = choice.toUpperCase();
+    const pasted = await textPrompt({
+      message: `Paste the ${side} service key JSON or the path to its .json file`,
+      secret: true,
+      validate: value => {
+        try {
+          pastedServiceKey(side, value, env);
+          return true;
+        } catch (error) {
+          return error.message;
+        }
+      }
+    }, { input, output });
+    const config = pastedServiceKey(side, pasted, env);
+    const report = await printIntegrationVerification({ [choice]: config }, { env, output, verifyIntegration });
+    if (!report[choice].signed_in && !await confirmPrompt('Save this key anyway? (y/n, Enter=no)', { input, output, defaultYes: false })) continue;
+    const path = await storeIntegrationKey(side, config, env);
+    print(output, formatStatus(`Saved the ${side} key to ${path} (readable only by you; not written to mcp.json).`, 'success', output, 'Integration Suite'));
+    let fromEnvironment = null;
+    try {
+      fromEnvironment = resolveIntegrationSideFromEnvironment(env, side);
+    } catch {
+      // A broken environment value is reported by the status lines below.
+    }
+    if (fromEnvironment) print(output, formatStatus(`${side} credentials from ${fromEnvironment.source} in this environment take precedence over the saved key.`, 'warning', output, 'Integration Suite'));
+    status = integrationSuiteCredentialStatus(env);
+    for (const line of status.lines) print(output, `  ${line}`);
+  }
+}
+
+async function promptIntegrationSuite({ env, alreadyConfigured, input, output, verifyIntegration = defaultVerifyIntegration, ask = true }) {
+  print(output, '');
+  print(output, formatStatus('SAP Integration Suite tools (Cloud Integration + API Management).', 'step', output, 'Integration Suite'));
+  print(output, '  Adds the sap-ai-integration MCP server: iFlows, value mappings, security material and monitoring in CPI; API providers, proxies, policies, products and key value maps in APIM.');
+  print(output, '  Every write needs an exact confirmation string; there are no delete tools and secrets are write-only. Agents: SAP Integration Architect, SAP Integration Developer.');
+  if (alreadyConfigured) print(output, '  Already configured in this MCP config; keeping it and refreshing its version.');
+  const status = integrationSuiteCredentialStatus(env);
+  for (const line of status.lines) print(output, `  ${line}`);
+  if (!status.found) {
+    print(output, '  The server needs CPI_SERVICE_KEY and/or APIM_SERVICE_KEY (or CPI_*/APIM_* variables, VCAP_SERVICES) in the MCP host environment,');
+    print(output, '  or a service key pasted in the next step (verified online, then saved for your user only). Credentials are never written to mcp.json.');
+  }
+  if (ask && !alreadyConfigured) {
+    print(output, '');
+    const defaultYes = status.found;
+    if (!await confirmPrompt(`Add the SAP Integration Suite tools? (y/n, Enter=${defaultYes ? 'yes' : 'no'})`, { input, output, defaultYes })) return false;
+  }
+  await configureIntegrationCredentials({ env, input, output, verifyIntegration });
+  return true;
+}
+
+/** `sap-ai-dev --setup-integration`: only the Integration Suite step (paste, verify, add the server), keeping every other MCP entry. */
+export async function runIntegrationSuiteSetup({
+  env = process.env,
+  input = stdin,
+  output = stdout,
+  install = installMcpConfig,
+  verifyIntegration = defaultVerifyIntegration
+} = {}) {
+  if (!input.isTTY || !output.isTTY) {
+    print(output, formatStatus('Interactive setup needs a terminal. Rerun sap-ai-dev --setup-integration from a terminal.', 'warning', output, 'SAP AI Dev Toolkit'));
+    return { skipped: true, reason: 'non-tty' };
+  }
+  let alreadyConfigured = false;
+  try {
+    alreadyConfigured = Boolean((await readMcpConfig(await resolveMcpConfigPath(env)))?.servers?.['integration-suite']);
+  } catch {
+    // A missing or unreadable config is created or healed by install.
+  }
+  await promptIntegrationSuite({ env, alreadyConfigured, input, output, verifyIntegration, ask: false });
+  const result = await install([], { env, sapDevelopmentServers: ['integration-suite'], additive: true });
+  print(output, '');
+  print(output, formatStatus(`Configured the Integration Suite MCP server${result?.path ? ` in ${result.path}` : ''}.`, 'success', output, 'Integration Suite'));
+  for (const message of Array.isArray(result?.warnings) ? result.warnings : []) print(output, formatStatus(message, 'warning', output, 'Warning'));
+  return { selected: [], ...(result || {}) };
 }
 
 function buildLocalClientDestination(destination, client, authMode, { multipleClients = false, duplicateSystemName = false, browserPath } = {}) {
@@ -613,7 +770,8 @@ export async function runSetup({
   install = installMcpConfig,
   includeSapDevelopmentToolsPrompt = false,
   detectAdtUrl,
-  discoverSsoBrowsers = findRemoteControllableSsoBrowsers
+  discoverSsoBrowsers = findRemoteControllableSsoBrowsers,
+  verifyIntegration = defaultVerifyIntegration
 } = {}) {
   const isBas = Boolean(env.H2O_URL);
   if (!isBas && (!input.isTTY || !output.isTTY)) {
@@ -661,11 +819,13 @@ export async function runSetup({
   let configPath;
   let managedKeys = [];
   let previousAdtUrls = new Map();
+  let integrationSuiteConfigured = false;
   try {
     configPath = await resolveMcpConfigPath(env);
     const existingConfig = await readMcpConfig(configPath);
     managedKeys = collectManagedCloudFoundryKeyReferences(existingConfig);
     previousAdtUrls = previousLocalAdtUrls(existingConfig);
+    integrationSuiteConfigured = Boolean(existingConfig?.servers?.['integration-suite']);
   } catch {
     warnings.push('Existing MCP config could not be read before setup; existing CF service keys will not be reused.');
   }
@@ -750,6 +910,7 @@ export async function runSetup({
   };
   let selected;
   let additiveSetup = false;
+  let integrationOnly = false;
   if (!selectable.length) {
     // Nothing was detected — no BAS/CF destinations, or no SAP GUI entries.
     // Offer the manual MCP entry wizard before giving up.
@@ -761,23 +922,34 @@ export async function runSetup({
       defaultValue: 'manual',
       choices: [
         { name: '✍️  Start manual entry wizard (system name, ADT URL, client, login)', value: 'manual', shortcut: 'm' },
+        { name: '🔌 Set up only the SAP Integration Suite tools (paste and verify CPI / API Management service keys)', value: 'integration', shortcut: 'i' },
         { name: 'Exit setup without changes', value: 'exit', shortcut: 'e' }
       ]
     }, { input, output });
-    if (choice !== 'manual') return await exitWithoutDestinations();
-    selected = await runManualEntryWizard({ env, input, output, detectAdtUrl, selectSsoBrowser });
-    additiveSetup = true;
-    if (!selected.length) return await exitWithoutDestinations();
+    if (choice === 'integration') {
+      selected = [];
+      additiveSetup = true;
+      integrationOnly = true;
+    } else {
+      if (choice !== 'manual') return await exitWithoutDestinations();
+      selected = await runManualEntryWizard({ env, input, output, detectAdtUrl, selectSsoBrowser });
+      additiveSetup = true;
+      if (!selected.length) return await exitWithoutDestinations();
+    }
   } else {
     selected = await chooseDiscoveredDestinations(destinations, { isBas, input, output, env, detectAdtUrl, previousAdtUrls, selectSsoBrowser });
     additiveSetup = selected.length > 0;
   }
 
   let sapDevelopmentServers = [];
-  if (includeSapDevelopmentToolsPrompt) {
+  if (integrationOnly) {
+    await promptIntegrationSuite({ env, alreadyConfigured: integrationSuiteConfigured, input, output, verifyIntegration, ask: false });
+    sapDevelopmentServers = ['integration-suite'];
+  } else if (includeSapDevelopmentToolsPrompt) {
     print(output, '');
-    print(output, formatStatus('Optionally add companion MCP servers for full-stack SAP development and HANA inspection.', 'step', output, 'Tools'));
+    print(output, formatStatus('Optionally add companion MCP servers for full-stack SAP development, HANA inspection, and Integration Suite (CPI/API Management).', 'step', output, 'Tools'));
     print(output, '  HANA Cloud inspector is read-only and uses HANA_RO_* or VCAP_SERVICES already present in the MCP host environment; credentials are not written to mcp.json.');
+    print(output, '  Integration Suite uses CPI/APIM service keys from the MCP host environment or keys you paste next (verified online, saved for your user only); credentials are not written to mcp.json.');
     print(output, '  Leave empty to only configure ABAP/ADT destination servers.');
     print(output, '');
     sapDevelopmentServers = await checkboxPrompt({
@@ -785,11 +957,17 @@ export async function runSetup({
       choices: SAP_DEVELOPMENT_MCP_SERVERS.map(server => ({
         value: server.id,
         name: `${server.name} — ${server.description}`,
-        checked: false
+        checked: server.id === 'integration-suite' && integrationSuiteConfigured
       })),
       required: false,
       shortcuts: { all: 'a' }
     }, { input, output });
+    if (sapDevelopmentServers.includes('integration-suite')) {
+      await promptIntegrationSuite({ env, alreadyConfigured: integrationSuiteConfigured, input, output, verifyIntegration, ask: false });
+    }
+  } else if (await promptIntegrationSuite({ env, alreadyConfigured: integrationSuiteConfigured, input, output, verifyIntegration })) {
+    // Without --tools, Integration Suite still gets its own yes/no step instead of being hidden.
+    sapDevelopmentServers = ['integration-suite'];
   }
 
   try {

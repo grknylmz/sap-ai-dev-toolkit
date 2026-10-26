@@ -31,3 +31,13 @@ Licensed under the Apache License, Version 2.0.
 vsp also links other open-source Go modules; their licences are recorded in
 go.mod / go.sum and in the module cache. Apache-2.0 requires the notice above to
 travel with any distribution of the binaries, which is why this file exists.
+
+--------------------------------------------------------------------------------
+Integration Suite iFlow template
+--------------------------------------------------------------------------------
+
+src/integration-templates/https-request-reply-http.iflw is derived from the
+Integration_Test_IFlow test artifact of FlashPipe
+(https://github.com/engswee/flashpipe), Copyright Eng Swee Yeoh, licensed under
+the Apache License, Version 2.0 (see LICENSE-APACHE-2.0.txt). It was modified to
+add a Request Reply step, an HTTP receiver adapter, and externalized parameters.

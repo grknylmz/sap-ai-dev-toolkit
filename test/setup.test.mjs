@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { installMcpConfig, npxMcpLauncher } from '../src/mcp-config.mjs';
 import { adtCandidate, parseSapClientList, runSetup } from '../src/setup.mjs';
 import { spawnWithPty } from './pty.mjs';
-import { isolatedWindowsEnv, isWindows, pathEntry, writeFakeCli } from './fake-bin.mjs';
+import { isolatedWindowsEnv, isWindows, pathEntry, withoutIntegrationCredentials, writeFakeCli } from './fake-bin.mjs';
 
 const destinations = [
   { name: 'alpha-system', client: '100', authentication: 'Basic', probe: { status: 'available', available: true } },
@@ -29,6 +29,8 @@ function outputStream() {
   return output;
 }
 
+const INTEGRATION_SUITE_QUESTION = 'Add the SAP Integration Suite tools?';
+
 function runSetupVisibilityInPty(fixture, env, keys = '\r') {
   return new Promise((resolve, reject) => {
     // stty shrinks the pty so layout wrapping is asserted on Unix; the Windows
@@ -36,16 +38,21 @@ function runSetupVisibilityInPty(fixture, env, keys = '\r') {
     const command = isWindows
       ? `${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)}`
       : `stty cols 48 rows 12; ${JSON.stringify(process.execPath)} ${JSON.stringify(fixture)}`;
-    const child = spawnWithPty(command, { env, stdio: ['pipe', 'pipe', 'pipe'], cols: 48, rows: 12 });
+    const child = spawnWithPty(command, { env: withoutIntegrationCredentials(env), stdio: ['pipe', 'pipe', 'pipe'], cols: 48, rows: 12 });
     let stdout = '';
     let stderr = '';
     let selectionSent = false;
+    let integrationAnswerSent = false;
     const timeout = setTimeout(() => child.kill('SIGKILL'), 15000);
     child.stdout.on('data', chunk => {
       stdout += chunk.toString();
       if (!selectionSent && stdout.includes('Select destinations')) {
         selectionSent = true;
         setTimeout(() => child.stdin.write(keys), 500);
+      }
+      if (!integrationAnswerSent && stdout.includes(INTEGRATION_SUITE_QUESTION)) {
+        integrationAnswerSent = true;
+        setTimeout(() => child.stdin.write('\r'), 500);
       }
     });
     child.stderr.on('data', chunk => { stderr += chunk.toString(); });
@@ -55,7 +62,7 @@ function runSetupVisibilityInPty(fixture, env, keys = '\r') {
     });
     child.on('exit', (code, signal) => {
       clearTimeout(timeout);
-      resolve({ code, signal, stdout, stderr, selectionSent });
+      resolve({ code, signal, stdout, stderr, selectionSent, integrationAnswerSent });
     });
   });
 }
@@ -80,12 +87,13 @@ function runPostinstallInPty(env, keys, assetsAnswer = '\r', wizardAnswer = 'e\r
     const command = isWindows
       ? `${JSON.stringify(process.execPath)} scripts\\postinstall.mjs`
       : `stty cols 100 rows 30; ${JSON.stringify(process.execPath)} scripts/postinstall.mjs </dev/null | cat`;
-    const child = spawnWithPty(command, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawnWithPty(command, { env: withoutIntegrationCredentials(env), stdio: ['pipe', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     let selectionSent = false;
     let assetsAnswerSent = false;
     let wizardAnswerSent = false;
+    let integrationAnswerSent = false;
     const timeout = setTimeout(() => child.kill('SIGKILL'), 15000);
     child.stdout.on('data', chunk => {
       stdout += chunk.toString();
@@ -98,6 +106,10 @@ function runPostinstallInPty(env, keys, assetsAnswer = '\r', wizardAnswer = 'e\r
       if (!selectionSent && stdout.includes('Select destinations')) {
         selectionSent = true;
         child.stdin.write(keys);
+      }
+      if (!integrationAnswerSent && stdout.includes(INTEGRATION_SUITE_QUESTION)) {
+        integrationAnswerSent = true;
+        setTimeout(() => child.stdin.write('\r'), 500);
       }
       if (!assetsAnswerSent && stdout.includes('Install bundled agents and skills for')) {
         assetsAnswerSent = true;
@@ -131,8 +143,10 @@ async function assertUserCopilotAssets(home) {
     'hana-cloud-inspection',
     'hana-cloud-native-development',
     'hana-cloud-validation',
+    'integration-suite-delivery',
     'rap-development',
     'rap-service-delivery',
+    'sap-integration-architect',
     'sap-sdlc-orchestration',
     'sap-standard-api-analysis',
     'sap-transport-release'
@@ -150,13 +164,15 @@ async function assertUserClaudeAssets(home) {
     'abap-runtime-debugger.md',
     'hana-cloud-hdi-specialist.md',
     'rap-service-developer.md',
+    'sap-integration-architect.md',
+    'sap-integration-developer.md',
     'sap-solution-architect.md'
   ]);
   const architect = await readFile(join(claudeRoot, 'agents', 'sap-solution-architect.md'), 'utf8');
   assert.match(architect, /^---\nname: [^\n]+\ndescription: [^\n]+\n---\n/s);
   assert.doesNotMatch(architect, /(^|\n)(target|user-invocable):/);
   const skillNames = (await readdir(join(claudeRoot, 'skills'))).sort();
-  assert.equal(skillNames.length, 14);
+  assert.equal(skillNames.length, 16);
   for (const skillName of skillNames) {
     assert.equal((await stat(join(claudeRoot, 'skills', skillName, 'SKILL.md'))).isFile(), true);
   }
@@ -436,7 +452,7 @@ test('manual entry wizard configures a system when nothing was detected', async 
   // Offer prompt accepts the 'manual' default with Enter; then name, ADT URL,
   // two clients, and 'no' at the add-another prompt. Non-Windows runs skip
   // the authentication prompt (password is the default).
-  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example:44300\r', '100,200\r', 'n\r']);
+  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example:44300\r', '100,200\r', 'n\r', '\r']);
   const result = await pending;
   assert.equal(result.skipped, undefined);
   assert.equal(installed.length, 2);
@@ -457,6 +473,118 @@ test('manual entry wizard configures a system when nothing was detected', async 
   assert.match(output.text(), /Configured 2 MCP servers/);
 });
 
+// Drives the manual-entry wizard to the Integration Suite step and answers it with `answers`.
+// Online verification is replaced by `verifyIntegration` (default: every configured side signs in).
+async function runWizardToIntegrationStep(env, answers = [], { verifyIntegration = fakeVerification() } = {}) {
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = manualWizardOutput();
+  const installs = [];
+  const pending = runSetup({
+    env: { XDG_CONFIG_HOME: join(env.HOME, '.config'), ...env },
+    input,
+    output,
+    discoverLocalSapGui: async () => [],
+    verifyIntegration,
+    install: async (selected, options) => {
+      installs.push(options.sapDevelopmentServers);
+      return { path: join(env.HOME, 'mcp.json'), servers: {} };
+    }
+  });
+  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example:44300\r', '100\r', 'n\r', ...answers]);
+  await pending;
+  return { installs, text: stripVTControlCharacters(output.text()), verifyIntegration };
+}
+
+function fakeVerification({ signedIn = true } = {}) {
+  const calls = [];
+  const side = config => (config ? { configured: true, signed_in: signedIn, ok: signedIn, error: signedIn ? undefined : 'CPI token request failed (HTTP 401)', checks: signedIn ? [{ area: 'Packages and iFlows', status: 200, result: 'ok' }, { area: 'Security material', status: 403, result: 'forbidden', detail: 'HTTP 403: the service key lacks the role for this area' }] : [] } : { configured: false });
+  const verify = async config => {
+    calls.push(config);
+    const result = { cpi: side(config.cpi), apim: side(config.apim) };
+    return { ...result, ok: [result.cpi, result.apim].filter(entry => entry.configured).every(entry => entry.ok) };
+  };
+  verify.calls = calls;
+  return verify;
+}
+
+const CPI_KEY_FOR_WIZARD = JSON.stringify({ oauth: { url: 'https://tenant.it-cpi.example', tokenurl: 'https://auth.example/oauth/token', clientid: 'id', clientsecret: 'wizard-secret-value' } });
+
+test('Integration Suite step: detected credentials are verified online and Enter adds the server', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'integration-step-yes-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const { installs, text, verifyIntegration } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json'), CPI_SERVICE_KEY: CPI_KEY_FOR_WIZARD }, ['\r', '\r']);
+  assert.deepEqual(installs, [['integration-suite']]);
+  assert.match(text, /SAP Integration Suite tools \(Cloud Integration \+ API Management\)/);
+  assert.match(text, /CPI: configured from service-key, host tenant\.it-cpi\.example/);
+  assert.match(text, /APIM: not configured/);
+  assert.match(text, /Add the SAP Integration Suite tools\? \(y\/n, Enter=yes\)/);
+  assert.equal(verifyIntegration.calls.length, 1);
+  assert.match(text, /✓ CPI tenant\.it-cpi\.example: signed in/);
+  assert.match(text, /✗ Security material — HTTP 403/);
+  assert.match(text, /1 area needs an extra role/);
+  assert.match(text, /Configured 2 MCP servers/);
+  assert.doesNotMatch(text, /wizard-secret-value/);
+});
+
+test('Integration Suite step: without credentials Enter skips it and y still adds it', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'integration-step-no-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const skipped = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['\r']);
+  assert.deepEqual(skipped.installs, [[]]);
+  assert.match(skipped.text, /No CPI or APIM credentials were found in this environment/);
+  assert.match(skipped.text, /CPI_SERVICE_KEY and\/or APIM_SERVICE_KEY/);
+  assert.match(skipped.text, /Add the SAP Integration Suite tools\? \(y\/n, Enter=no\)/);
+  assert.match(skipped.text, /Configured 1 MCP server\b/);
+
+  // y, then "Continue without credentials" (c + Enter) in the credential menu.
+  const added = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['y\r', 'c\r']);
+  assert.deepEqual(added.installs, [['integration-suite']]);
+  assert.equal(added.verifyIntegration.calls.length, 0);
+});
+
+test('Integration Suite step: a pasted multi-line CPI key is verified, saved user-only, and never echoed', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'integration-step-paste-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const pastedKey = JSON.stringify(JSON.parse(CPI_KEY_FOR_WIZARD), null, 2);
+  // y = add; Enter = default "paste CPI key"; the paste (with line breaks); then Continue.
+  const { installs, text, verifyIntegration } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['y\r', '\r', `${pastedKey}\r`, '\r']);
+  assert.deepEqual(installs, [['integration-suite']]);
+  assert.deepEqual(verifyIntegration.calls.map(config => Object.keys(config)), [['cpi']]);
+  assert.equal(verifyIntegration.calls[0].cpi.clientSecret, 'wizard-secret-value');
+  const storePath = join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json');
+  assert.equal((await stat(storePath)).mode & 0o777, 0o600);
+  assert.deepEqual(JSON.parse(await readFile(storePath, 'utf8')), {
+    cpi: { oauth: { url: 'https://tenant.it-cpi.example', tokenurl: 'https://auth.example/oauth/token', clientid: 'id', clientsecret: 'wizard-secret-value' } }
+  });
+  assert.match(text, /Saved the CPI key to .*integration-suite\.json/);
+  assert.match(text, /CPI: configured from stored-key, host tenant\.it-cpi\.example/);
+  assert.doesNotMatch(text, /wizard-secret-value/);
+});
+
+test('Integration Suite step: a key that cannot sign in is not saved unless confirmed', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'integration-step-badkey-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  // y = add; Enter = paste CPI key; paste; Enter = do not save; c = continue without credentials.
+  const { text } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['y\r', '\r', `${CPI_KEY_FOR_WIZARD}\r`, '\r', 'c\r'], { verifyIntegration: fakeVerification({ signedIn: false }) });
+  assert.match(text, /sign-in failed — CPI token request failed \(HTTP 401\)/);
+  assert.match(text, /Save this key anyway\?/);
+  await assert.rejects(stat(join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json')), { code: 'ENOENT' });
+});
+
+test('Integration Suite step: an existing entry is kept without asking and still verified', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'integration-step-existing-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const config = join(directory, 'mcp.json');
+  await writeFile(config, JSON.stringify({ servers: { 'integration-suite': { type: 'stdio', command: 'npx', BAS_EXT: 'true', BAS_EXT_KIND: 'sap-development-companion' } } }));
+  const { installs, text, verifyIntegration } = await runWizardToIntegrationStep({ HOME: directory, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config, CPI_SERVICE_KEY: CPI_KEY_FOR_WIZARD }, ['\r']);
+  assert.deepEqual(installs, [['integration-suite']]);
+  assert.match(text, /Already configured in this MCP config; keeping it/);
+  assert.doesNotMatch(text, /Add the SAP Integration Suite tools\?/);
+  assert.equal(verifyIntegration.calls.length, 1);
+});
+
 test('manual entry wizard validates a missing ADT URL and repeats the prompt', async () => {
   const input = new PassThrough();
   input.isTTY = true;
@@ -475,7 +603,7 @@ test('manual entry wizard validates a missing ADT URL and repeats the prompt', a
   });
   // Enter at the URL prompt without typing anything must re-prompt with the
   // validation error; the retry then completes with a single client.
-  await answerManualWizard(input, ['\r', 'S4H\r', '\r', 'https://s4h.example:44300\r', '\r', 'n\r']);
+  await answerManualWizard(input, ['\r', 'S4H\r', '\r', 'https://s4h.example:44300\r', '\r', 'n\r', '\r']);
   await pending;
   assert.equal(installed.length, 1);
   assert.equal(installed[0].client, '001');
@@ -500,7 +628,7 @@ test('manual SSO entry without a port takes the ADT URL that port detection foun
     install: async selected => { installed.push(...selected); return { servers: {} }; }
   });
   // Enter at the authentication prompt keeps the SSO default.
-  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example/sap/bc/adt/\r', '100\r', '\r', 'n\r']);
+  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example/sap/bc/adt/\r', '100\r', '\r', 'n\r', '\r']);
   await pending;
   assert.deepEqual(probes, [{ url: 'https://q7c.example', client: '100' }]);
   assert.equal(installed[0].childEnv.SAP_AUTH_MODE, 'sso');
@@ -530,7 +658,7 @@ test('SSO setup offers remotely controllable browsers and applies the choice to 
     detectAdtUrl: async () => ({ url: 'https://q7c.example:44310', reason: '' }),
     install: async selected => { installed.push(...selected); return { servers: {} }; }
   });
-  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example:44310\r', '100,200\r', '\r', '2\r', 'n\r']);
+  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example:44310\r', '100,200\r', '\r', '2\r', 'n\r', '\r']);
   await pending;
   assert.equal(installed.length, 2);
   assert.deepEqual(installed.map(destination => destination.client), ['100', '200']);
@@ -556,7 +684,7 @@ test('SSO setup warns and continues without pinning when no browser is remotely 
     detectAdtUrl: async () => ({ url: 'https://q7c.example:44310', reason: '' }),
     install: async selected => { installed.push(...selected); return { servers: {} }; }
   });
-  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example:44310\r', '100\r', '\r', 'n\r']);
+  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example:44310\r', '100\r', '\r', 'n\r', '\r']);
   await pending;
   assert.equal(installed.length, 1);
   assert.equal(installed[0].childEnv.SAP_BROWSER_EXEC, undefined);
@@ -581,7 +709,7 @@ test('discovered local SSO destinations persist the selected remotely controllab
     detectAdtUrl: async () => ({ url: 'https://a4h.example:44300', reason: '' }),
     install: async selected => { installed.push(...selected); return { servers: {} }; }
   });
-  await answerManualWizard(input, [' \r', '100\r', 'https://a4h.example:44300\r', '\r', '2\r']);
+  await answerManualWizard(input, [' \r', '100\r', 'https://a4h.example:44300\r', '\r', '2\r', '\r']);
   await pending;
   assert.equal(installed.length, 1);
   assert.equal(installed[0].authentication, 'SSO');
@@ -608,7 +736,7 @@ test('SSO port detection sweeps every port, then asks until a port answers', asy
     install: async selected => { installed.push(...selected); return { servers: {} }; }
   });
   // Enter picks "enter the port" twice: 44399 does not answer, 8422 does.
-  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example\r', '100\r', '\r', '\r', '44399\r', '\r', '8422\r', 'n\r']);
+  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example\r', '100\r', '\r', '\r', '44399\r', '\r', '8422\r', 'n\r', '\r']);
   await pending;
   assert.deepEqual(probes, [
     { url: 'https://q7c.example', client: '100' },
@@ -635,7 +763,7 @@ test('long port scans show a short spinner with elapsed time instead of a frozen
     detectAdtUrl: () => new Promise(resolve => setTimeout(() => resolve({ url: 'https://q7c.example:44310', reason: '' }), 1300)),
     install: async () => ({ servers: {} })
   });
-  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example\r', '100\r', '\r', 'n\r']);
+  await answerManualWizard(input, ['\r', 'Q7C\r', 'https://q7c.example\r', '100\r', '\r', 'n\r', '\r']);
   await pending;
   assert.match(output.text(), /ADT: Scanning the usual ADT ports on q7c\.example \(1 s\)/);
 });
@@ -760,10 +888,10 @@ test('global postinstall completes BAS selection before default Copilot asset in
   assert.equal(accepted.assetsAnswerSent, true, accepted.stdout);
   const acceptLogs = `${accepted.stdout}\n${accepted.stderr}`;
   assert.ok(acceptLogs.indexOf('Install bundled agents and skills for') > acceptLogs.indexOf('Configured 1 MCP server'), acceptLogs);
-  assert.match(acceptLogs, /GitHub Copilot: 19 files installed or updated in [^\n]*\.copilot; 0 already current/);
-  assert.match(acceptLogs, /Claude Code: 19 files installed or updated in [^\n]*\.claude; 0 already current/);
-  assert.match(acceptLogs, /Installed 38 files across 2 harnesses/);
-  assert.ok(acceptLogs.indexOf('Installation configuration summary') > acceptLogs.indexOf('Installed 38 files across 2 harnesses'), acceptLogs);
+  assert.match(acceptLogs, /GitHub Copilot: 23 files installed or updated in [^\n]*\.copilot; 0 already current/);
+  assert.match(acceptLogs, /Claude Code: 23 files installed or updated in [^\n]*\.claude; 0 already current/);
+  assert.match(acceptLogs, /Installed 46 files across 2 harnesses/);
+  assert.ok(acceptLogs.indexOf('Installation configuration summary') > acceptLogs.indexOf('Installed 46 files across 2 harnesses'), acceptLogs);
   assert.ok(acceptLogs.includes(`MCP config file: ${config}`), acceptLogs);
   assert.ok(acceptLogs.includes('Destination: BAS · alpha-system · client 100 · Basic'), acceptLogs);
   assert.ok(acceptLogs.split(/\r?\n/).some(line => line.trim() === `Launch: stdio · ${globalLauncher}`), acceptLogs);
@@ -781,12 +909,12 @@ test('global postinstall completes BAS selection before default Copilot asset in
   assert.equal(extended.code, 0, `${extended.stdout}\n${extended.stderr}`);
   assert.equal(extended.assetsAnswerSent, true, extended.stdout);
   const extendedLogs = `${extended.stdout}\n${extended.stderr}`;
-  assert.match(extendedLogs, /Cursor: 14 files installed or updated in [^\n]*\.cursor; 0 already current/);
-  assert.match(extendedLogs, /Installed 52 files across 3 harnesses/);
+  assert.match(extendedLogs, /Cursor: 16 files installed or updated in [^\n]*\.cursor; 0 already current/);
+  assert.match(extendedLogs, /Installed 62 files across 3 harnesses/);
   await assertUserCopilotAssets(extendedHome);
   await assertUserClaudeAssets(extendedHome);
   const cursorSkills = (await readdir(join(extendedHome, '.cursor', 'skills'))).sort();
-  assert.equal(cursorSkills.length, 14);
+  assert.equal(cursorSkills.length, 16);
   await assert.rejects(stat(join(extendedHome, '.cursor', 'agents')), { code: 'ENOENT' });
 
 });
@@ -889,9 +1017,9 @@ test('non-TTY postinstall honors the harness environment override', async () => 
     assert.match(logs, /Installing bundled agents and skills for Claude Code, Gemini CLI, Oh My Pi \(OMP\), Cline, Roo Code, Windsurf \/ Devin Desktop by default because no interactive terminal is available/);
     await assertUserClaudeAssets(directory);
     const geminiSkills = (await readdir(join(directory, '.gemini', 'skills'))).sort();
-    assert.equal(geminiSkills.length, 14);
+    assert.equal(geminiSkills.length, 16);
     for (const root of [join(directory, '.omp', 'agent'), join(directory, '.cline'), join(directory, '.roo'), join(directory, 'xdg-config', 'devin')]) {
-      assert.equal((await readdir(join(root, 'skills'))).length, 14, root);
+      assert.equal((await readdir(join(root, 'skills'))).length, 16, root);
       assert.equal((await stat(join(root, 'skills', 'abap-development', 'SKILL.md'))).isFile(), true, root);
     }
     await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
@@ -948,10 +1076,10 @@ test('postinstall harness selection honors the environment override in a live TT
   const logs = `${result.stdout}\n${result.stderr}`;
   assert.equal(result.code, 0, logs);
   assert.equal(result.assetsAnswerSent, true, logs);
-  assert.match(logs, /Gemini CLI: 14 files installed or updated in [^\n]*\.gemini; 0 already current/);
-  assert.match(logs, /Installed 14 files across 1 harness/);
+  assert.match(logs, /Gemini CLI: 16 files installed or updated in [^\n]*\.gemini; 0 already current/);
+  assert.match(logs, /Installed 16 files across 1 harness/);
   const geminiSkills = (await readdir(join(directory, '.gemini', 'skills'))).sort();
-  assert.equal(geminiSkills.length, 14);
+  assert.equal(geminiSkills.length, 16);
   await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
   await assert.rejects(stat(join(directory, '.claude')), { code: 'ENOENT' });
 });
@@ -1042,7 +1170,7 @@ test('destination picker m shortcut adds a manual system without re-prompting di
   });
   // m opens the wizard next to the discovered A4H entry; the configured
   // system joins the picker pre-selected and Enter confirms the selection.
-  await answerManualWizard(input, ['m', 'Q7C\r', 'https://q7c.example:44300\r', '100\r', 'n\r', '\r']);
+  await answerManualWizard(input, ['m', 'Q7C\r', 'https://q7c.example:44300\r', '100\r', 'n\r', '\r', '\r']);
   await pending;
   // A single client keeps the base system name; the client rides in SAP_CLIENT.
   assert.deepEqual(installed.map(destination => destination.name), ['Q7C']);

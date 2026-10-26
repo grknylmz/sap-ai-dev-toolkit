@@ -12,6 +12,8 @@ const expectedAgents = [
   'abap-runtime-debugger.agent.md',
   'hana-cloud-hdi-specialist.agent.md',
   'rap-service-developer.agent.md',
+  'sap-integration-architect.agent.md',
+  'sap-integration-developer.agent.md',
   'sap-solution-architect.agent.md'
 ];
 const expectedSkills = [
@@ -24,8 +26,10 @@ const expectedSkills = [
   'hana-cloud-inspection',
   'hana-cloud-native-development',
   'hana-cloud-validation',
+  'integration-suite-delivery',
   'rap-development',
   'rap-service-delivery',
+  'sap-integration-architect',
   'sap-sdlc-orchestration',
   'sap-standard-api-analysis',
   'sap-transport-release'
@@ -145,7 +149,7 @@ test('all bundled agents enforce lint before ABAP activation', async () => {
   for (const name of expectedAgents) {
     const path = join(agentsRoot, name);
     const markdown = await readMarkdown(path);
-    if (name === 'hana-cloud-hdi-specialist.agent.md') {
+    if (['hana-cloud-hdi-specialist.agent.md', 'sap-integration-developer.agent.md', 'sap-integration-architect.agent.md'].includes(name)) {
       assert.match(markdown, /does not implement or activate ABAP code/i, `${path} must explicitly refuse ABAP activation`);
       continue;
     }
@@ -299,6 +303,57 @@ test('HANA Cloud/HDI Specialist agent has a read-only target-bound workflow', as
   assert.match(markdown, /cds build --for hana/);
   assert.match(markdown, /user-run deployment|deployment is performed by the user/i);
   assert.match(markdown, /never execute HANA DDL\/DML|Never execute HANA DDL\/DML/i);
+});
+
+test('SAP Integration Developer agent gates Integration Suite writes on approval and confirmations', async () => {
+  const path = join(agentsRoot, 'sap-integration-developer.agent.md');
+  const markdown = await readMarkdown(path);
+  const metadata = parseFrontmatter(markdown, path);
+  assert.deepEqual(Object.keys(metadata).sort(), ['description', 'name', 'target', 'user-invocable']);
+  assert.equal(metadata.name, 'SAP Integration Developer');
+  assert.equal(metadata.target, 'vscode');
+  assert.equal(metadata['user-invocable'], 'true');
+  assert.match(metadata.description, /Integration Suite/);
+  assertDirectMcpUsage(markdown, path);
+  assertMentionsLiveToolDiscovery(markdown, path);
+  for (const tool of ['integration_connection_info', 'cpi_create_iflow', 'cpi_deploy_iflow', 'apim_create_api_provider', 'apim_create_api_proxy']) {
+    assert.match(markdown, new RegExp(tool));
+  }
+  assert.match(markdown, /explicit (?:user )?approval/i);
+  assert.match(markdown, /no delete tools/i);
+});
+
+test('SAP Integration Architect agent designs per hop, gates builds on approval, and hands off', async () => {
+  const path = join(agentsRoot, 'sap-integration-architect.agent.md');
+  const markdown = await readMarkdown(path);
+  const metadata = parseFrontmatter(markdown, path);
+  assert.deepEqual(Object.keys(metadata).sort(), ['description', 'name', 'target', 'user-invocable']);
+  assert.equal(metadata.name, 'SAP Integration Architect');
+  assert.equal(metadata.target, 'vscode');
+  assert.equal(metadata['user-invocable'], 'true');
+  assert.match(metadata.description, /Integration Suite/);
+  assertDirectMcpUsage(markdown, path);
+  assertMentionsLiveToolDiscovery(markdown, path);
+  for (const pattern of [/API Management only/, /Cloud Integration only/, /API Management in front of Cloud Integration/]) {
+    assert.match(markdown, pattern, `${path} must cover every integration pattern`);
+  }
+  assert.match(markdown, /ESBMessaging\.send/, `${path} must name the CPI caller role`);
+  assert.match(markdown, /explicit (?:user )?approval/i);
+  assert.match(markdown, /SAP Integration Developer/, `${path} must hand builds to the developer agent`);
+  assert.match(markdown, /no delete tools/i);
+});
+
+test('SAP Integration Architect skill carries the decision guides for skill-only harnesses', async () => {
+  const path = join(skillsRoot, 'sap-integration-architect', 'SKILL.md');
+  const markdown = await readMarkdown(path);
+  for (const pattern of [/API Management only/, /Cloud Integration only/, /API Management in front of Cloud Integration/, /Per-hop security/i, /ESBMessaging\.send/]) {
+    assert.match(markdown, pattern, `${path} is missing ${pattern}`);
+  }
+  for (const confirmation of ['CREATE IFLOW <id>', 'DEPLOY IFLOW <id>', 'CREATE API PROVIDER <name>', 'CREATE API PROXY <name>']) {
+    assert.ok(markdown.includes(confirmation), `${path} must list confirmation ${confirmation}`);
+  }
+  assert.match(markdown, /explicit user approval/i);
+  assert.match(markdown, /integration-suite-delivery/, `${path} must route build execution to the delivery skill`);
 });
 
 test('each skill has valid metadata, matching name, and enforceable live-tool validation policy', async () => {

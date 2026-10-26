@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import { join, relative } from 'node:path';
+import { INTEGRATION_TOOL_NAMES } from '../src/integration-tools.mjs';
 
 const root = process.cwd();
 const agentsRoot = join(root, '.github', 'agents');
@@ -14,12 +15,14 @@ const allowedHiddenMentions = new Set(['DeleteBreakpoint', 'DebuggerListen', 'De
 const curatedSections = new Set([
   'Public upstream tools',
   'Local and destination-scoped workflow tools',
-  'Separate optional HANA Cloud inspector'
+  'Separate optional HANA Cloud inspector',
+  'Separate optional Integration Suite server'
 ]);
 
 async function curatedToolNames() {
   const markdown = await readFile(join(root, 'tools.md'), 'utf8');
   const names = new Set();
+  const integration = new Set();
   let section = '';
   for (const line of markdown.split('\n')) {
     if (line.startsWith('## ')) {
@@ -27,9 +30,12 @@ async function curatedToolNames() {
       continue;
     }
     if (!line.startsWith('- ') || !curatedSections.has(section)) continue;
-    for (const [, name] of line.matchAll(/`([A-Za-z0-9_]+)`/g)) names.add(name);
+    for (const [, name] of line.matchAll(/`([A-Za-z0-9_]+)`/g)) {
+      names.add(name);
+      if (section === 'Separate optional Integration Suite server') integration.add(name);
+    }
   }
-  return names;
+  return { names, integration };
 }
 
 async function assetPaths() {
@@ -53,8 +59,9 @@ function isToolShaped(token) {
 }
 
 test('agents and skills only reference tools from the curated tools.md surface', async () => {
-  const curated = await curatedToolNames();
-  assert.equal(curated.size, 79, 'tools.md curated sections must list 64 upstream + 11 workflow + 4 HANA tools');
+  const { names: curated, integration } = await curatedToolNames();
+  assert.deepEqual([...integration].sort(), [...INTEGRATION_TOOL_NAMES].sort(), 'tools.md must list exactly the Integration Suite tools');
+  assert.equal(curated.size, 79 + INTEGRATION_TOOL_NAMES.length, 'tools.md curated sections must list 64 upstream + 11 workflow + 4 HANA tools plus every Integration Suite tool');
 
   const drift = [];
   for (const path of await assetPaths()) {

@@ -12,7 +12,7 @@ const LEGACY_MCP_SERVER_PREFIXES = ['sapAiDev_', 'basVspMcp_'];
 const COMPANION_SERVER_KIND = 'sap-development-companion';
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
-// The self-package companion (HANA inspector) must launch the exact version
+// The self-package companions (HANA inspector, Integration Suite) must launch the exact version
 // the user installed; an unpinned `npx sap-ai-dev-toolkit` would re-resolve
 // executable code from the registry at every MCP host start.
 let selfPackageVersion;
@@ -65,6 +65,15 @@ export const SAP_DEVELOPMENT_MCP_SERVERS = Object.freeze([
     description: 'Read-only HANA Cloud/HDI metadata and bounded row inspection using host-provided HANA_RO_* or VCAP_SERVICES credentials.',
     packageName: 'sap-ai-dev-toolkit',
     bin: 'sap-ai-hana',
+    ignoreScripts: true,
+    priority: 'optional'
+  }),
+  Object.freeze({
+    id: 'integration-suite',
+    name: 'Integration Suite (CPI + API Management)',
+    description: 'Build, deploy and monitor Cloud Integration content and manage API Management providers, proxies, policies, products and key value maps, using service keys from the host environment or pasted and verified with sap-ai-dev --setup-integration.',
+    packageName: 'sap-ai-dev-toolkit',
+    bin: 'sap-ai-integration',
     ignoreScripts: true,
     priority: 'optional'
   })
@@ -596,7 +605,11 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
   // instead of failing the whole setup (self-healing).
   const config = await readConfig(path, { recoverInvalid: true, warnings: installWarnings });
   const selfVersion = await runningPackageVersion();
-  const companionVersions = selfVersion ? { 'sap-ai-dev-toolkit': selfVersion, 'hana-cloud-inspector': selfVersion } : {};
+  // Values are full npx package specs; a bare version would become --package=<version>.
+  const selfSpec = selfVersion ? `sap-ai-dev-toolkit@${selfVersion}` : '';
+  const companionVersions = selfSpec
+    ? { 'sap-ai-dev-toolkit': selfSpec, 'hana-cloud-inspector': selfSpec, 'integration-suite': selfSpec }
+    : {};
   const generated = {
     ...buildMcpEntries(destinations, env),
     ...buildSapDevelopmentMcpEntries(options.sapDevelopmentServers || [], { packageVersions: companionVersions })
@@ -642,7 +655,9 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
     const exactManagedUpdate = managed && generatedNames.has(name)
       && destinationValue(entry.env) === generated[name]?.env?.SAP_AI_DEV_TOOLKIT_DESTINATION
       && destinationSource(entry.env) === generated[name]?.env?.SAP_AI_DEV_TOOLKIT_DESTINATION_SOURCE;
-    if (additive && (managed || isCompanionServer(entry)) && !exactManagedUpdate) managedEntries.push([name, entry]);
+    // A companion that is being regenerated is replaced (version refresh), not retained as a conflict.
+    const regeneratedCompanion = isCompanionServer(entry) && generatedNames.has(name) && isCompanionServer(generated[name]);
+    if (additive && (managed || isCompanionServer(entry)) && !exactManagedUpdate && !regeneratedCompanion) managedEntries.push([name, entry]);
     else if (!managed && !isCompanionServer(entry) && !LEGACY_MCP_SERVER_PREFIXES.some(prefix => name.startsWith(prefix))) servers[name] = entry;
   }
   const retainedNames = new Set(managedEntries.map(([name]) => name));

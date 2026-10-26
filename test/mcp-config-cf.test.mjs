@@ -479,6 +479,14 @@ test('configures the HANA inspector without persisting credentials', () => {
   assert.doesNotMatch(JSON.stringify(entry), /"(?:password|pwd)"\s*:/i);
 });
 
+test('configures the Integration Suite companion without persisting credentials', () => {
+  const entry = buildSapDevelopmentMcpEntries(['integration-suite'])['integration-suite'];
+  assert.deepEqual(entry.args, ['--yes', '--ignore-scripts', '--package=sap-ai-dev-toolkit', 'sap-ai-integration']);
+  assert.equal(entry.BAS_EXT_KIND, 'sap-development-companion');
+  assert.equal(entry.env, undefined);
+  assert.doesNotMatch(JSON.stringify(entry), /CPI_SERVICE_KEY|APIM_SERVICE_KEY|clientsecret/i);
+});
+
 test('installs and removes SAP development companion entries', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-tools-config-'));
   const path = join(directory, 'mcp.json');
@@ -519,6 +527,8 @@ test('installs and removes the HANA inspector without changing unrelated MCP ser
   assert.deepEqual(Object.keys(configured.servers).sort(), ['hana-cloud-inspector', 'userServer']);
   assert.equal(configured.custom, true);
   assert.equal(configured.servers['hana-cloud-inspector'].env, undefined);
+  // Self-package companions are pinned to the installing version as a full npx package spec.
+  assert.match(configured.servers['hana-cloud-inspector'].args.at(-2), /^--package=sap-ai-dev-toolkit@\d+\.\d+\.\d+/);
   assert.doesNotMatch(JSON.stringify(configured), /"(?:HANA_RO_PASSWORD|VCAP_SERVICES)"\s*:/);
   assert.doesNotMatch(JSON.stringify(configured), /"(?:password|pwd)"\s*:/i);
 
@@ -960,4 +970,14 @@ test('a symlinked mcp.json is healed in place and its backup lands next to the r
   assert.match(healed.warnings[0], /real.*\.bak/);
   assert.equal((await lstat(linkPath)).isSymbolicLink(), true);
   assert.ok((await readdir(realDirectory)).some(name => name.endsWith('.bak')), 'the backup must sit next to the real file');
+});
+
+test('additive setup refreshes an existing companion entry instead of reporting a conflict', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'companion-refresh-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const path = join(directory, 'mcp.json');
+  await installMcpConfig([], { env: { PATH: directory }, path, sapDevelopmentServers: ['integration-suite'], additive: true });
+  await installMcpConfig([], { env: { PATH: directory }, path, sapDevelopmentServers: ['integration-suite'], additive: true });
+  const config = await readMcpConfig(path);
+  assert.deepEqual(Object.keys(config.servers), ['integration-suite']);
 });

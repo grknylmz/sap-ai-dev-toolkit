@@ -67,7 +67,7 @@ After setup, connect a selected BAS destination or local SAP GUI system from you
 1. Open the Command Palette.
 2. Run **MCP: List Servers**.
 3. Start the server named after your selected destination (the lowercase slug, for example `demo-abap` for destination `DEMO_ABAP`).
-4. In your AI assistant's chat, choose the best-fit bundled agent from the agent picker (GitHub Copilot, Claude Code, and opencode install the agents) or invoke the matching Pi prompt template (`/sap-solution-architect`, `/abap-developer`, `/abap-runtime-debugger`, `/rap-service-developer`, or `/hana-cloud-hdi-specialist`): **SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, or **HANA Cloud/HDI Specialist**.
+4. In your AI assistant's chat, choose the best-fit bundled agent from the agent picker (GitHub Copilot, Claude Code, and opencode install the agents) or invoke the matching Pi prompt template (`/sap-solution-architect`, `/abap-developer`, `/abap-runtime-debugger`, `/rap-service-developer`, `/hana-cloud-hdi-specialist`, `/sap-integration-architect`, or `/sap-integration-developer`): **SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, **HANA Cloud/HDI Specialist**, **SAP Integration Architect**, or **SAP Integration Developer**.
 5. In the Chat tools picker, enable the server for that destination.
 6. Ask the agent to inspect, build, test, or verify something in your SAP landscape.
 
@@ -77,7 +77,7 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 
 ## 🤖 Available agents and skills
 
-**Agents:** Five user-invocable custom agents are included. Select the best fit from the agent picker in your harness's chat (GitHub Copilot, Claude Code, or opencode), or use the matching Pi prompt command, as shown in Quick start.
+**Agents:** Seven user-invocable custom agents are included. Select the best fit from the agent picker in your harness's chat (GitHub Copilot, Claude Code, or opencode), or use the matching Pi prompt command, as shown in Quick start. Harnesses without custom agents (OpenAI Codex, Cursor, Gemini CLI, OMP, Cline, Roo Code, Windsurf / Devin Desktop) get the same workflows as skills, for example `sap-integration-architect` and `integration-suite-delivery`.
 
 | | Agent | Best for |
 | --- | --- | --- |
@@ -86,8 +86,10 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 | 🐞 | **ABAP Runtime Debugger** | Runtime incidents, application logs, debugger sessions, and performance symptoms; call relationships are derived from source inspection |
 | 🚀 | **RAP Service Developer** | RAP business objects, behavior implementations, projections, service definitions, service bindings, and OData validation |
 | 🗃️ | **HANA Cloud/HDI Specialist** | Read-only HANA Cloud container inspection, CAP/HDI artifact generation, local validation, and user-run deployment handoffs |
+| 🏗️ | **SAP Integration Architect** | SAP Integration Suite design: API Management vs Cloud Integration vs both, connectivity, per-hop security, error handling, and an approved build plan |
+| 🔌 | **SAP Integration Developer** | Building that plan with the Integration Suite companion: iFlows, value mappings, security material, deployment and monitoring in CPI; API providers, proxies, policies, products and key value maps in APIM |
 
-**Included skills:** `abap-development` · `abap-testing-quality` · `cds-development` · `rap-development` · `abap-debugging` · `abap-runtime-analysis` · `rap-service-delivery` · `sap-standard-api-analysis` · `clean-core-extensibility` · `sap-sdlc-orchestration` · `sap-transport-release` · `hana-cloud-inspection` · `hana-cloud-native-development` · `hana-cloud-validation`
+**Included skills:** `abap-development` · `abap-testing-quality` · `cds-development` · `rap-development` · `abap-debugging` · `abap-runtime-analysis` · `rap-service-delivery` · `sap-standard-api-analysis` · `clean-core-extensibility` · `sap-sdlc-orchestration` · `sap-transport-release` · `hana-cloud-inspection` · `hana-cloud-native-development` · `hana-cloud-validation` · `sap-integration-architect` · `integration-suite-delivery`
 
 Agents and skills install for the harnesses you pick during global installation: a multi-select offers GitHub Copilot and Claude Code pre-checked, plus OpenAI Codex, Cursor, Gemini CLI, opencode, Pi Coding Agent, Oh My Pi (OMP), Cline, Roo Code, and Windsurf / Devin Desktop. In non-interactive installs they are installed for GitHub Copilot only; run `sap-ai-dev --setup` afterwards to configure destinations or local SAP GUI systems. Repository-scoped installation instructions appear below.
 
@@ -159,9 +161,9 @@ The catalog below covers source inspection, data, editing, quality, transports, 
 - Read SLG1 application logs
 - Review and create transport requests
 
-## 🧠 Five agents, fourteen focused skills
+## 🧠 Seven agents, sixteen focused skills
 
-The package ships with five custom agents plus fourteen task-focused Agent Skills:
+The package ships with seven custom agents plus sixteen task-focused Agent Skills:
 
 | | Skill | Best for |
 | --- | --- | --- |
@@ -179,6 +181,8 @@ The package ships with five custom agents plus fourteen task-focused Agent Skill
 | 🔎 | `hana-cloud-inspection` | Verify the selected HANA Cloud binding and inspect bounded HDI catalog/data results |
 | 🧱 | `hana-cloud-native-development` | Generate CAP-owned CDS models or required native HDI artifacts without duplicating generated sources |
 | ✅ | `hana-cloud-validation` | Run local CAP/HANA builds and prepare a reviewed, user-run deployment handoff |
+| 🏗️ | `sap-integration-architect` | Integration Suite pattern choice, connectivity, per-hop security, naming/versioning rules, and an approvable build plan |
+| 🔌 | `integration-suite-delivery` | Building iFlows, API proxies, gateway policies, API products and key value maps step by step, deploying, and troubleshooting with message logs |
 
 ## 🗺️ How it fits together
 
@@ -192,7 +196,7 @@ ABAP/RAP backend access is provided by this add-on's BAS proxy. For end-to-end S
 sap-ai-dev --setup --tools
 ```
 
-The companion entries are optional and are launched through `npx` only when the MCP client starts them. They are marked as managed by `sap-ai-dev-toolkit`, so rerunning setup can update or remove them without touching unrelated MCP servers. The HANA companion uses `--ignore-scripts` so the toolkit postinstall wizard cannot run during MCP startup.
+The companion entries are optional and are launched through `npx` only when the MCP client starts them. They are marked as managed by `sap-ai-dev-toolkit`, so rerunning setup can update or remove them without touching unrelated MCP servers. The HANA and Integration Suite companions use `--ignore-scripts` so the toolkit postinstall wizard cannot run during MCP startup.
 
 | MCP entry | Package | Launches | Use when the agent needs to |
 | --- | --- | --- | --- |
@@ -201,6 +205,7 @@ The companion entries are optional and are launched through `npx` only when the 
 | `cap-tools` | `@cap-js/mcp-server` | `cds-mcp` | Inspect CAP CDS models, services, entities, actions, and local CAP application structure |
 | `browser-validation` | `@playwright/mcp` | `playwright-mcp` | Open BAS previews, smoke-test Fiori/UI flows, collect screenshots, and verify browser runtime behavior |
 | `hana-cloud-inspector` | `sap-ai-dev-toolkit` | `sap-ai-hana` | Inspect a bound HANA Cloud HDI schema using read-only catalog tools and capped row reads |
+| `integration-suite` | `sap-ai-dev-toolkit` | `sap-ai-integration` | Build, deploy, undeploy, and monitor Cloud Integration content (iFlows, value mappings, script collections, security material, Partner Directory) and manage API Management providers, proxies, policies, products, and key value maps |
 
 Recommended profiles:
 
@@ -219,6 +224,27 @@ Use either:
 - Explicit `HANA_RO_HOST`, `HANA_RO_PORT`, `HANA_RO_USER`, `HANA_RO_PASSWORD`, and `HANA_RO_SCHEMA` variables. `HANA_RO_TRUST_STORE` is optional; TLS and certificate verification are always enabled.
 
 The configured identity must be a separate least-privileged read-only HANA user. The server rejects bindings that offer only HDI deployment credentials and never falls back to `hdi_user`/`hdi_password`. Its tools are limited to connection identity, object listing/descriptions, and parameterized row reads capped at 200 rows; credential-like columns are blocked, and there is no arbitrary SQL, DDL/DML, grant, deployment, or undeploy tool. Use the existing project deployment workflow yourself after reviewing the exact generated artifact diff and target. The SAP HANA Node.js driver is provided under the SAP Developer License Agreement.
+
+### Integration Suite (Cloud Integration + API Management)
+
+Every interactive `sap-ai-dev --setup` asks **"Add the SAP Integration Suite tools?"** right before it writes the MCP configuration. The step shows which of CPI and APIM have credentials (never the secrets themselves). Enter means **yes** when credentials were found and **no** otherwise; type `y` or `n` to override. An existing `integration-suite` entry is kept without asking. With `--tools`, the choice is part of the companion checkbox instead, and when nothing is detected the setup menu also offers **Set up only the SAP Integration Suite tools**.
+
+To set up only this server, run **`sap-ai-dev --setup-integration`**. In both routes the credential step:
+
+1. **Checks detected credentials online.** It signs in and runs one read-only request per tool area (packages, deployed artifacts, message logs, security material, number ranges, Partner Directory, data stores, JMS; API proxies, providers, products, key value maps, virtual hosts, and policy readiness, which exports an existing API proxy bundle the way `apim_attach_api_proxy_policies` does). Each area is marked ✓, ✗ (missing role) or – (not available on the tenant or plan, or no proxy exists yet to test the export with).
+2. **Lets you paste a service key.** Paste a CPI key (Process Integration Runtime, plan `api`) or an APIM key (API Management, plan `apiportal-apiaccess`), either as JSON (multi-line paste works; input is hidden) or as the path to the downloaded `.json` file. The key is verified the same way before it is saved.
+3. **Saves only what the server needs.** The URL, token URL, client id and secret go to `~/.config/sap-ai-dev-toolkit/integration-suite.json`, readable only by you. The secret is never printed and never written to `mcp.json`. A key that cannot sign in is saved only if you confirm.
+
+Environment credentials take precedence over a saved key. Re-check at any time with `sap-ai-integration --check`, or ask the agent to call `integration_connection_info` with `verify: true`. Configure CPI, APIM, or both; per side the first match wins:
+
+- Explicit `CPI_URL`, `CPI_TOKEN_URL`, `CPI_CLIENT_ID`, `CPI_CLIENT_SECRET` (or the `APIM_*` equivalents).
+- `CPI_SERVICE_KEY` / `APIM_SERVICE_KEY` containing the service-key JSON: a Process Integration Runtime `api` plan key (ClientId/Secret) for CPI, an API Management `apiportal-apiaccess` key for APIM. Certificate-based keys are rejected.
+- One `VCAP_SERVICES` binding of service `it-rt` / `apimanagement-apiportal`; override the label with `CPI_VCAP_SERVICE` / `APIM_VCAP_SERVICE` and select an instance with `CPI_BINDING` / `APIM_BINDING`.
+- The key saved by `sap-ai-dev --setup-integration` (lowest precedence).
+
+CPI needs the roles `WorkspacePackagesRead`, `WorkspacePackagesEdit`, `WorkspacePackagesConfigure`, `WorkspaceArtifactsDeploy`, and `MonitoringDataRead` for packages, iFlows, deployment and message logs; security material, number ranges, Partner Directory, data stores, and JMS tools additionally need the matching `api`-plan roles for those areas (for example `DataStoresAndQueuesRead` and `AuthGroup_TenantPartnerDirectoryConfigurator`), and a missing role surfaces as an HTTP 403 in the tool error. APIM needs `APIPortal.Administrator`. Writes are limited to create, update, configure, deploy, and undeploy, each gated by an exact confirmation string such as `CREATE IFLOW <iflow_id>` or `UPDATE API PROXY POLICIES <name>`; there are no delete tools. Passwords, client secrets, and key value map values are write-only: tools accept them and never return them. Anything without a dedicated tool can be read through `cpi_odata_get` / `apim_odata_get`. Run `sap-ai-integration --help` for the full variable list.
+
+`npm run test:live:integration` runs the end-to-end scenarios against a real tenant. It **creates and deploys** packages, iFlows, API providers, proxies, products, key value maps, user credentials, number ranges, and Partner Directory parameters suffixed with `RUN` (required, unique per run), so use a non-production subaccount. Scenarios that call iFlows over HTTP also need `CPI_RUNTIME_SERVICE_KEY`, a Process Integration Runtime `integration-flow` key with role `ESBMessaging.send`; the companion server itself never uses that key.
 
 ## 💡 Example requests
 
@@ -274,7 +300,7 @@ Prefer a persistent global install? Install globally from SAP Business Applicati
 
 Everything works natively on Windows — PowerShell, cmd, and Windows Terminal are all supported:
 
-- `npm install --global sap-ai-dev-toolkit` puts three commands on `PATH`: `sap-ai-dev`, its alias `sap-ai-dev-toolkit`, and `sap-ai-hana`. If `sap-ai-dev` is reported as unknown, npm's global bin directory is missing from `PATH` (run `npm prefix -g` to find it) or the install did not complete — `npx --yes --ignore-scripts sap-ai-dev-toolkit --setup` works without any global install.
+- `npm install --global sap-ai-dev-toolkit` puts four commands on `PATH`: `sap-ai-dev`, its alias `sap-ai-dev-toolkit`, `sap-ai-hana`, and `sap-ai-integration`. If `sap-ai-dev` is reported as unknown, npm's global bin directory is missing from `PATH` (run `npm prefix -g` to find it) or the install did not complete — `npx --yes --ignore-scripts sap-ai-dev-toolkit --setup` works without any global install.
 - The pinned SAP runtime ships inside the package as a native Windows executable; no Go toolchain, WSL, or extra downloads are required.
 - MCP entries that launch through npm are written as `cmd /c npx ...` on Windows — the form VS Code, Claude Code, and Cursor can spawn there. Entries written on Linux/macOS use plain `npx`.
 - Setup reads `mcp.json` even when Windows tools saved it with a UTF-8/UTF-16 BOM (PowerShell `>`/`Set-Content`, Notepad "UTF-8 with BOM") and rewrites it as plain UTF-8. If the existing file cannot be used as-is, setup self-heals before falling back to a reset: VS Code-style comments and trailing commas (JSONC) are recovered in place, torn reads from a concurrent editor save are re-read once, and broken `servers`/`inputs` fields are repaired individually. Every lossy change first backs up the original next to the real file as `mcp.json.healed|repaired|invalid-<timestamp>.bak` (exclusive create, so reruns never overwrite an earlier backup; symlinked configs keep their link). `sap-ai-dev --doctor` stays strict and reports such files instead of rewriting them — run `sap-ai-dev --setup` to heal.
@@ -373,7 +399,7 @@ At the end of a global install, the color-coded summary shows the MCP config pat
 
 ## 🤖 ABAP agents and skills for your AI harness
 
-The package includes five user-invocable custom agents (**SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, and **HANA Cloud/HDI Specialist**) and fourteen task-focused Agent Skills for GitHub Copilot, Claude Code, and other supported AI coding harnesses in BAS.
+The package includes seven user-invocable custom agents (**SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, **HANA Cloud/HDI Specialist**, **SAP Integration Architect**, and **SAP Integration Developer**) and sixteen task-focused Agent Skills for GitHub Copilot, Claude Code, and other supported AI coding harnesses in BAS.
 
 ### 🧠 How the SAP Solution Architect and ABAP Developer agents work
 
