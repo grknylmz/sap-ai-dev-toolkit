@@ -9,6 +9,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createIntegrationServer } from '../src/integration-server.mjs';
 import { INTEGRATION_TOOL_NAMES } from '../src/integration-tools.mjs';
+import { resolveIntegrationConfig } from '../src/integration-config.mjs';
+import { readStoredIntegrationKeys } from '../src/integration-credentials.mjs';
 
 const RUN = process.env.RUN;
 if (!RUN || !/^[A-Za-z0-9]{1,8}$/.test(RUN)) {
@@ -27,10 +29,8 @@ const PROXY = `ZAI_Smoke${RUN}`;
 const PROXY_URL = `ZAI_SmokeUrl${RUN}`;
 const PROXY_ODATA = `ZAI_SmokeOData${RUN}`;
 const PROXY_CPI = `ZAI_SmokeCpi${RUN}`;
-const SECRETS = [process.env.CPI_SERVICE_KEY, process.env.APIM_SERVICE_KEY].flatMap(raw => {
-  const key = JSON.parse(raw);
-  return [key.oauth?.clientsecret, key.clientSecret].filter(Boolean);
-});
+const config = resolveIntegrationConfig(process.env, { stored: readStoredIntegrationKeys() });
+const SECRETS = Object.values(config).filter(Boolean).map(side => side.clientSecret);
 const PRODUCT = `ZAI_SmokeProduct${RUN}`;
 const KVM = `ZAI_SmokeKvm${RUN}`;
 const CREDENTIAL = `ZAI_SMOKE_USER_${RUN}`;

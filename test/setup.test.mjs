@@ -337,6 +337,9 @@ test('setup destination picker filters a prefix in a narrow live TTY without spi
   await mkdir(bin);
   const fixtureEnv = {
     ...process.env,
+    HOME: directory,
+    USERPROFILE: directory,
+    XDG_CONFIG_HOME: join(directory, '.config'),
     H2O_URL: 'http://h2o.example',
     PATH: pathEntry(bin)
   };

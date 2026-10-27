@@ -247,6 +247,8 @@ CPI needs the roles `WorkspacePackagesRead`, `WorkspacePackagesEdit`, `Workspace
 
 `npm run test:live:integration` runs the end-to-end scenarios against a real tenant. It **creates and deploys** packages, iFlows, API providers, proxies, products, key value maps, user credentials, number ranges, and Partner Directory parameters suffixed with `RUN` (required, unique per run), so use a non-production subaccount. Scenarios that call iFlows over HTTP also need `CPI_RUNTIME_SERVICE_KEY`, a Process Integration Runtime `integration-flow` key with role `ESBMessaging.send`; the companion server itself never uses that key.
 
+The live runner uses the same credential precedence as the server, including saved setup keys, explicit OAuth variables, and VCAP bindings; service-key environment variables are not required. The full suite needs both CPI and APIM. `ONLY` selects scenarios without enabling the others: for a CPI-only, read-only error-handling check, run `RUN=CHECK26 ONLY=S72 npm run test:live:integration`. This checks malformed and missing message-log lookups; it does not verify deployment or message execution. For read-only checks across every configured capability area, run `node src/integration-server.mjs --check` from a checkout with dependencies installed.
+
 ## 💡 Example requests
 
 Once the destination server is enabled in your chat's tools picker, ask for outcomes instead of manually orchestrating individual SAP operations:
