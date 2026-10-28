@@ -3,12 +3,12 @@ import { join } from 'node:path';
 
 export const isWindows = process.platform === 'win32';
 
-// The setup wizard's Integration Suite step defaults to "yes" when CPI/APIM credentials are present;
-// spawned wizard flows drop them so the answers they script stay deterministic on any machine.
+// Spawned wizard flows drop all component credential inputs to remain isolated
+// from real optional services configured on the developer's host.
 export function withoutIntegrationCredentials(env) {
   const copy = { ...env };
   for (const key of Object.keys(copy)) {
-    if (/^(?:CPI|APIM)_/.test(key) || key === 'VCAP_SERVICES') delete copy[key];
+    if (/^(?:CPI|APIM|DEVHUB|CTMS|ANS|EVENT_MESH|AEM|OPEN_CONNECTORS|EDGE)_/.test(key) || key === 'VCAP_SERVICES') delete copy[key];
   }
   return copy;
 }

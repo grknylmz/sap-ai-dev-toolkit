@@ -1,13 +1,14 @@
-// User-only store for CPI/APIM service keys pasted into `sap-ai-dev --setup-integration`.
-// The file lives outside mcp.json (~/.config/sap-ai-dev-toolkit/integration-suite.json, mode 0600)
-// and keeps only the four OAuth fields the companion needs; environment credentials take precedence.
+// User-only store for core service keys and normalized optional-service credentials.
+// The file lives outside mcp.json (~/.config/sap-ai-dev-toolkit/integration-suite.json, mode 0600).
+// Environment credentials take precedence; source metadata is never stored.
 import { readFileSync } from 'node:fs';
 import { chmod, mkdir, rename, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { OPTIONAL_COMPONENT_KEYS, optionalConfigRecord } from './integration-optional-config.mjs';
 
-const SIDES = ['cpi', 'apim'];
+const SIDES = ['cpi', 'apim', 'devhub', ...OPTIONAL_COMPONENT_KEYS];
 
 export function integrationCredentialsPath(env = process.env) {
   const configHome = typeof env.XDG_CONFIG_HOME === 'string' && env.XDG_CONFIG_HOME.trim()
@@ -16,7 +17,7 @@ export function integrationCredentialsPath(env = process.env) {
   return join(configHome, 'sap-ai-dev-toolkit', 'integration-suite.json');
 }
 
-/** Stored service keys ({ cpi?, apim? }); {} when nothing was stored. */
+/** Stored keys/normalized optional records; malformed optional records remain isolated by the resolver. */
 export function readStoredIntegrationKeys(env = process.env) {
   const path = integrationCredentialsPath(env);
   let text;
@@ -32,23 +33,28 @@ export function readStoredIntegrationKeys(env = process.env) {
   } catch {
     throw new Error(`Stored Integration Suite credentials at ${path} are not valid JSON; rerun sap-ai-dev --setup-integration`);
   }
-  return Object.fromEntries(SIDES.filter(side => parsed?.[side]).map(side => [side, parsed[side]]));
+  return Object.fromEntries(SIDES.filter(side => Object.hasOwn(parsed || {}, side)).map(side => [side, parsed[side]]));
 }
 
-/** Save one side's verified OAuth client (resolved config) next to the other side's stored key. */
+/** Save one side alongside other stored keys; optional records contain only typed normalized fields. */
 export async function storeIntegrationKey(side, config, env = process.env) {
   const key = side.toLowerCase();
   if (!SIDES.includes(key)) throw new Error(`Unknown Integration Suite side ${side}`);
+  const optional = OPTIONAL_COMPONENT_KEYS.includes(key);
+  const record = optional ? optionalConfigRecord(key, config) : {
+    oauth: { url: config.url, tokenurl: config.tokenUrl, clientid: config.clientId, clientsecret: config.clientSecret }
+  };
   const path = integrationCredentialsPath(env);
   let existing = {};
   try {
     existing = readStoredIntegrationKeys(env);
-  } catch {
-    // An unreadable or corrupt store is replaced by the verified key.
+  } catch (error) {
+    // Optional setup never replaces a store it could not read; core setup behavior is unchanged.
+    if (optional) throw error;
   }
   const next = {
     ...existing,
-    [key]: { oauth: { url: config.url, tokenurl: config.tokenUrl, clientid: config.clientId, clientsecret: config.clientSecret } }
+    [key]: record
   };
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   await chmod(dirname(path), 0o700).catch(() => {});

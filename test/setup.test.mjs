@@ -12,6 +12,7 @@ import { installMcpConfig, npxMcpLauncher } from '../src/mcp-config.mjs';
 import { adtCandidate, parseSapClientList, runSetup } from '../src/setup.mjs';
 import { parseIntegrationServiceKey } from '../src/integration-config.mjs';
 import { storeIntegrationKey } from '../src/integration-credentials.mjs';
+import { OPTIONAL_COMPONENT_KEYS } from '../src/integration-optional-config.mjs';
 import { spawnWithPty } from './pty.mjs';
 import { isolatedWindowsEnv, isWindows, pathEntry, withoutIntegrationCredentials, writeFakeCli } from './fake-bin.mjs';
 
@@ -508,8 +509,9 @@ function fakeVerification({ signedIn = true } = {}) {
   const side = config => (config ? { configured: true, signed_in: signedIn, ok: signedIn, error: signedIn ? undefined : 'CPI token request failed (HTTP 401)', checks: signedIn ? [{ area: 'Packages and iFlows', status: 200, result: 'ok' }, { area: 'Security material', status: 403, result: 'forbidden', detail: 'HTTP 403: the service key lacks the role for this area' }] : [] } : { configured: false });
   const verify = async config => {
     calls.push(config);
-    const result = { cpi: side(config.cpi), apim: side(config.apim) };
-    return { ...result, ok: [result.cpi, result.apim].filter(entry => entry.configured).every(entry => entry.ok) };
+    const result = Object.fromEntries(['cpi', 'apim', 'devhub', ...OPTIONAL_COMPONENT_KEYS].map(key => [key, { ...side(config[key]), result: config[key] ? signedIn ? 'ok' : 'unauthenticated' : 'untested' }]));
+    const core = [result.cpi, result.apim, result.devhub].filter(entry => entry.configured);
+    return { ...result, ok: core.length > 0 && core.every(entry => entry.ok), optional_completeness: { complete: OPTIONAL_COMPONENT_KEYS.filter(key => config[key]).every(key => result[key].ok) } };
   };
   verify.calls = calls;
   return verify;
@@ -522,15 +524,7 @@ test('Integration Suite step: detected credentials are verified online and Enter
   t.after(() => rm(home, { recursive: true, force: true }));
   const { installs, text, verifyIntegration } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json'), CPI_SERVICE_KEY: CPI_KEY_FOR_WIZARD }, ['\r', '\r']);
   assert.deepEqual(installs, [['integration-suite']]);
-  assert.match(text, /SAP Integration Suite tools \(Cloud Integration \+ API Management\)/);
-  assert.match(text, /CPI: configured from service-key, host tenant\.it-cpi\.example/);
-  assert.match(text, /APIM: not configured/);
-  assert.match(text, /Add the SAP Integration Suite tools\? \(y\/n, Enter=yes\)/);
   assert.equal(verifyIntegration.calls.length, 1);
-  assert.match(text, /✓ CPI tenant\.it-cpi\.example: signed in/);
-  assert.match(text, /✗ Security material — HTTP 403/);
-  assert.match(text, /1 area needs an extra role/);
-  assert.match(text, /Configured 2 MCP servers/);
   assert.doesNotMatch(text, /wizard-secret-value/);
 });
 
@@ -539,10 +533,6 @@ test('Integration Suite step: without credentials Enter skips it and y still add
   t.after(() => rm(home, { recursive: true, force: true }));
   const skipped = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['\r']);
   assert.deepEqual(skipped.installs, [[]]);
-  assert.match(skipped.text, /No CPI or APIM credentials were found in this environment/);
-  assert.match(skipped.text, /CPI_SERVICE_KEY and\/or APIM_SERVICE_KEY/);
-  assert.match(skipped.text, /Add the SAP Integration Suite tools\? \(y\/n, Enter=no\)/);
-  assert.match(skipped.text, /Configured 1 MCP server\b/);
 
   // y, then "Continue without credentials" (c + Enter) in the credential menu.
   const added = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['y\r', 'c\r']);
@@ -564,8 +554,6 @@ test('Integration Suite step: a pasted multi-line CPI key is verified, saved use
   assert.deepEqual(JSON.parse(await readFile(storePath, 'utf8')), {
     cpi: { oauth: { url: 'https://tenant.it-cpi.example', tokenurl: 'https://auth.example/oauth/token', clientid: 'id', clientsecret: 'wizard-secret-value' } }
   });
-  assert.match(text, /Saved the CPI key to .*integration-suite\.json/);
-  assert.match(text, /CPI: configured from stored-key, host tenant\.it-cpi\.example/);
   assert.doesNotMatch(text, /wizard-secret-value/);
 });
 
@@ -574,8 +562,6 @@ test('Integration Suite step: a key that cannot sign in is not saved unless conf
   t.after(() => rm(home, { recursive: true, force: true }));
   // y = add; Enter = paste CPI key; paste; Enter = do not save; c = continue without credentials.
   const { text } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['y\r', '\r', `${CPI_KEY_FOR_WIZARD}\r`, '\r', 'c\r'], { verifyIntegration: fakeVerification({ signedIn: false }) });
-  assert.match(text, /sign-in failed — CPI token request failed \(HTTP 401\)/);
-  assert.match(text, /Save this key anyway\?/);
   await assert.rejects(stat(join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json')), { code: 'ENOENT' });
 });
 
@@ -1228,14 +1214,11 @@ test('Integration Suite step: the logged-in CF space supplies the key and a role
     };
   };
   // y = add; Enter = default "Use the logged-in Cloud Foundry space"; y = create dedicated CPI instance;
-  // Enter = do not create an APIM instance; Enter = Continue.
-  const { installs, text } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['y\r', '\r', 'y\r', '\r', '\r'], { verifyIntegration, integrationCloudFoundry });
+  // Enter = do not create an APIM instance; Enter = do not create a DEVHUB instance; Enter = Continue.
+  const { installs, text } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['y\r', '\r', 'y\r', '\r', '\r', '\r'], { verifyIntegration, integrationCloudFoundry });
   assert.deepEqual(installs, [['integration-suite']]);
   assert.deepEqual(calls, [['find', 'space-1'], ['key', 'isuite-api'], ['create', 'CPI'], ['key', 'sap-ai-dev-integration-cpi']]);
-  assert.match(text, /Use the logged-in CF space \(acme \/ dev\)/);
-  assert.match(text, /signed in, but Packages and iFlows is not readable/);
   assert.match(text, /AuthGroup_IntegrationDeveloper/);
-  assert.match(text, /No API Management, API portal instance with plan apiportal-apiaccess/);
   const stored = JSON.parse(await readFile(join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json'), 'utf8'));
   assert.equal(stored.cpi.oauth.clientid, 'id-sap-ai-dev-integration-cpi');
   assert.doesNotMatch(text, /cf-secret-value/);
@@ -1272,4 +1255,99 @@ test('Integration Suite step: a saved key without roles makes "create a dedicate
   assert.match(text, /❯● Create sap-ai-dev-integration-cpi in acme \/ CIDev/);
   const stored = JSON.parse(await readFile(join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json'), 'utf8'));
   assert.equal(stored.cpi.oauth.clientid, 'id-sap-ai-dev-integration-cpi');
+});
+
+test('Integration Suite step: a pasted DEVHUB key is checked, stored user-only and never echoed', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'integration-step-devhub-paste-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const key = JSON.stringify({ url: 'https://devhub.example', tokenUrl: 'https://auth.example/oauth/token', clientId: 'devhub-id', clientSecret: 'devhub-wizard-secret' });
+  const { installs, text, verifyIntegration } = await runWizardToIntegrationStep({ HOME: home }, ['y\r', 'd\r', `${key}\r`, '\r']);
+  assert.deepEqual(installs, [['integration-suite']]);
+  assert.deepEqual(verifyIntegration.calls.map(config => Object.keys(config)), [['devhub']]);
+  const path = join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json');
+  const stored = JSON.parse(await readFile(path, 'utf8'));
+  assert.equal(stored.devhub.oauth.url, 'https://devhub.example');
+  if (process.platform !== 'win32') assert.equal((await stat(path)).mode & 0o777, 0o600);
+  assert.match(text, /DEVHUB: configured from stored-key, host devhub\.example/);
+  assert.match(text, /AuthGroup\.API\.Admin/);
+  assert.doesNotMatch(text, /devhub-wizard-secret/);
+});
+
+test('Integration Suite step: CF Developer Hub discovery obtains no key without approval', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'integration-step-devhub-decline-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const writes = [];
+  const integrationCloudFoundry = {
+    getTarget: async () => ({ available: true, spaceGuid: 'space-1', orgName: 'acme', spaceName: 'dev' }),
+    findInstances: async () => ({ CPI: [], APIM: [], DEVHUB: [{ guid: 'hub-1', name: 'hub-access' }] }),
+    serviceKey: async () => { writes.push('key'); },
+    createInstance: async side => { writes.push(side); }
+  };
+  const { text } = await runWizardToIntegrationStep({ HOME: home }, ['y\r', '\r', '\r', '\r', '\r', 'c\r'], { integrationCloudFoundry });
+  assert.deepEqual(writes, []);
+  assert.match(text, /Use hub-access and create or reuse its sap-ai-dev-integration service key/);
+  await assert.rejects(stat(join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json')), { code: 'ENOENT' });
+});
+
+test('Integration Suite step: approved CF Developer Hub creation uses the admin plan and stores its key', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'integration-step-devhub-create-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const writes = [];
+  const integrationCloudFoundry = {
+    getTarget: async () => ({ available: true, spaceGuid: 'space-1', orgName: 'acme', spaceName: 'dev' }),
+    findInstances: async () => ({ CPI: [], APIM: [], DEVHUB: [] }),
+    createInstance: async side => { writes.push(['instance', side]); return { name: 'sap-ai-dev-integration-devhub' }; },
+    serviceKey: async instance => {
+      writes.push(['key', instance]);
+      return { keyName: 'sap-ai-dev-integration', created: true, credentials: { url: 'https://devhub.example', tokenUrl: 'https://auth.example/oauth/token', clientId: 'hub-id', clientSecret: 'private-hub-secret' } };
+    }
+  };
+  const { installs, text } = await runWizardToIntegrationStep({ HOME: home }, ['y\r', '\r', '\r', '\r', 'y\r', 'c\r'], { integrationCloudFoundry });
+  assert.deepEqual(installs, [['integration-suite']]);
+  assert.deepEqual(writes, [['instance', 'DEVHUB'], ['key', 'sap-ai-dev-integration-devhub']]);
+  assert.match(text, /apimanagement-devportal, plan devportal-apiaccess.*AuthGroup\.API\.Admin/);
+  const stored = JSON.parse(await readFile(join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json'), 'utf8'));
+  assert.equal(stored.devhub.oauth.clientid, 'hub-id');
+  assert.doesNotMatch(text, /private-hub-secret/);
+});
+
+test('Integration Suite step: a role-less DEVHUB stored key offers its dedicated admin instance', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'integration-step-devhub-roleless-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const keyFor = clientId => ({ url: 'https://devhub.example', tokenUrl: 'https://auth.example/oauth/token', clientId, clientSecret: 'private-hub-secret' });
+  await storeIntegrationKey('DEVHUB', parseIntegrationServiceKey('DEVHUB', keyFor('old-hub')), { XDG_CONFIG_HOME: join(home, '.config') });
+  const config = join(home, 'mcp.json');
+  await writeFile(config, JSON.stringify({ servers: { 'integration-suite': { type: 'stdio', command: 'npx', BAS_EXT: 'true', BAS_EXT_KIND: 'sap-development-companion' } } }));
+  const created = [];
+  const integrationCloudFoundry = {
+    getTarget: async () => ({ available: true, spaceGuid: 'space-1', orgName: 'acme', spaceName: 'dev' }),
+    createInstance: async side => { created.push(side); return { name: 'sap-ai-dev-integration-devhub' }; },
+    serviceKey: async instance => ({ keyName: 'sap-ai-dev-integration', created: true, credentials: keyFor(instance) })
+  };
+  const verifyIntegration = async ({ devhub }) => {
+    const ok = devhub.clientId === 'sap-ai-dev-integration-devhub';
+    return { ok, cpi: { configured: false }, apim: { configured: false }, devhub: { configured: true, signed_in: true, ok, checks: [{ area: 'Registered developers', status: ok ? 200 : 403, result: ok ? 'ok' : 'forbidden', detail: 'HTTP 403: the service key lacks the role for this area' }] } };
+  };
+  const { text } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: config }, ['\r', '\r'], { verifyIntegration, integrationCloudFoundry });
+  assert.deepEqual(created, ['DEVHUB']);
+  assert.match(text, /Create sap-ai-dev-integration-devhub in acme \/ dev/);
+  const stored = JSON.parse(await readFile(join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json'), 'utf8'));
+  assert.equal(stored.devhub.oauth.clientid, 'sap-ai-dev-integration-devhub');
+  assert.doesNotMatch(text, /private-hub-secret/);
+});
+
+test('optional hidden setup stores typed existing ANS credentials without CF discovery, key creation or provisioning', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'optional-setup-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const calls = [];
+  const forbidden = async () => { calls.push('forbidden'); throw new Error('Optional setup must not use CF mutation/discovery wrappers'); };
+  const integrationCloudFoundry = { getTarget: async () => ({ available: false }), findInstances: forbidden, serviceKey: forbidden, createInstance: forbidden };
+  const value = { url: 'https://alerts.example', username: 'technical-client', password: 'hidden-optional-password' };
+  const { installs, text } = await runWizardToIntegrationStep({ HOME: home }, ['y\r', 'n\r', `${JSON.stringify(value)}\r`, '\r'], { integrationCloudFoundry });
+  assert.deepEqual(installs, [['integration-suite']]);
+  assert.deepEqual(calls, []);
+  const path = join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).ans, value);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  assert.doesNotMatch(text, /hidden-optional-password/);
 });

@@ -194,62 +194,102 @@ The process exposes no DDL, DML, arbitrary SQL, procedure-call, deployment, unde
 
 ## Separate optional Integration Suite server
 
-The Integration Suite companion is a standalone MCP process launched as `sap-ai-integration`; it is not a child of the SAP runtime and is not destination-prefixed. CPI and APIM OAuth clients come from `CPI_*`/`APIM_*` variables, `CPI_SERVICE_KEY`/`APIM_SERVICE_KEY`, one unambiguous `VCAP_SERVICES` binding per side, or (lowest precedence) a key pasted, verified online and saved user-only by `sap-ai-dev --setup-integration` in `~/.config/sap-ai-dev-toolkit/integration-suite.json`. Requests are pinned to the configured tenant origins. `cpi_*` tools are registered only when CPI is configured, `apim_*` tools only when APIM is configured. `sap-ai-integration --check` runs the same online verification from a terminal.
+The standalone `sap-ai-integration` companion is not a BAS-proxy child and never destination-prefixed. The implementation enumerates 114 distinct possible tool names; actual `tools/list` is authoritative because each core/optional authority is registered only when configured. Source and target environments require independent, immutable server bindings. `INTEGRATION_ENVIRONMENT` labels reports, never selects credentials or hosts.
+
+Core CPI/APIM/DEVHUB OAuth precedence remains explicit variables → service key → unambiguous VCAP binding → private setup store. Optional cTMS, ANS, Event Mesh, AEM cloud, broker SEMP, Open Connectors and Edge accept independently typed existing credentials only. Configuration, access, activation, entitlement and common-subaccount identity are separate evidence. No startup/read probe provisions services or keys.
+
+Collections return `{items, returned, total, complete, next_cursor, stop_reason}`; grouped artifact/partner kinds have individual pages. Resume with unchanged server/target/filters within 15 minutes. Unknown counts remain null; incomplete sources are not exhaustive, healthy or empty. Generic readers expose implemented safe metadata projectors, not arbitrary discovered entities/functions. Explicit source readers are an authoring boundary, not diagnostic passthrough.
+
+### Cross-component lifecycle
 
 | Tool | Behavior |
-| --- | --- |
-| `integration_connection_info` | Report configured sides, credential source, binding, and tenant/token hosts. `verify: true` signs in and runs one read-only request per tool area, classifying each as ok, forbidden (missing role) or unavailable. Never returns client ids or secrets. |
-| `cpi_list_packages` | List packages (max 200). |
-| `cpi_list_iflows` | List iFlows of a package. |
-| `cpi_get_iflow` | Artifact metadata, configurations, and bundle files (text capped 48 KiB each, or one file up to 90 KiB). |
-| `cpi_get_iflow_runtime_status` | Runtime status; error text when `ERROR`. |
-| `cpi_list_service_endpoints` | Deployed endpoint URLs, optionally for one iFlow. |
-| `cpi_list_message_logs` | Message processing logs filtered by iFlow, status, time window, `correlation_id`, `application_message_id`, or `custom_header` (max 100). |
-| `cpi_get_message_log` | One log with error text and custom header properties; attachments are not read. |
-| `cpi_get_message_log_steps` | Steps of the latest run (sorted by start, max 200) with step errors. |
-| `cpi_list_package_artifacts` | iFlows, value mappings, script collections, and message mappings of one package. |
-| `cpi_get_artifact` | Value mapping, script collection, or message mapping metadata plus bundle files (same caps as `cpi_get_iflow`). |
-| `cpi_get_value_mappings` | Agency pairs with values and defaults (max 500 values per pair). |
-| `cpi_list_runtime_artifacts` | Deployed artifacts, optionally by status. |
-| `cpi_get_jms_broker_status` | JMS broker capacity and non-OK queues. |
-| `cpi_list_data_stores` / `cpi_list_data_store_entries` / `cpi_list_variables` | Data store, entry, and variable metadata; payloads are not read. |
-| `cpi_list_security_material` | User credentials, OAuth2 client credentials, or keystore entries; secret fields redacted. |
-| `cpi_list_number_ranges` | Number ranges. |
-| `cpi_list_partner_parameters` | Partner Directory string parameters and binary parameter metadata. |
-| `cpi_odata_get` | Read-only GET for other `/api/v1` entity sets or `/$metadata`; `$value`, `$batch`, and `$links` rejected; secrets and artifact content redacted. |
-| `cpi_create_package` | Create a package. Confirmation `CREATE CPI PACKAGE <package_id>`. |
-| `cpi_create_iflow` | Create an iFlow from the `https-request-reply-http` template or custom BPMN. Confirmation `CREATE IFLOW <iflow_id>`. |
-| `cpi_update_iflow` | Replace/add files and parameters with an `expected_version` check and patch bump; never deletes files. Confirmation `UPDATE IFLOW <iflow_id>`. |
-| `cpi_update_iflow_configuration` | Set externalized parameters sequentially. Confirmation `CONFIGURE IFLOW <iflow_id>`. |
-| `cpi_deploy_iflow` | Deploy and wait up to 50 s (below common MCP client timeouts) for build/runtime status; `timed_out` means poll `cpi_get_iflow_runtime_status`. Confirmation `DEPLOY IFLOW <iflow_id>`. |
-| `cpi_deploy_artifact` | Deploy a value mapping, script collection, or message mapping and wait up to 50 s for runtime status. Confirmation `DEPLOY ARTIFACT <artifact_id>`. |
-| `cpi_undeploy_artifact` | Undeploy a runtime artifact and wait up to 50 s until it is gone. Confirmation `UNDEPLOY ARTIFACT <artifact_id>`. |
-| `cpi_update_package` | Merge name, short text, description, or version into a package. Confirmation `UPDATE CPI PACKAGE <package_id>`. |
-| `cpi_copy_package` | Copy a Discover package (`CREATE_COPY` with suffix or `OVERWRITE_MERGE`). Confirmation `COPY CPI PACKAGE <package_id>`. |
-| `cpi_upsert_value_mappings` | Upsert value pairs sequentially, stopping at the first failure; deploy afterwards. Confirmation `UPDATE VALUE MAPPING <artifact_id>`. |
-| `cpi_update_script_collection` | Add/replace scripts in the collection bundle. Confirmation `UPDATE SCRIPT COLLECTION <artifact_id>`. |
-| `cpi_set_user_credential` | Create or update a user credential; password write-only. Confirmation `SET USER CREDENTIAL <name>`. |
-| `cpi_set_oauth2_client_credential` | Create or update an OAuth2 client credential; secret write-only. Confirmation `SET OAUTH2 CLIENT CREDENTIAL <name>`. |
-| `cpi_upload_certificate` | Add (or with `update` replace) a PEM certificate in the system keystore. Confirmation `UPLOAD CERTIFICATE <alias>`. |
-| `cpi_set_number_range` | Create or update a number range. Confirmation `SET NUMBER RANGE <name>`. |
-| `cpi_set_partner_parameter` | Create or update a Partner Directory string or binary parameter. Confirmation `SET PARTNER PARAMETER <pid>/<id>`. |
-| `apim_list_api_providers` | List providers without credential fields. |
-| `apim_get_api_provider` | One provider with credential properties removed. |
-| `apim_list_api_proxies` | List proxies. |
-| `apim_get_api_proxy` | One proxy with endpoints, virtual hosts, deployment info, and computed `runtime_url`. |
-| `apim_list_virtual_hosts` | List virtual hosts. |
-| `apim_export_api_proxy` | Export the proxy bundle and return its files (or one file). |
-| `apim_list_api_products` / `apim_get_api_product` | Products; one product with its proxy names. |
-| `apim_list_key_value_maps` / `apim_get_key_value_map` | Key value maps; encrypted values redacted. |
-| `apim_odata_get` | Read-only GET for other Management.svc entity sets (applications, developers, certificate store references) or `/$metadata`; same guards as `cpi_odata_get`. |
-| `apim_create_api_provider` | Create an Internet or On-Premise provider; no credentials sent; reserved names rejected. Confirmation `CREATE API PROVIDER <name>`. |
-| `apim_update_api_provider` | Merge connection changes into a credential-free provider (credentialed providers are refused). Confirmation `UPDATE API PROVIDER <name>`. |
-| `apim_create_api_proxy` | Import (and deploy) a policy-free proxy for a provider or https URL target. Confirmation `CREATE API PROXY <name>`. |
-| `apim_update_api_proxy` | Export, patch base path/target/title/description in place, and re-import; policies, steps, and scripts are preserved. Confirmation `UPDATE API PROXY <name>`. |
-| `apim_attach_api_proxy_policies` | Add or replace up to 10 policies from templates or custom XML and their flow steps, then re-import. Confirmation `UPDATE API PROXY POLICIES <name>`. |
-| `apim_create_api_product` | Create (and by default publish) a product over existing proxies with optional quota. Confirmation `CREATE API PRODUCT <name>`. |
-| `apim_update_api_product` | Merge title, description, scope, quota, or publish state. Confirmation `UPDATE API PRODUCT <name>`. |
-| `apim_create_key_value_map` | Create a map (encrypted by default); values write-only. Confirmation `CREATE KEY VALUE MAP <name>`. |
-| `apim_set_key_value_map_entries` | Update existing entries and add new ones, stopping at the first failure; values write-only. Confirmation `UPDATE KEY VALUE MAP <name>`. |
+|---|---|
+| `integration_connection_info` | Full core/optional/native catalog, immutable hosts/label, actual actions, primary contract sources and native handoffs. `verify:true` separates configured core access from optional evidence; 403 does not establish a missing role. |
+| `integration_inspect_dependencies` | Explicit bounded targets, private fresh bundle/configuration inspection, literal dependency existence, unresolved references and bundle/configuration-aware state hashes. |
+| `integration_check_release_readiness` | Exact target/version/dependency/access evidence and latest matching iFlow validation. Missing aliases, version mismatch, referenced invalid certificates or failed validation block; unreadable/dynamic/stale evidence requires review. |
+| `integration_snapshot_content` | Dry-run-first target/host preview; exact approval saves immutable original ZIPs and CPI configuration privately. No caller-selected filesystem path or private content returned. |
+| `integration_list_snapshots` | Signed bounded safe snapshot identities/hosts/hashes and explicit integrity findings. |
+| `integration_restore_snapshot` | Verify all private files, tenant bindings and fresh expected target state hashes before writes; recheck each target. CPI active draft/configuration only; APIM imports/deploys a new revision. Stop partial, no automatic compensation or transaction/token rollback. |
+| `integration_monitoring_readiness` | Actual management/native-rule evidence plus Cloud ALM/ANS setup requirements. Continuous collection and approved synthetic notification delivery remain administrator-unverified until observed. |
+| `integration_transport_readiness` | All four package groups, bounded continuations/count evidence, exact versions and iFlow checks in batches of at most 20, matching verified backups and named cTMS node. Incomplete/unchecked sources block; native assembly/upload/import/target verification remain separately approved. |
 
-Confirmations are checked before any network call. The process exposes no delete tools. Secrets are write-only and never returned; message payloads, attachments, and data-store payloads are never read.
+### Cloud Integration
+
+| Tool | Behavior |
+|---|---|
+| `cpi_list_packages` / `cpi_list_iflows` | Bounded package/iFlow metadata inventories. |
+| `cpi_list_package_artifacts` | Four independently bounded artifact groups; a cursor requires one concrete type. Unverified navigation is explicitly incomplete. |
+| `cpi_get_iflow` / `cpi_get_artifact` | Explicit authoring reads of metadata/configuration/bundle files; text files capped at 48 KiB, selected file 90 KiB. Not a payload-reading diagnostic API. |
+| `cpi_get_value_mappings` | Explicit authoring values/defaults in nested collection envelopes; at most 20 agency pairs and 500 entries per nested collection, additionally byte-bounded. Unknown counts/traversal remain explicit, never exhaustive samples. |
+| `cpi_create_package` / `cpi_update_package` / `cpi_copy_package` | Approved creation/metadata merge or Discover copy/overwrite-merge, with object-specific confirmations. Copy HTTP acceptance is distinct from a returned copied identity; an unverified reply is not replayed. |
+| `cpi_create_iflow` | Approved vetted HTTPS → Request Reply → HTTP template or custom BPMN creation. |
+| `cpi_update_iflow` | Fresh expected-version draft patch, defaults < configured values < explicit overrides, surviving configuration reapplied. Partial progress explicit; a patch bump does not create a retained version. |
+| `cpi_update_iflow_configuration` | Ordered approved parameter writes with safe changed-name/first-failure evidence, no value output. |
+| `cpi_upsert_value_mappings` / `cpi_update_script_collection` | Approved updates to existing shared artifacts; deployment remains separate. Native source creation/retained history handoffs are documented. |
+| `cpi_save_iflow_version` | Explicit retained SaveAsVersion with current-version/bundle guard, target absence and exact read-back; validate the selected saved version next. |
+| `cpi_validate_iflow` | Approved bodyless selected-version validation. HTTP acceptance is not Passed; failed/unknown/latest state-bound evidence supersedes old success. |
+| `cpi_deploy_iflow` / `cpi_deploy_artifact` | Approved active/named deployment with separate acceptance/build/task/runtime fields. Old STARTED or unchanged same-version identity cannot prove success. |
+| `cpi_get_deployment_task` | Continue original accepted task observation, retaining the runtime baseline; never sends another deploy POST. |
+| `cpi_undeploy_artifact` | Exact approved runtime removal with bounded named-absence verification; not design-time deletion. |
+| `cpi_list_runtime_artifacts` / `cpi_get_iflow_runtime_status` / `cpi_list_service_endpoints` | Bounded runtime state/version/error/endpoint evidence, not proof that a new deployment or business request succeeded. |
+| `cpi_list_message_logs` | Fixed UTC `[from,to)` LogStart window, maximum 31 days; exact iFlow/status/correlation/application/custom-header filtering, frozen default window and best-effort cursor evidence. |
+| `cpi_get_message_statistics` | Exact server total/eight status counts, unclassified remainder, partial/inconsistent sources; zero traffic is not a health certification. |
+| `cpi_get_message_log` | Named safe MPL metadata, bounded redacted error information and credential-filtered headers; no payloads/attachments. |
+| `cpi_list_message_log_runs` / `cpi_get_message_log_steps` | Bounded member-run metadata and latest/explicit run selection frozen across paged steps, including beyond step 200. Missing message differs from no runs. |
+| `cpi_trace_message` | Exact propagated nonempty correlation only; no inferred business/APIM cross-product trace or body. |
+| `cpi_list_jms_queues` / `cpi_get_jms_queue` | Queue metadata only; numeric/boolean flags preserve unknowns. Positive depth alone is not unhealthy; no consumption/control/retry. |
+| `cpi_get_jms_broker_status` | Independent capacity/limit, warning/critical and inactive-queue observations with partial source evidence. |
+| `cpi_list_data_stores` / `cpi_list_data_store_entries` / `cpi_list_variables` | Query-free bounded metadata; global scope `integration_flow:""` allowed. Backlog/overdue totals differ from fetched rows; no payloads/variable values or invented MPL links. |
+| `cpi_list_security_material` | Safe user/OAuth/certificate identity and deployment metadata; credentials withheld. |
+| `cpi_set_user_credential` / `cpi_set_oauth2_client_credential` | Exact approved credential writes; values write-only. OAuth updates preserve omitted optional metadata and withhold upstream failure bodies. |
+| `cpi_upload_certificate` | Locally parse PEM X.509 before approved PUT; computed fingerprint differs from authoritative tenant read-back/trust evidence. |
+| `cpi_get_certificate_health` | Bounded validity-only assessment at a frozen evaluation time; no subject personal data or trust/connectivity inference. |
+| `cpi_get_operational_summary` | Bounded on-demand runtime/message/JMS/store/certificate signals with partial sources. No traffic/ordinary processing/backlog does not become healthy/degraded by inference. |
+| `cpi_list_number_ranges` / `cpi_set_number_range` | Read metadata or explicitly approve a named range change. |
+| `cpi_list_partner_parameters` / `cpi_set_partner_parameter` | Bounded string/binary metadata reads and separately approved named writes; do not edit TPM-generated data to simulate agreement management. |
+| `cpi_odata_get` | Safe implemented metadata roots/navigation/counts or `/$metadata` discovery only; no arbitrary functions, source, trace, payload or secret routes. |
+
+### API Management and Developer Hub
+
+| Tool | Behavior |
+|---|---|
+| `apim_list_api_providers` / `apim_get_api_provider` | Provider connection metadata with credential properties removed. |
+| `apim_create_api_provider` / `apim_update_api_provider` | Approved connection creation/change without backend credentials; credentialed updates and reserved names are refused. |
+| `apim_list_api_proxies` / `apim_get_api_proxy` / `apim_list_virtual_hosts` | Bounded metadata and computed runtime URL, preserving base-path separators and virtual-host ports. |
+| `apim_export_api_proxy` | Explicit authoring export of bundle files or one selected member. |
+| `apim_get_api_proxy_status` / `apim_inspect_api_proxy_security` | Safe observed state and private structural policy/attachment/condition/reference inspection; management/static evidence is not effective security or runtime health. |
+| `apim_create_api_proxy` / `apim_update_api_proxy` | Approved import/deploy, optionally secure the first revision; preserve unrelated resources and verify all intended content privately. Acceptance/content read-back/runtime identity remain separate. |
+| `apim_attach_api_proxy_policies` | Approved document replacement/missing assignment append, preserving omitted conditions; no implicit reorder/remove. |
+| `apim_edit_policy_steps` | Fresh bundle-digest-guarded complete order/conditions for one named endpoint/phase; inventory all references before explicit unreferenced-policy removal. |
+| `apim_get_api_documentation` / `apim_update_api_documentation` | Paginated OpenAPI structure or approved HTTPS-runtime-pinned documentation replacement/deploy/read-back, with only established portal normalization. |
+| `apim_get_analytics` / `apim_get_analytics_series` / `apim_get_api_error_breakdown` | Separate GA AnalyticsService aggregates/groups, weighted means and watermark for explicit UTC windows. Distinct derived aliases and source-record counts preserve valid empty null sums as no_data; input/group counts are not API calls. No fabricated percentiles/current health. |
+| `apim_list_api_products` / `apim_get_api_product` / `apim_create_api_product` / `apim_update_api_product` | Product metadata and approved creation/update; creation fixes proxy membership and publication does not grant OAuth authority. |
+| `apim_list_key_value_maps` / `apim_get_key_value_map` / `apim_create_key_value_map` / `apim_set_key_value_map_entries` | Map metadata/entry names and approved writes; values always withheld regardless of encryption representation. |
+| `apim_delete_api_product` / `apim_delete_api_proxy` / `apim_cleanup_api_objects` | Dependency-checked named removal or explicit-list dry-run-first cleanup. Deployed proxy removal needs permission; stop failed/unverified, never cascade into consumers/providers/KVMs/credentials. |
+| `apim_odata_get` | Implemented safe metadata projections/discovery, not arbitrary APIM administration or payload/source passthrough. |
+| `apim_test_api` | GET-only metadata/bounded entity probe, exactly one private API-key source (DEVHUB additionally required) or issuer-pinned named OAuth source (APIM alone). No redirects, arbitrary URLs, credentials or business row values. |
+| `devhub_list_developers` / `devhub_create_developer` / `devhub_approve_developer` | Registered developer metadata and separately approved onboarding/approval using Developer Hub authority. |
+| `devhub_list_applications` / `devhub_get_application` / `devhub_create_application` / `devhub_subscribe_application` | Safe application/subscription/key-availability metadata and approved consumer provisioning, without bypassing external governance. |
+| `devhub_list_subscriptions` | Bounded safe application/product/rate-plan IDs and subscription/approval evidence; legacy/incomplete relations explicit. |
+| `devhub_unsubscribe_application` | Exact approved dry-run-first subscription retirement, embedded batch status and fresh false subscription read-back; preserve actual relationship references. |
+| `devhub_delete_application` | Private short-lived single-use preview binds owner, both relationship inventories, tenant and active-subscription permission. Revalidate before one DELETE and named absence; no issued-token revocation claim. |
+
+### Separately credentialed optional components
+
+| Tools | Boundary |
+|---|---|
+| `ctms_list_nodes` | Public `/v2/nodes`, safe id/name local pages; upload/import eligibility remains unknown. No speculative gated upload/import/history adapter. |
+| `ans_list_subscriptions` / `ans_list_conditions` / `ans_list_action_metadata` | Native zero-based pages, safe metadata and canonical condition/subscription digests; private condition values/action properties/recipients withheld. |
+| `ans_validate_native_rules` | Full referenced-condition/action/fallback resolution and intentional event/node scope; delivery remains unverified. |
+| `ans_set_condition` / `ans_set_subscription` | Exact approved condition/subscription writes, fresh update digest or create absence, preserved omitted metadata and intended read-back. No arbitrary action-property writer/all-events subscription. |
+| `event_mesh_get_queue` | Exact encoded standalone default-plan named queue management metadata, no consumption/backlog health or Suite-embedded parity. |
+| `aem_list_brokers` / `aem_get_broker` / `aem_get_broker_operation` | Fixed US GA cloud metadata, one-based paging/documented expansions/observed states, no broker credentials/Beta/region fallback. |
+| `aem_list_queues` | Independent broker-local Basic/session, configured VPN monitor metadata and exact continuations. Unknown counts stay null; 529 means no session slots. |
+| `open_connectors_list_instances` / `open_connectors_get_instance` | Instance/element identity only; private pagination tokens, no configuration/provider data. |
+| `open_connectors_set_instance_enabled` | Fresh private scoped Element token for approved bodyless PUT/DELETE `/instances/enabled`; disable is not delete, acceptance is not effective state/provider health. |
+| `edge_get_api_metadata` / `edge_list_message_logs` / `edge_get_message_log` | Local Basic and preserved `/local` roots; safe discovery/shared MPL evidence. No raw schemas, component-status guesses, restart, shell/Kubernetes or payload access. |
+
+Confirmations are checked before network access but do not replace user approval. [Native lifecycle handoffs](tools.md#native-lifecycle-handoffs) cover Cloud ALM/ANS delivery, cTMS promotion, shared artifact creation/history, CPI queue controls/cancellation/design deletion, native APIM revisions/undeploy, consumer rotation/portal revoke, Suite Event Mesh, TPM, Advisor, Assessment/Migration and new Integration Cell API/MCP artifacts.
+
+Read-only connected verification: `node scripts/check-live-integration.mjs --window-minutes 60 --top 3 --json`. Its GET-only management guard is separate from the mutating `test:live:integration` runner. Missing optional credentials remain `live_unverified`; successful reads are not health, continuous delivery or native promotion proof.
+

@@ -12,6 +12,7 @@ import { parseIntegrationServiceKey, resolveIntegrationConfig, resolveIntegratio
 import { readStoredIntegrationKeys, storeIntegrationKey } from './integration-credentials.mjs';
 import { INTEGRATION_CF_SERVICES, createIntegrationInstance, findIntegrationInstances, integrationServiceKey } from './cf-integration.mjs';
 import { createIntegrationClients, verificationLines, verifyIntegrationClients } from './integration-verify.mjs';
+import { OPTIONAL_COMPONENT_KEYS, OPTIONAL_INPUTS, parseOptionalConfig, resolveOptionalConfig } from './integration-optional-config.mjs';
 import { discoverCertificateDnsNames } from './tls-adt-proxy.mjs';
 import { findRemoteControllableSsoBrowsers } from './sso-browsers.mjs';
 
@@ -285,16 +286,24 @@ async function confirmPrompt(message, { input = stdin, output = stdout, defaultY
   return !/^n(?:o)?$/i.test(trimmed);
 }
 
-// Credential status for the Integration Suite companion, without exposing any value: which sides
-// (CPI, APIM) resolve from this environment or the stored-key file, and from which source.
+// Report configured component identities and source evidence without credential values.
 export function integrationSuiteCredentialStatus(env = process.env) {
   try {
     const config = resolveIntegrationConfig(env, { stored: readStoredIntegrationKeys(env) });
-    const side = value => (value ? `configured from ${value.source}${value.bindingName ? ` (${value.bindingName})` : ''}, host ${new URL(value.url).host}` : 'not configured');
-    return { found: true, config, lines: [`CPI: ${side(config.cpi)}`, `APIM: ${side(config.apim)}`] };
+    const keys = ['cpi', 'apim', 'devhub', ...OPTIONAL_COMPONENT_KEYS];
+    const side = (key, value) => {
+      if (!value) return 'not configured';
+      const host = value.url ? new URL(value.url).host : key === 'aem' ? 'api.solace.cloud' : 'unknown';
+      return `configured from ${value.source}${value.bindingName ? ` (${value.bindingName})` : ''}, host ${host}`;
+    };
+    return { found: keys.some(key => Boolean(config[key])), config, lines: [
+      `Environment label: ${config.environment ?? 'default'} (tenant authority remains bound host identity)`,
+      ...keys.map(key => `${key.toUpperCase()}: ${side(key, config[key])}`),
+      ...(config.optional_config_errors ?? []).map(error => `${error.component.toUpperCase()}: invalid optional configuration (${error.source}); adapter disabled`)
+    ] };
   } catch (error) {
     const message = String(error?.message || '');
-    if (/^Configure CPI/.test(message)) return { found: false, config: null, lines: ['No CPI or APIM credentials were found in this environment.'] };
+    if (/^Configure CPI/.test(message)) return { found: false, config: null, lines: ['No Integration Suite component credentials were found in this environment.'] };
     return { found: false, config: null, lines: [`Credentials found but not usable: ${message}`] };
   }
 }
@@ -315,28 +324,32 @@ function pastedServiceKey(side, value, env) {
       throw new Error('Paste the service key JSON (starting with {) or the path to a readable .json file.');
     }
   }
-  return parseIntegrationServiceKey(side, text);
+  return OPTIONAL_COMPONENT_KEYS.includes(side.toLowerCase())
+    ? parseOptionalConfig(side.toLowerCase(), text, { source: 'setup', allowRawCtms: true })
+    : parseIntegrationServiceKey(side, text);
 }
 
 async function printIntegrationVerification(config, { env, output, verifyIntegration }) {
-  const stop = startProgress('Signing in to Integration Suite and checking each tool area', { output, env, label: 'Integration Suite' });
+  const stop = startProgress('Checking configured core and optional Integration Suite access', { output, env, label: 'Integration Suite' });
   let report;
-  try {
-    report = await verifyIntegration(config, { env });
-  } finally {
-    stop();
+  try { report = await verifyIntegration(config, { env }); }
+  finally { stop(); }
+  const host = side => config[side]?.url ? new URL(config[side].url).host : side === 'aem' && config.aem ? 'api.solace.cloud' : '';
+  for (const label of ['CPI', 'APIM', 'DEVHUB']) {
+    for (const line of verificationLines(label, host(label.toLowerCase()), report[label.toLowerCase()])) print(output, `  ${line}`);
   }
-  const host = side => (config[side] ? new URL(config[side].url).host : '');
-  for (const line of [...verificationLines('CPI', host('cpi'), report.cpi), ...verificationLines('APIM', host('apim'), report.apim)]) print(output, `  ${line}`);
-  const missing = [report.cpi, report.apim].flatMap(side => side?.checks || []).filter(check => check.result === 'forbidden').length;
-  if (report.ok) {
-    print(output, formatStatus(`Integration Suite credentials verified${missing ? `; ${missing} area${missing === 1 ? ' needs' : 's need'} an extra role on the service key` : ''}.`, missing ? 'warning' : 'success', output, 'Integration Suite'));
-  } else {
-    const signedIn = [report.cpi, report.apim].some(side => side?.signed_in);
-    print(output, formatStatus(signedIn
-      ? 'The key signs in but lacks the roles for the core area; use an instance with the needed roles (the Cloud Foundry option can create one) or replace the key.'
-      : 'Integration Suite sign-in failed; fix or replace the service key before using the tools.', 'warning', output, 'Integration Suite'));
+  for (const side of OPTIONAL_COMPONENT_KEYS) {
+    const access = report[side];
+    if (access?.configured) print(output, `  ${side.toUpperCase()} ${host(side)}: ${access.result ?? access.checks?.[0]?.result ?? 'untested'} (optional access; activation/entitlement unknown)`);
   }
+  const core = [report.cpi, report.apim, report.devhub].filter(side => side?.configured);
+  const denied = core.flatMap(side => side.checks ?? []).filter(check => check.result === 'forbidden').length;
+  const message = !core.length ? 'No core clients configured; optional checks are reported separately.'
+    : report.ok ? `Configured core access verified${denied ? `; ${denied} capability checks were access-denied (cause not established)` : ''}.`
+      : 'Configured core reads did not pass. Inspect the individual access evidence; a role or entitlement diagnosis is not established.';
+  print(output, formatStatus(message, report.ok && !denied ? 'success' : 'warning', output, 'Integration Suite'));
+  const optional = OPTIONAL_COMPONENT_KEYS.filter(side => report[side]?.configured);
+  if (optional.length) print(output, `  Optional capability completeness: ${report.optional_completeness?.complete === true ? 'complete' : 'unverified/partial'}; core access is a separate result.`);
   return report;
 }
 
@@ -347,7 +360,7 @@ const defaultIntegrationCloudFoundry = Object.freeze({
   createInstance: createIntegrationInstance
 });
 
-const SIDE_LABELS = Object.freeze({ CPI: 'Cloud Integration (CPI)', APIM: 'API Management' });
+const SIDE_LABELS = Object.freeze({ CPI: 'Cloud Integration (CPI)', APIM: 'API Management', DEVHUB: 'Developer Hub' });
 
 function cfFailure(error) {
   const detail = String(error?.stderr || error?.message || '').replace(/\s+/g, ' ').trim();
@@ -359,12 +372,14 @@ async function acceptIntegrationKey(side, config, context) {
   const { env, input, output, verifyIntegration } = context;
   const choice = side.toLowerCase();
   const report = await printIntegrationVerification({ [choice]: config }, { env, output, verifyIntegration });
-  if (!report[choice].signed_in && !await confirmPrompt('Save this key anyway? (y/n, Enter=no)', { input, output, defaultYes: false })) return { saved: false, report };
+  if (!report[choice]?.signed_in && !await confirmPrompt('Save these existing credentials despite unverified access? (y/n, Enter=no)', { input, output, defaultYes: false })) return { saved: false, report };
   const path = await storeIntegrationKey(side, config, env);
   print(output, formatStatus(`Saved the ${side} key to ${path} (readable only by you; not written to mcp.json).`, 'success', output, 'Integration Suite'));
   let fromEnvironment = null;
   try {
-    fromEnvironment = resolveIntegrationSideFromEnvironment(env, side);
+    fromEnvironment = OPTIONAL_COMPONENT_KEYS.includes(choice)
+      ? resolveOptionalConfig(env, {})[choice]
+      : resolveIntegrationSideFromEnvironment(env, side);
   } catch {
     // A broken environment value is reported by the status lines.
   }
@@ -374,7 +389,7 @@ async function acceptIntegrationKey(side, config, context) {
 }
 
 function lacksRoles(side) {
-  return Boolean(side?.signed_in) && (!side.ok || side.checks.some(check => check.result === 'forbidden'));
+  return Boolean(side?.signed_in) && (side.checks ?? []).some(check => check.result === 'forbidden');
 }
 
 async function cloudFoundryStep(message, operation, { env, output }) {
@@ -418,13 +433,13 @@ async function useCloudFoundrySpace(target, context) {
     print(output, formatStatus(`Could not list service instances: ${cfFailure(error)}`, 'warning', output, 'Cloud Foundry'));
     return;
   }
-  for (const side of ['CPI', 'APIM']) {
+  for (const side of ['CPI', 'APIM', 'DEVHUB']) {
     const service = INTEGRATION_CF_SERVICES[side];
     const candidates = instances[side] || [];
     print(output, '');
     if (!candidates.length) {
       print(output, formatStatus(`No ${service.label} instance with plan ${service.plan} (${service.offering}) in this space.`, 'info', output, SIDE_LABELS[side]));
-      if (await confirmPrompt(`Create instance ${service.dedicatedInstance} (${service.offering}, plan ${service.plan}) with the roles the tools need? (y/n, Enter=no)`, { input, output, defaultYes: false })) {
+      if (await confirmPrompt(`Create instance ${service.dedicatedInstance} (${service.offering}, plan ${service.plan}) with ${service.parameters.role || 'the roles the tools need'}, then create or reuse its sap-ai-dev-integration service key? (y/n, Enter=no)`, { input, output, defaultYes: false })) {
         await createDedicatedInstance(side, context);
       }
       continue;
@@ -436,6 +451,7 @@ async function useCloudFoundrySpace(target, context) {
       choices: [...candidates.map(candidate => ({ name: candidate.name, value: candidate.name })), { name: 'Skip', value: '', shortcut: 's' }]
     }, { input, output });
     if (!instanceName) continue;
+    if (side === 'DEVHUB' && !await confirmPrompt(`Use ${instanceName} and create or reuse its sap-ai-dev-integration service key? (y/n, Enter=no)`, { input, output, defaultYes: false })) continue;
     let result;
     try {
       result = await useCloudFoundryInstance(side, instanceName, context);
@@ -454,15 +470,15 @@ async function useCloudFoundrySpace(target, context) {
   }
 }
 
-// Verify the detected credentials online and let the user take CPI/APIM keys from the logged-in CF space or
+// Verify the detected credentials online and let the user take CPI/APIM/DEVHUB keys from the logged-in CF space or
 // paste them. A key is checked online first and saved to the user-only store (never to mcp.json); it is used
 // when the environment has no key.
 async function configureIntegrationCredentials({ env, input, output, verifyIntegration, cloudFoundry = defaultIntegrationCloudFoundry }) {
   let status = integrationSuiteCredentialStatus(env);
-  // Latest verification per side ({ cpi, apim }); updated whenever a key is checked or saved.
+  // Latest verification per side ({ cpi, apim, devhub }); updated whenever a key is checked or saved.
   const health = {};
   const recordHealth = report => {
-    for (const side of ['cpi', 'apim']) if (report?.[side]?.configured) health[side] = report[side];
+    for (const side of ['cpi', 'apim', 'devhub', ...OPTIONAL_COMPONENT_KEYS]) if (report?.[side]?.configured) health[side] = report[side];
   };
   if (status.found) recordHealth(await printIntegrationVerification(status.config, { env, output, verifyIntegration }));
   let target = { available: false };
@@ -475,9 +491,9 @@ async function configureIntegrationCredentials({ env, input, output, verifyInteg
   for (;;) {
     print(output, '');
     const space = target.available ? [target.orgName, target.spaceName].filter(Boolean).join(' / ') || target.spaceGuid : '';
-    // Sides whose key signs in but lacks roles: a new key cannot fix that, a dedicated instance can.
-    const roleless = ['CPI', 'APIM'].filter(side => lacksRoles(health[side.toLowerCase()]));
-    const healthy = status.found && !roleless.length && Object.values(health).every(side => side.ok);
+    // Access denial is observed; its role/entitlement cause is not established. Optional setup never provisions.
+    const roleless = ['CPI', 'APIM', 'DEVHUB'].filter(side => lacksRoles(health[side.toLowerCase()]));
+    const healthy = status.found && !roleless.length && Object.values(health).length > 0 && Object.values(health).every(side => side.ok);
     const fixes = target.available
       ? roleless.map(side => ({
         name: `Create ${INTEGRATION_CF_SERVICES[side].dedicatedInstance} in ${space} with the roles the ${side} tools need, then use it`,
@@ -489,10 +505,16 @@ async function configureIntegrationCredentials({ env, input, output, verifyInteg
       defaultValue: healthy ? 'done' : (fixes[0]?.value ?? (target.available ? 'cf' : (status.found ? 'done' : 'cpi'))),
       choices: [
         ...fixes,
-        { name: !status.found ? 'Continue without credentials (the server will not start until a key is configured)' : (healthy ? 'Continue' : 'Continue with the current key (tools in the ✗ areas will fail with HTTP 403)'), value: 'done', shortcut: 'c' },
+        { name: !status.found ? 'Continue without credentials (operational tools need configured component access)' : (healthy ? 'Continue' : 'Continue with current access (unavailable capabilities remain unverified)'), value: 'done', shortcut: 'c' },
         ...(target.available ? [{ name: `Use the logged-in CF space (${space}): find instances, reuse or create keys`, value: 'cf', shortcut: 'f' }] : []),
         { name: 'Paste a Cloud Integration (CPI) service key — Process Integration Runtime, plan api', value: 'cpi', shortcut: 'p' },
         { name: 'Paste an API Management service key — API Management, plan apiportal-apiaccess', value: 'apim', shortcut: 'a' },
+        { name: 'Paste a Developer Hub service key — API Management, Developer Hub, plan devportal-apiaccess (AuthGroup.API.Admin)', value: 'devhub', shortcut: 'd' },
+        ...OPTIONAL_COMPONENT_KEYS.map(side => ({
+          name: `Paste existing ${OPTIONAL_INPUTS[side].label} configuration — ${OPTIONAL_INPUTS[side].variable} (no provisioning)`,
+          value: `optional-${side}`,
+          shortcut: { ctms: 't', ans: 'n', event_mesh: 'e', aem: 'm', aem_semp: 's', open_connectors: 'o', edge: 'g' }[side]
+        })),
         ...(status.found ? [{ name: 'Check the configured credentials online again', value: 'verify', shortcut: 'v' }] : [])
       ]
     }, { input, output });
@@ -506,9 +528,9 @@ async function configureIntegrationCredentials({ env, input, output, verifyInteg
     } else if (choice === 'cf') {
       await useCloudFoundrySpace(target, context);
     } else {
-      const side = choice.toUpperCase();
+      const side = (choice.startsWith('optional-') ? choice.slice('optional-'.length) : choice).toUpperCase();
       const pasted = await textPrompt({
-        message: `Paste the ${side} service key JSON or the path to its .json file`,
+        message: `Paste existing ${side} credential JSON or the path to its .json file`,
         secret: true,
         validate: value => {
           try {
@@ -528,15 +550,15 @@ async function configureIntegrationCredentials({ env, input, output, verifyInteg
 
 async function promptIntegrationSuite({ env, alreadyConfigured, input, output, verifyIntegration = defaultVerifyIntegration, integrationCloudFoundry, ask = true }) {
   print(output, '');
-  print(output, formatStatus('SAP Integration Suite tools (Cloud Integration + API Management).', 'step', output, 'Integration Suite'));
-  print(output, '  Adds the sap-ai-integration MCP server: iFlows, value mappings, security material and monitoring in CPI; API providers, proxies, policies, products and key value maps in APIM.');
-  print(output, '  Every write needs an exact confirmation string; there are no delete tools and secrets are write-only. Agents: SAP Integration Architect, SAP Integration Developer.');
+  print(output, formatStatus('SAP Integration Suite tools (core lifecycle and separately credentialed optional services).', 'step', output, 'Integration Suite'));
+  print(output, '  Adds the sap-ai-integration MCP server: author/configure/release, bounded monitoring and diagnosis, guarded recovery/retirement, and evidence-backed optional/native workflows.');
+  print(output, '  Writes require exact approval; private previews are not approval. Optional setup accepts existing credentials only, without provisioning. Agents: SAP Integration Architect, SAP Integration Developer.');
   if (alreadyConfigured) print(output, '  Already configured in this MCP config; keeping it and refreshing its version.');
   const status = integrationSuiteCredentialStatus(env);
   for (const line of status.lines) print(output, `  ${line}`);
   if (!status.found) {
-    print(output, '  The server needs CPI_SERVICE_KEY and/or APIM_SERVICE_KEY (or CPI_*/APIM_* variables, VCAP_SERVICES) in the MCP host environment,');
-    print(output, '  or a service key pasted in the next step (verified online, then saved for your user only). Credentials are never written to mcp.json.');
+    print(output, '  Configure existing core or optional component credentials in the MCP host environment,');
+    print(output, '  or paste typed credential JSON in the next hidden step. Credentials are verified read-only and stored user-only, never in mcp.json.');
   }
   if (ask && !alreadyConfigured) {
     print(output, '');
@@ -1062,7 +1084,7 @@ export async function runSetup({
       defaultValue: 'manual',
       choices: [
         { name: '✍️  Start manual entry wizard (system name, ADT URL, client, login)', value: 'manual', shortcut: 'm' },
-        { name: '🔌 Set up only the SAP Integration Suite tools (paste and verify CPI / API Management service keys)', value: 'integration', shortcut: 'i' },
+        { name: '🔌 Set up only the SAP Integration Suite tools (paste and verify CPI / API Management / Developer Hub service keys)', value: 'integration', shortcut: 'i' },
         { name: 'Exit setup without changes', value: 'exit', shortcut: 'e' }
       ]
     }, { input, output });
@@ -1087,9 +1109,9 @@ export async function runSetup({
     sapDevelopmentServers = ['integration-suite'];
   } else if (includeSapDevelopmentToolsPrompt) {
     print(output, '');
-    print(output, formatStatus('Optionally add companion MCP servers for full-stack SAP development, HANA inspection, and Integration Suite (CPI/API Management).', 'step', output, 'Tools'));
+    print(output, formatStatus('Optionally add companion MCP servers for full-stack SAP development, HANA inspection, and Integration Suite (CPI/API Management/Developer Hub).', 'step', output, 'Tools'));
     print(output, '  HANA Cloud inspector is read-only and uses HANA_RO_* or VCAP_SERVICES already present in the MCP host environment; credentials are not written to mcp.json.');
-    print(output, '  Integration Suite uses CPI/APIM service keys from the MCP host environment or keys you paste next (verified online, saved for your user only); credentials are not written to mcp.json.');
+    print(output, '  Integration Suite uses CPI/APIM/DEVHUB service keys from the MCP host environment or keys you paste next (verified online, saved for your user only); credentials are not written to mcp.json.');
     print(output, '  Leave empty to only configure ABAP/ADT destination servers.');
     print(output, '');
     sapDevelopmentServers = await checkboxPrompt({

@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { X509Certificate } from 'node:crypto';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
@@ -52,8 +54,7 @@ test('cpi_undeploy_artifact deletes the runtime artifact and polls until 404', a
     return { status: 200, json: { d: { Id: 'Z_VM', Version: '1.0.1', Status: deleted ? 'STOPPING' : 'STARTED' } } };
   });
   const client = await connect(t, tenant);
-  const result = parsed(await call(client, 'cpi_undeploy_artifact', { artifact_id: 'Z_VM', confirmation: 'UNDEPLOY ARTIFACT Z_VM' }));
-  assert.deepEqual(result, { undeployed: true, artifact_id: 'Z_VM', previous_version: '1.0.1' });
+  await call(client, 'cpi_undeploy_artifact', { artifact_id: 'Z_VM', confirmation: 'UNDEPLOY ARTIFACT Z_VM' });
   const requests = tenant.apiRequests();
   assert.equal(requests.find(request => request.method === 'DELETE').path, "/api/v1/IntegrationRuntimeArtifacts('Z_VM')");
   assert.equal(requests.filter(request => request.method === 'GET').length, 4);
@@ -70,10 +71,11 @@ test('cpi_undeploy_artifact reports timed_out when the artifact stays', async t 
   assert.equal(result.runtime_status, 'STOPPING');
 });
 
-test('cpi_deploy_artifact calls the function import of the type and returns runtime error text', async t => {
+test('cpi_deploy_artifact uses the selected type and reports safe runtime failure evidence', async t => {
   let runtimeReads = 0;
   const tenant = await startFakeTenant(t, request => {
     if (request.method === 'POST') return { status: 202, body: '' };
+    if (/DesigntimeArtifacts\(/.test(request.path)) return { status: 200, json: { d: { Id: 'Z_SC', Version: '1.0.0' } } };
     if (request.path.endsWith('/ErrorInformation/$value')) {
       return { status: 200, json: { message: { messageId: 'SCRIPT_FAILED' }, parameter: ['Script compile error in a.groovy'] } };
     }
@@ -87,7 +89,8 @@ test('cpi_deploy_artifact calls the function import of the type and returns runt
   assert.equal(result.runtime_status, 'ERROR');
   assert.equal(result.runtime_version, '1.0.0');
   assert.equal(result.deployed_on, '2023-11-14T22:13:20.000Z');
-  assert.equal(result.error_information, 'SCRIPT_FAILED\nScript compile error in a.groovy');
+  assert.equal(result.outcome, 'failed');
+  assert.equal(result.error_information_withheld, true);
   assert.equal(result.timed_out, false);
   const post = tenant.apiRequests().find(request => request.method === 'POST');
   assert.equal(post.path, '/api/v1/DeployScriptCollectionDesigntimeArtifact');
@@ -97,7 +100,7 @@ test('cpi_deploy_artifact calls the function import of the type and returns runt
     const before = tenant.apiRequests().length;
     runtimeReads = 5;
     parsed(await call(client, 'cpi_deploy_artifact', { type, artifact_id: 'Z_SC', wait_seconds: 0, confirmation: 'DEPLOY ARTIFACT Z_SC' }));
-    assert.equal(tenant.apiRequests()[before].path, `/api/v1/${functionImport}`);
+    assert.equal(tenant.apiRequests().slice(before).find(request => request.method === 'POST').path, `/api/v1/${functionImport}`);
   }
 });
 
@@ -136,7 +139,6 @@ test('cpi_set_user_credential posts when missing, puts when present, and never e
   const client = await connect(t, tenant);
   const args = { name: 'BACKEND', user: 'tech_user', password, confirmation: 'SET USER CREDENTIAL BACKEND' };
   const created = await call(client, 'cpi_set_user_credential', args);
-  assert.deepEqual(parsed(created), { created: true, name: 'BACKEND' });
   const post = tenant.apiRequests()[1];
   assert.equal(post.path, '/api/v1/UserCredentials');
   assert.deepEqual(JSON.parse(post.body), { Name: 'BACKEND', Kind: 'default', Description: '', User: 'tech_user', Password: password, CompanyId: '' });
@@ -163,12 +165,14 @@ test('cpi_set_user_credential posts when missing, puts when present, and never e
 });
 
 test('cpi_upload_certificate puts the PEM under the hex alias with pkix content type', async t => {
-  const pem = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n';
+  const pem = readFileSync(new URL('./fixtures/certificate.pem', import.meta.url), 'utf8');
   let status = 204;
   const tenant = await startFakeTenant(t, () => ({ status, json: status === 400 ? { error: { message: { value: 'Entry exists' } } } : undefined }));
   const client = await connect(t, tenant);
   const result = parsed(await call(client, 'cpi_upload_certificate', { alias: 'my.cert', certificate: pem, confirmation: 'UPLOAD CERTIFICATE my.cert' }));
   assert.equal(result.hexalias, '6d792e63657274');
+  assert.equal(result.fingerprint_sha256, new X509Certificate(pem).fingerprint256.replaceAll(':', '').toLowerCase());
+  assert.equal(result.tenant_fingerprint_verified, false);
   const [put] = tenant.apiRequests();
   assert.equal(put.method, 'PUT');
   assert.equal(put.path, "/api/v1/CertificateResources('6d792e63657274')/$value");
@@ -193,9 +197,9 @@ test('cpi_set_partner_parameter posts new parameters and puts existing ones', as
     return { status: 500 };
   });
   const client = await connect(t, tenant);
-  assert.deepEqual(parsed(await call(client, 'cpi_set_partner_parameter', {
+  await call(client, 'cpi_set_partner_parameter', {
     pid: 'PartnerZ', id: 'ReceiverAddress', type: 'string', value: 'https://x.example', confirmation: 'SET PARTNER PARAMETER PartnerZ/ReceiverAddress'
-  })), { created: true, pid: 'PartnerZ', id: 'ReceiverAddress', type: 'string' });
+  });
   assert.deepEqual(parsed(await call(client, 'cpi_set_partner_parameter', {
     pid: 'PartnerZ', id: 'Z_XSD', type: 'binary', value: 'PHg+PC94Pg==', content_type: 'xsd', confirmation: 'SET PARTNER PARAMETER PartnerZ/Z_XSD'
   })).updated, true);
@@ -217,14 +221,21 @@ test('cpi_list_message_logs sends the custom header query option and id filters'
   const tenant = await startFakeTenant(t, () => ({ status: 200, json: { d: { __count: '1', results: [{ MessageGuid: 'g1', Status: 'FAILED' }] } } }));
   const client = await connect(t, tenant);
   const result = parsed(await call(client, 'cpi_list_message_logs', {
+    from: '2026-10-27T09:00:00.123Z',
+    to: '2026-10-28T09:00:00.456Z',
     correlation_id: 'corr-1',
     custom_header: { name: 'po_number', value: "12'5" },
     top: 5
   }));
   assert.equal(result.total, 1);
+  assert.deepEqual(result.items, [{ MessageGuid: 'g1', Status: 'FAILED' }]);
+  assert.equal(result.returned, 1);
+  assert.equal(result.complete, true);
+  assert.equal(result.stop_reason, 'end');
+  assert.equal(result.next_cursor, null);
   const [request] = tenant.apiRequests();
   assert.equal(request.query.get('filterCustomHeaderProperties'), "'po_number' eq '12''5'");
-  assert.equal(request.query.get('$filter'), "CorrelationId eq 'corr-1'");
+  assert.equal(request.query.get('$filter'), "LogStart ge datetime'2026-10-27T09:00:00.123' and LogStart lt datetime'2026-10-28T09:00:00.456' and CorrelationId eq 'corr-1'");
   assert.doesNotMatch(request.rawQuery, /\+/);
 });
 

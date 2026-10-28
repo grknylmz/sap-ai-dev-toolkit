@@ -1,12 +1,13 @@
-// Resolves CPI (Cloud Integration) and APIM (API Management) OAuth client
-// credentials from the MCP host environment. Pure: no I/O, no network.
-// Every error message starts with a stable prefix (Explicit CPI/APIM, CPI_,
-// APIM_, No CPI/APIM, Multiple CPI/APIM, Configure CPI) so the tool layer
-// can surface it verbatim; no message ever echoes a secret value.
+// Resolves core OAuth credentials and independently configured optional services.
+// Pure: no I/O, no network. Stable error prefixes allow the tool layer to
+// surface configuration failures without echoing secret values.
+import { OPTIONAL_COMPONENT_KEYS, resolveOptionalConfig } from './integration-optional-config.mjs';
+
 
 const SIDES = Object.freeze({
   CPI: Object.freeze({ prefix: 'CPI', defaultVcapService: 'it-rt' }),
-  APIM: Object.freeze({ prefix: 'APIM', defaultVcapService: 'apimanagement-apiportal' })
+  APIM: Object.freeze({ prefix: 'APIM', defaultVcapService: 'apimanagement-apiportal' }),
+  DEVHUB: Object.freeze({ prefix: 'DEVHUB', defaultVcapService: 'apimanagement-devportal' })
 });
 
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
@@ -65,7 +66,7 @@ function explicitConfig(env, prefix) {
   });
 }
 
-/** Parse a CPI/APIM service key (nested `oauth` or flat APIM shape) into raw OAuth fields. */
+/** Parse an Integration Suite service key (nested `oauth` or flat shape) into raw OAuth fields. */
 function parseServiceKey(value, origin) {
   let key = value;
   if (typeof value === 'string') {
@@ -146,22 +147,27 @@ export function resolveIntegrationSideFromEnvironment(env, side) {
   return resolveSide(env, SIDES[side]);
 }
 
-/** Validate a pasted CPI/APIM service key (JSON text or object); returns the resolved side config. */
+/** Validate a pasted Integration Suite service key (JSON text or object); returns the resolved side config. */
 export function parseIntegrationServiceKey(side, value) {
   return finalize(side, 'stored-key', null, parseServiceKey(value, `${side} service key`));
 }
 
 /**
- * Resolve CPI and APIM client credentials; at least one side must be configured.
- * `stored` holds service keys saved by the setup wizard ({ cpi, apim }) and has the lowest precedence.
+ * Resolve core and optional credentials; absent configuration retains setup guidance.
+ * `stored` holds setup wizard keys with lowest precedence.
  */
 export function resolveIntegrationConfig(env = process.env, { stored } = {}) {
   const cpi = resolveSide(env, SIDES.CPI, stored);
   const apim = resolveSide(env, SIDES.APIM, stored);
-  if (!cpi && !apim) {
-    fail('Configure CPI (CPI_SERVICE_KEY or CPI_URL/CPI_TOKEN_URL/CPI_CLIENT_ID/CPI_CLIENT_SECRET) and/or APIM (APIM_SERVICE_KEY or APIM_*) credentials in the MCP host environment, or run sap-ai-dev --setup-integration to paste and verify service keys.');
+  const devhub = resolveSide(env, SIDES.DEVHUB, stored);
+  const optional = resolveOptionalConfig(env, stored);
+  if (!cpi && !apim && !devhub && !OPTIONAL_COMPONENT_KEYS.some(side => optional[side]) && !optional.optional_config_errors.length) {
+    fail('Configure CPI (CPI_SERVICE_KEY or CPI_URL/CPI_TOKEN_URL/CPI_CLIENT_ID/CPI_CLIENT_SECRET), APIM (APIM_SERVICE_KEY or APIM_*), and/or DEVHUB (DEVHUB_SERVICE_KEY or DEVHUB_URL/DEVHUB_TOKEN_URL/DEVHUB_CLIENT_ID/DEVHUB_CLIENT_SECRET) credentials in the MCP host environment, or run sap-ai-dev --setup-integration to paste and verify service keys.');
   }
-  return Object.freeze({ cpi, apim });
+  const environment = typeof env.INTEGRATION_ENVIRONMENT === 'string' && env.INTEGRATION_ENVIRONMENT.trim()
+    ? env.INTEGRATION_ENVIRONMENT.trim()
+    : 'default';
+  return Object.freeze({ cpi, apim, devhub, ...optional, environment });
 }
 
-export const INTEGRATION_CONFIG_ERROR = /^(?:Explicit CPI|Explicit APIM|CPI_|APIM_|No CPI|No APIM|Multiple CPI|Multiple APIM|Configure CPI|Stored (?:CPI|APIM)|Stored Integration Suite)/;
+export const INTEGRATION_CONFIG_ERROR = /^(?:Explicit (?:CPI|APIM|DEVHUB)|(?:CPI|APIM|DEVHUB)_|No (?:CPI|APIM|DEVHUB)|Multiple (?:CPI|APIM|DEVHUB)|Configure CPI|Stored (?:CPI|APIM|DEVHUB)|Stored Integration Suite)/;

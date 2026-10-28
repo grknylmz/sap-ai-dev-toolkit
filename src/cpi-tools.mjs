@@ -1,5 +1,10 @@
 // MCP tools for SAP Cloud Integration (CPI) over the /api/v1 OData API.
 import { z } from 'zod';
+import { X509Certificate } from 'node:crypto';
+import { registerCpiSecurityTools } from './cpi-security.mjs';
+import { registerCpiOperationalTools } from './cpi-operational.mjs';
+import { readCpiConfigurations, writeCpiConfigurations, cpiReleaseFailure, CPI_PACKAGE_ARTIFACT_SETS as PACKAGE_ARTIFACT_SETS } from './cpi-content.mjs';
+import { registerCpiReleaseTools, CPI_ARTIFACT_TYPES as ARTIFACT_TYPES } from './cpi-release.mjs';
 import {
   CREATE_ANNOTATIONS,
   ERROR_TEXT_CAP,
@@ -13,8 +18,6 @@ import {
   confirmation,
   entity,
   fileEntry,
-  isoDate,
-  isoToOdataDateTime,
   key,
   list,
   pick,
@@ -27,6 +30,8 @@ import {
   top as topSchema
 } from './integration-common.mjs';
 import { IntegrationError, odataDate, odataKey } from './integration-http.mjs';
+import { createCollectionPager, cursorSchema } from './integration-collections.mjs';
+import { registerCpiMonitoringTools } from './cpi-monitoring.mjs';
 import {
   MANIFEST_PATH,
   PARAMETERS_PROP,
@@ -46,7 +51,6 @@ import {
 
 const CPI_BASE = '/api/v1';
 const MAX_UPDATE_FILE_BYTES = 256 * 1024;
-const MESSAGE_STATUSES = ['COMPLETED', 'PROCESSING', 'RETRY', 'ESCALATED', 'FAILED', 'CANCELLED', 'DISCARDED', 'ABANDONED'];
 
 const packageId = z.string().regex(/^[A-Za-z][A-Za-z0-9_]{0,59}$/);
 const iflowId = z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{0,99}$/);
@@ -72,7 +76,6 @@ const templateParameters = z.object({
 const scriptSchema = z.object({ name: z.string().max(90), content: z.string() }).strict();
 const artifactId = iflowId;
 const artifactVersion = z.string().regex(/^(?:active|\d+\.\d+\.\d+)$/).default('active');
-const messageGuid = z.string().regex(/^[A-Za-z0-9_-]{10,64}$/);
 const waitSeconds = fallback => z.number().int().min(0).max(50).default(fallback);
 // Discover (SAP standard) package ids are longer than design-time ids and may contain periods.
 const sourcePackageId = z.string().regex(/^[A-Za-z][A-Za-z0-9_.]{0,199}$/);
@@ -80,32 +83,25 @@ const securityName = z.string().regex(/^[A-Za-z0-9 _.@-]{1,150}$/);
 const partnerChars = /^[A-Za-z0-9\-._~@]+$/;
 const numberText = z.union([z.number().int().min(0).max(99_999_999_999_999), z.string().regex(/^\d{1,14}$/)]);
 
-// Design-time artifact kinds besides iFlows: entity set and Deploy<Kind>DesigntimeArtifact function import.
-const ARTIFACT_TYPES = Object.freeze({
-  value_mapping: { set: 'ValueMappingDesigntimeArtifacts', deploy: 'DeployValueMappingDesigntimeArtifact' },
-  script_collection: { set: 'ScriptCollectionDesigntimeArtifacts', deploy: 'DeployScriptCollectionDesigntimeArtifact' },
-  message_mapping: { set: 'MessageMappingDesigntimeArtifacts', deploy: 'DeployMessageMappingDesigntimeArtifact' }
-});
 const artifactType = z.enum(Object.keys(ARTIFACT_TYPES));
-const PACKAGE_ARTIFACT_SETS = Object.freeze({
-  iflows: 'IntegrationDesigntimeArtifacts',
-  value_mappings: 'ValueMappingDesigntimeArtifacts',
-  script_collections: 'ScriptCollectionDesigntimeArtifacts',
-  message_mappings: 'MessageMappingDesigntimeArtifacts'
-});
 const RUNTIME_STATUSES = ['STARTED', 'STARTING', 'STOPPING', 'ERROR'];
 const KEYSTORES = ['system', 'backup_admin_system', 'KeyRenewal'];
 const PARTNER_CONTENT_TYPES = ['xml', 'xsl', 'xsd', 'json', 'text', 'zip', 'gz', 'zlib', 'crt'];
-const JMS_BROKER_FIELDS = ['Capacity', 'MaxCapacity', 'CapacityOk', 'CapacityWarning', 'CapacityError', 'QueueNumber', 'MaxQueueNumber',
-  'IsQueuesHigh', 'IsMessageSpoolHigh', 'IsTransactedSessionsHigh', 'IsConsumersHigh', 'IsProducersHigh'];
 const MAX_VALUES_PER_PAIR = 500;
-const MAX_LIST_ENTRIES = 500;
-const MAX_RUN_STEPS = 200;
-const STEP_ERROR_CAP = 1024;
+const collectionInputs = { top: topSchema(200, 100), cursor: cursorSchema };
 const MAX_CERTIFICATE_BYTES = 10 * 1024;
 
-const time = value => Date.parse(odataDate(value)) || 0;
 const dates = (value, fields) => Object.fromEntries(fields.filter(field => value?.[field] !== undefined).map(field => [field, odataDate(value[field])]));
+
+function endpointUrl(value) {
+  try {
+    const url = new URL(value);
+    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password) return null;
+    url.search = '';
+    url.hash = '';
+    return url.href;
+  } catch { return null; }
+}
 
 /** Tenant error text can echo request fields: strip the secret, including a whitespace-collapsed or truncated copy. */
 function withoutSecret(error, secret) {
@@ -122,8 +118,13 @@ function withoutSecret(error, secret) {
 }
 
 /** Register cpi_* tools for one CPI client. */
-export function registerCpiTools(register, client, { pollIntervalMs }) {
+export function registerCpiTools(register, client, { pollIntervalMs, summary }) {
   const cpi = (method, path, options) => client.request(method, `${CPI_BASE}${path}`, options);
+  const pager = createCollectionPager(client, { root: CPI_BASE, request: cpi });
+  registerCpiMonitoringTools(register, client);
+  registerCpiSecurityTools(register, client);
+  registerCpiOperationalTools(register, client, { summary });
+  registerCpiReleaseTools(register, client, { pollIntervalMs });
   const artifactPath = (id, version = 'active') => `/IntegrationDesigntimeArtifacts(Id=${key(id)},Version=${key(version)})`;
   const runtimePath = id => `/IntegrationRuntimeArtifacts(${key(id)})`;
   const designtimePath = (type, id, version = 'active') => `/${ARTIFACT_TYPES[type].set}(Id=${key(id)},Version=${key(version)})`;
@@ -169,24 +170,27 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
     title: 'Read CPI OData API',
     service: 'Cloud Integration /api/v1',
     request: cpi,
+    client,
+    root: CPI_BASE,
     examples: "/JmsBrokers('Broker1') with $expand=QueueStates, /AccessPolicies, /KeystoreEntries with keystoreName=system, /MessageProcessingLogs('<guid>')/Runs"
   });
 
   register('cpi_list_packages', 'List CPI packages',
     'List Cloud Integration design-time packages (Id, Name, ShortText, Version, Mode).',
-    { top: z.number().int().min(1).max(200).default(100) },
+    collectionInputs,
     READ_ONLY_ANNOTATIONS,
     // The CPI tenant rejects $select on IntegrationPackages (HTTP 501); project client-side.
-    async ({ top }) => list(await cpi('GET', '/IntegrationPackages', {
-      query: { $top: top, $orderby: 'Name' }
-    })).map(entry => pick(entry, ['Id', 'Name', 'ShortText', 'Version', 'Mode'])));
+    async args => pager.page({ ...args, path: '/IntegrationPackages', orderBy: 'Name',
+      project: entry => pick(entry, ['Id', 'Name', 'ShortText', 'Version', 'Mode']) }));
 
   register('cpi_list_iflows', 'List iFlows in a package',
     'List the integration flows of one CPI package (Id, Name, Version, Description).',
-    { package_id: packageId },
+    { package_id: packageId, ...collectionInputs },
     READ_ONLY_ANNOTATIONS,
-    async ({ package_id }) => list(await cpi('GET', `/IntegrationPackages(${key(package_id)})/IntegrationDesigntimeArtifacts`))
-      .map(artifact => pick(artifact, ['Id', 'Name', 'Version', 'Description'])));
+    async ({ package_id, ...args }) => pager.page({ ...args,
+      path: `/IntegrationPackages(${key(package_id)})/IntegrationDesigntimeArtifacts`,
+      mode: 'local', sourceComplete: false,
+      project: artifact => pick(artifact, ['Id', 'Name', 'Version', 'Description']) }));
 
   register('cpi_get_iflow', 'Get iFlow',
     'Read an iFlow: artifact metadata, externalized configuration and bundle files (text files capped at 48 KiB each). Pass file_path to return one file (up to 90 KiB).',
@@ -228,73 +232,17 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
 
   register('cpi_list_service_endpoints', 'List CPI service endpoints',
     'List deployed HTTP(S)/SOAP endpoint URLs; optionally only those of one iFlow. CPI registers an endpoint up to a few minutes after the iFlow reaches STARTED, so an empty list right after deployment means retry later.',
-    { iflow_id: iflowId.optional() },
+    { iflow_id: iflowId.optional(), ...collectionInputs },
     READ_ONLY_ANNOTATIONS,
-    async ({ iflow_id }) => {
-      let endpoints = list(await cpi('GET', '/ServiceEndpoints', { query: { $expand: 'EntryPoints' } }));
-      if (iflow_id) {
-        const byName = endpoints.filter(endpoint => endpoint.Name === iflow_id);
-        endpoints = byName.length ? byName : endpoints.filter(endpoint => String(endpoint.Id || '').includes(iflow_id));
-      }
-      return endpoints.map(endpoint => ({
+    async ({ iflow_id, ...args }) => pager.page({ ...args, path: '/ServiceEndpoints', mode: 'local',
+      query: { $expand: 'EntryPoints' }, identity: iflow_id,
+      filter: iflow_id ? endpoint => endpoint.Name === iflow_id || endpoint.Id === iflow_id : undefined,
+      project: endpoint => ({
         name: endpoint.Name,
-        urls: list(endpoint.EntryPoints).map(entryPoint => entryPoint.Url).filter(Boolean)
-      }));
-    });
+        urls: list(endpoint.EntryPoints).map(entryPoint => endpointUrl(entryPoint.Url)).filter(Boolean)
+      })
+    }));
 
-  register('cpi_list_message_logs', 'List message processing logs',
-    'List CPI message processing logs, newest first, filtered by iFlow, status, time window (ISO-8601), correlation id, application message id or one custom header property (name and value, exact match).',
-    {
-      iflow_id: iflowId.optional(),
-      status: z.enum(MESSAGE_STATUSES).optional(),
-      from: isoDate.optional(),
-      to: isoDate.optional(),
-      correlation_id: z.string().min(1).max(200).optional(),
-      application_message_id: z.string().min(1).max(200).optional(),
-      custom_header: z.object({ name: z.string().min(1).max(200), value: z.string().max(2000) }).strict().optional(),
-      top: z.number().int().min(1).max(100).default(20)
-    },
-    READ_ONLY_ANNOTATIONS,
-    async ({ iflow_id, status, from, to, correlation_id, application_message_id, custom_header, top }) => {
-      const filter = [
-        iflow_id && `IntegrationArtifact/Id eq ${odataKey(iflow_id)}`,
-        status && `Status eq '${status}'`,
-        from && `LogStart gt datetime'${isoToOdataDateTime(from)}'`,
-        to && `LogEnd lt datetime'${isoToOdataDateTime(to)}'`,
-        correlation_id && `CorrelationId eq ${odataKey(correlation_id)}`,
-        application_message_id && `ApplicationMessageId eq ${odataKey(application_message_id)}`
-      ].filter(Boolean).join(' and ');
-      const parsed = await cpi('GET', '/MessageProcessingLogs', {
-        query: {
-          $filter: filter || undefined,
-          $orderby: 'LogEnd desc',
-          $top: top,
-          $inlinecount: 'allpages',
-          filterCustomHeaderProperties: custom_header ? `${odataKey(custom_header.name)} eq ${odataKey(custom_header.value)}` : undefined
-        },
-        unwrap: false
-      });
-      const logs = list(parsed?.d ?? parsed).map(log => ({
-        ...pick(log, ['MessageGuid', 'CorrelationId', 'IntegrationFlowName', 'Status', 'CustomStatus', 'Sender', 'Receiver']),
-        LogStart: odataDate(log.LogStart),
-        LogEnd: odataDate(log.LogEnd)
-      }));
-      const total = Number(parsed?.d?.__count);
-      return { total: Number.isFinite(total) ? total : null, returned: logs.length, logs };
-    });
-
-  register('cpi_get_message_log', 'Get message processing log',
-    'Read one message processing log with its error text and custom header properties. Payload attachments are never read.',
-    { message_guid: messageGuid },
-    READ_ONLY_ANNOTATIONS,
-    async ({ message_guid }) => {
-      const path = `/MessageProcessingLogs(${key(message_guid)})`;
-      const log = entity(await cpi('GET', path));
-      for (const field of ['LogStart', 'LogEnd']) if (field in log) log[field] = odataDate(log[field]);
-      const errorText = await cpi('GET', `${path}/ErrorInformation/$value`, { responseType: 'text', accept: '*/*', expect: [200, 204, 404] });
-      const headers = list(await cpi('GET', `${path}/CustomHeaderProperties`)).map(entry => pick(entry, ['Name', 'Value']));
-      return { log, error_information: errorText ? capText(errorText, ERROR_TEXT_CAP).text : null, custom_header_properties: headers };
-    });
 
   register('cpi_create_package', 'Create CPI package',
     'Create a Cloud Integration package. Requires confirmation exactly equal to CREATE CPI PACKAGE <package_id>.',
@@ -369,7 +317,7 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
     });
 
   register('cpi_update_iflow', 'Update iFlow',
-    'Replace or add files under src/main/resources in an iFlow bundle, merge externalized parameters, and bump the patch version. Fails without writing when expected_version differs from the current version. Never deletes bundle files. Requires confirmation exactly equal to UPDATE IFLOW <iflow_id>.',
+    'Replace/add bundle resources in the active draft and bump its bundle version, preserving fresh configured values below explicit parameter overrides. Reapply surviving configuration after PUT and report exact partial progress. No retained history is created. Fails before writing on expected_version mismatch. Exact confirmation: UPDATE IFLOW <iflow_id>.',
     {
       iflow_id: iflowId,
       expected_version: z.string().min(1).max(40),
@@ -393,18 +341,22 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
       }
       const newVersion = bumpPatchVersion(current);
       const bundle = readBundle(await cpi('GET', `${path}/$value`, { responseType: 'bytes', accept: 'application/zip, application/octet-stream' }));
+      const previousDefaults = bundle.has(PARAMETERS_PROP) ? parseProperties(strFromU8(bundle.get(PARAMETERS_PROP))) : {};
       const changed = new Set();
       for (const file of files) {
         bundle.set(file.path, strToU8(file.content));
         changed.add(file.path);
       }
-      if (parameters && Object.keys(parameters).length) {
-        const existing = bundle.has(PARAMETERS_PROP) ? parseProperties(strFromU8(bundle.get(PARAMETERS_PROP))) : {};
-        const merged = { ...existing, ...parameters };
-        validateParameters(merged);
-        bundle.set(PARAMETERS_PROP, strToU8(propertiesText(merged)));
+      // Read tenant configuration immediately before the draft replacement, not stale bundled defaults.
+      const configured = await readCpiConfigurations(client, iflow_id);
+      const defaults = bundle.has(PARAMETERS_PROP) ? parseProperties(strFromU8(bundle.get(PARAMETERS_PROP))) : {};
+      const removed = new Set(Object.keys(previousDefaults).filter(key => !Object.hasOwn(defaults, key) && !Object.hasOwn(parameters ?? {}, key)));
+      const retained = configured.filter(entry => !removed.has(entry.ParameterKey));
+      const effective = { ...defaults, ...Object.fromEntries(retained.map(entry => [entry.ParameterKey, entry.ParameterValue])), ...parameters };
+      if (retained.length || Object.keys(parameters ?? {}).length) {
+        bundle.set(PARAMETERS_PROP, strToU8(propertiesText(effective)));
         const propdef = bundle.has(PARAMETERS_PROPDEF) ? strFromU8(bundle.get(PARAMETERS_PROPDEF)) : '';
-        const updatedPropdef = mergePropdef(propdef, Object.keys(merged));
+        const updatedPropdef = mergePropdef(propdef, Object.keys(effective));
         if (updatedPropdef !== propdef) {
           bundle.set(PARAMETERS_PROPDEF, strToU8(updatedPropdef));
           changed.add(PARAMETERS_PROPDEF);
@@ -414,11 +366,35 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
       if (!bundle.has(MANIFEST_PATH)) throw new IntegrationError(`iFlow ${iflow_id} bundle has no ${MANIFEST_PATH}`);
       bundle.set(MANIFEST_PATH, strToU8(replaceManifestVersion(strFromU8(bundle.get(MANIFEST_PATH)), newVersion)));
       changed.add(MANIFEST_PATH);
-      await cpi('PUT', path, {
-        json: { Name: name ?? artifact.Name, ArtifactContent: Buffer.from(writeBundle(bundle)).toString('base64') },
-        expect: [200, 202, 204]
+      const reapply = new Map(retained.map(entry => [entry.ParameterKey, entry]));
+      for (const [ParameterKey, ParameterValue] of Object.entries(parameters ?? {})) reapply.set(ParameterKey, {
+        ParameterKey, ParameterValue, DataType: reapply.get(ParameterKey)?.DataType ?? 'xsd:string'
       });
-      return { updated: true, previous_version: current, new_version: newVersion, changed_files: [...changed] };
+      const parameter_names = { source_defaults: Object.keys(defaults).sort(), configured: [...reapply.keys()].sort(),
+        explicit_overrides: Object.keys(parameters ?? {}).sort() };
+      // Preserve exact progress within the output budget; reject before the accepted content write otherwise.
+      if (Buffer.byteLength(JSON.stringify(parameter_names)) > 40000 || Buffer.byteLength(JSON.stringify([...reapply.keys()])) > 24000) {
+        throw new IntegrationError('CPI parameter names exceed the safe mutation progress-report limit');
+      }
+      const result = { updated: true, content_updated: true, previous_version: current, new_version: newVersion,
+        retained_version_created: false, changed_files: [...changed], parameter_names };
+      try {
+        await cpi('PUT', path, {
+          json: { Name: name ?? artifact.Name, ArtifactContent: Buffer.from(writeBundle(bundle)).toString('base64') },
+          expect: [200, 202, 204], responseType: 'none', accept: '*/*'
+        });
+      } catch (error) {
+        const status = Number(error?.status);
+        const accepted = status >= 200 && status < 300 ? true : status >= 400 ? false : null;
+        return { ...result, updated: accepted, content_updated: accepted, outcome: 'unverified',
+          configuration: { updated: [], failed: null, attempted: false }, source_result: cpiReleaseFailure(error) };
+      }
+      try {
+        const configuration = await writeCpiConfigurations(client, iflow_id, [...reapply.values()]);
+        return { ...result, configuration, outcome: configuration.failed ? 'partial' : 'succeeded' };
+      } catch (error) {
+        return { ...result, outcome: 'partial', configuration: { updated: [], failed: cpiReleaseFailure(error) } };
+      }
     });
 
   register('cpi_update_iflow_configuration', 'Configure iFlow parameters',
@@ -435,84 +411,18 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
     OVERWRITE_ANNOTATIONS,
     async ({ iflow_id, parameters, confirmation: confirmed }) => {
       requireConfirmation(confirmed, `CONFIGURE IFLOW ${iflow_id}`);
-      const updated = [];
-      for (const parameter of parameters) {
-        try {
-          await cpi('PUT', `${artifactPath(iflow_id)}/$links/Configurations(${key(parameter.key)})`, {
-            json: { ParameterValue: parameter.value, DataType: parameter.data_type },
-            expect: [200, 202, 204]
-          });
-          updated.push(parameter.key);
-        } catch (error) {
-          return { updated, failed: { key: parameter.key, error: toolError(error).content[0].text } };
-        }
-      }
-      return { updated, failed: null };
+      return writeCpiConfigurations(client, iflow_id, parameters.map(parameter => ({
+        ParameterKey: parameter.key, ParameterValue: parameter.value, DataType: parameter.data_type
+      })));
     });
 
-  // MCP clients commonly abort a tool call after 60 s, so the wait stays below that;
-  // a long STARTING phase is reported as timed_out and continued with cpi_get_iflow_runtime_status.
-  register('cpi_deploy_iflow', 'Deploy iFlow',
-    'Deploy the active iFlow version and wait (up to wait_seconds, max 50) for build and runtime status; returns runtime error text when it fails to start. When timed_out is true, poll cpi_get_iflow_runtime_status. Requires confirmation exactly equal to DEPLOY IFLOW <iflow_id>.',
-    { iflow_id: iflowId, wait_seconds: z.number().int().min(0).max(50).default(45), confirmation },
-    CREATE_ANNOTATIONS,
-    async ({ iflow_id, wait_seconds, confirmation: confirmed }) => {
-      requireConfirmation(confirmed, `DEPLOY IFLOW ${iflow_id}`);
-      const deadline = Date.now() + wait_seconds * 1000;
-      const taskId = String(await cpi('POST', '/DeployIntegrationDesigntimeArtifact', {
-        query: { Id: odataKey(iflow_id), Version: "'active'" },
-        responseType: 'text',
-        accept: '*/*',
-        expect: [200, 202]
-      }) ?? '').trim().replace(/^"|"$/g, '');
-      if (!taskId) throw new IntegrationError(`CPI deploy of ${iflow_id} returned no task id`);
-
-      let buildStatus;
-      for (;;) {
-        const build = await cpi('GET', `/BuildAndDeployStatus(TaskId=${key(taskId)})`);
-        buildStatus = String(build?.Status ?? '').toUpperCase();
-        if (buildStatus !== 'DEPLOYING' || Date.now() >= deadline) break;
-        await sleep(pollIntervalMs);
-      }
-      const result = { task_id: taskId, build_status: buildStatus, runtime_status: null, runtime_version: null, error_information: null, timed_out: false };
-      const readRuntime = async () => {
-        const runtime = await cpi('GET', runtimePath(iflow_id), { expect: [200, 404], withStatus: true });
-        result.runtime_status = runtime.status === 404 ? null : String(runtime.data?.Status ?? '').toUpperCase();
-        result.runtime_version = runtime.status === 404 ? null : runtime.data?.Version ?? null;
-      };
-      if (buildStatus === 'DEPLOYING') {
-        return { ...result, timed_out: true, note: 'Build still running; poll cpi_get_iflow_runtime_status.' };
-      }
-      if (buildStatus !== 'SUCCESS') {
-        // CPI occasionally reports a transient build FAIL for a deploy that does start; report the runtime truth too.
-        await readRuntime();
-        if (result.runtime_status === 'ERROR') result.error_information = await runtimeError(iflow_id);
-        result.note = `CPI reported build status ${buildStatus || 'unknown'}; runtime_status/runtime_version show the iFlow currently deployed. Check cpi_get_iflow_runtime_status before redeploying.`;
-        return result;
-      }
-
-      for (;;) {
-        await readRuntime();
-        const pending = result.runtime_status === null || result.runtime_status === 'STARTING';
-        if (!pending) break;
-        if (Date.now() >= deadline) {
-          result.timed_out = true;
-          result.note = 'Runtime still starting; poll cpi_get_iflow_runtime_status.';
-          break;
-        }
-        await sleep(pollIntervalMs);
-      }
-      if (result.runtime_status === 'ERROR') result.error_information = await runtimeError(iflow_id);
-      return result;
-    });
 
   register('cpi_list_runtime_artifacts', 'List deployed CPI artifacts',
     'List deployed (runtime) Cloud Integration artifacts of every type (iFlows, value mappings, script collections, message mappings, …) with status and deployment time; optionally only one status.',
-    { status: z.enum(RUNTIME_STATUSES).optional(), top: topSchema(500, 200) },
+    { status: z.enum(RUNTIME_STATUSES).optional(), top: topSchema(500, 200), cursor: cursorSchema },
     READ_ONLY_ANNOTATIONS,
-    async ({ status, top }) => list(await cpi('GET', '/IntegrationRuntimeArtifacts', {
-      query: { $filter: status ? `Status eq '${status}'` : undefined, $top: top }
-    })).map(runtimeSummary));
+    async ({ status, ...args }) => pager.page({ ...args, path: '/IntegrationRuntimeArtifacts', orderBy: 'Id',
+      query: { $filter: status ? `Status eq '${status}'` : undefined }, project: runtimeSummary }));
 
   register('cpi_undeploy_artifact', 'Undeploy CPI artifact',
     'Undeploy a runtime artifact of any type and wait (up to wait_seconds, max 50) until it is gone; the design-time artifact is kept. When timed_out is true, poll cpi_list_runtime_artifacts. Requires confirmation exactly equal to UNDEPLOY ARTIFACT <artifact_id>.',
@@ -542,14 +452,16 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
 
   register('cpi_list_package_artifacts', 'List artifacts in a package',
     'List the iFlows, value mappings, script collections and message mappings of one CPI package (Id, Name, Version, Description), grouped by type.',
-    { package_id: packageId },
+    z.object({ package_id: packageId, type: z.enum(Object.keys(PACKAGE_ARTIFACT_SETS)).optional(), ...collectionInputs }).strict()
+      .refine(value => !value.cursor || value.type, { path: ['cursor'], message: 'cursor requires a concrete artifact type' }),
     READ_ONLY_ANNOTATIONS,
-    async ({ package_id }) => {
+    async ({ package_id, type, ...args }) => {
+      const read = group => pager.page({ ...args, maxBytes: type ? 95 * 1024 : 22 * 1024, path: `/IntegrationPackages(${key(package_id)})/${PACKAGE_ARTIFACT_SETS[group]}`,
+        mode: 'local', sourceComplete: false,
+        project: artifact => pick(artifact, ['Id', 'Name', 'Version', 'Description']) });
+      if (type) return read(type);
       const result = {};
-      for (const [group, set] of Object.entries(PACKAGE_ARTIFACT_SETS)) {
-        result[group] = list(await cpi('GET', `/IntegrationPackages(${key(package_id)})/${set}`))
-          .map(artifact => pick(artifact, ['Id', 'Name', 'Version', 'Description']));
-      }
+      for (const group of Object.keys(PACKAGE_ARTIFACT_SETS)) result[group] = await read(group);
       return result;
     });
 
@@ -565,26 +477,42 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
     });
 
   register('cpi_get_value_mappings', 'Get value mapping values',
-    `Read the agency/identifier pairs of a value mapping with their value pairs (up to ${MAX_VALUES_PER_PAIR} per agency pair) and default values.`,
+    `Read bounded agency/identifier pairs of a value mapping (up to 20 pairs and ${MAX_VALUES_PER_PAIR} values/defaults per pair, subject to the response byte budget). Nested collection completeness is unverified; no continuation route is inferred.`,
     { artifact_id: artifactId, version: artifactVersion },
     READ_ONLY_ANNOTATIONS,
     async ({ artifact_id, version }) => {
       const path = designtimePath('value_mapping', artifact_id, version);
       const valMap = entry => ({ Id: entry.Id, SrcValue: entry.Value?.SrcValue ?? null, TgtValue: entry.Value?.TgtValue ?? null });
+      // These nested APIs have no verified traversal contract. Keep source counts, but never
+      // turn a capped or continuation-bearing response into an exhaustive value inventory.
+      const bounded = async (nestedPath, project, top, maxBytes) => {
+        const page = await pager.page({ path: nestedPath, mode: 'local', sourceComplete: false, project, top, maxBytes });
+        const envelope = { ...page, next_cursor: null, complete: false, stop_reason: 'source_limit' };
+        // Account for the actual pretty-printed result at its deepest nesting level.
+        const fits = count => Buffer.byteLength(JSON.stringify({ ...envelope, items: page.items.slice(0, count), returned: count }, null, 2)
+          .replaceAll('\n', '\n        ')) <= maxBytes;
+        let low = 0;
+        let high = page.items.length;
+        while (low < high) {
+          const middle = Math.ceil((low + high) / 2);
+          if (fits(middle)) low = middle;
+          else high = middle - 1;
+        }
+        return { ...envelope, items: page.items.slice(0, low), returned: low };
+      };
+      const schemas = await bounded(`${path}/ValMapSchema`,
+        schema => pick(schema, ['SrcAgency', 'SrcId', 'TgtAgency', 'TgtId', 'State']), 20, 8 * 1024);
       const pairs = [];
-      for (const schema of list(await cpi('GET', `${path}/ValMapSchema`))) {
+      const valueBudget = Math.floor(76 * 1024 / (Math.max(1, schemas.items.length) * 2));
+      for (const schema of schemas.items) {
         const pairPath = `${path}/ValMapSchema(SrcAgency=${key(schema.SrcAgency)},SrcId=${key(schema.SrcId)},TgtAgency=${key(schema.TgtAgency)},TgtId=${key(schema.TgtId)})`;
-        const values = list(await cpi('GET', `${pairPath}/ValMaps`)).map(valMap);
-        const defaults = list(await cpi('GET', `${pairPath}/DefaultValMaps`)).map(valMap);
         pairs.push({
-          ...pick(schema, ['SrcAgency', 'SrcId', 'TgtAgency', 'TgtId', 'State']),
-          value_count: values.length,
-          values: values.slice(0, MAX_VALUES_PER_PAIR),
-          ...(values.length > MAX_VALUES_PER_PAIR ? { values_truncated: true } : {}),
-          default_values: defaults
+          ...schema,
+          values: await bounded(`${pairPath}/ValMaps`, valMap, MAX_VALUES_PER_PAIR, valueBudget),
+          default_values: await bounded(`${pairPath}/DefaultValMaps`, valMap, MAX_VALUES_PER_PAIR, valueBudget)
         });
       }
-      return { artifact_id, version, agency_pairs: pairs };
+      return { artifact_id, version, agency_pairs: { ...schemas, items: pairs } };
     });
 
   const agencyField = z.string().min(1).max(200);
@@ -667,37 +595,6 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
       return { updated: true, artifact_id, version: artifact?.Version ?? null, changed_files: [...changed] };
     });
 
-  register('cpi_deploy_artifact', 'Deploy CPI artifact',
-    'Deploy the active version of a value mapping, script collection or message mapping and wait (up to wait_seconds, max 50) until the runtime artifact leaves STARTING; returns runtime error text when it fails. A redeploy can briefly report the previously deployed artifact as STARTED, so check runtime_version and deployed_on. When timed_out is true, poll cpi_list_runtime_artifacts. Requires confirmation exactly equal to DEPLOY ARTIFACT <artifact_id>.',
-    { type: artifactType, artifact_id: artifactId, wait_seconds: waitSeconds(45), confirmation },
-    CREATE_ANNOTATIONS,
-    async ({ type, artifact_id, wait_seconds, confirmation: confirmed }) => {
-      requireConfirmation(confirmed, `DEPLOY ARTIFACT ${artifact_id}`);
-      const deadline = Date.now() + wait_seconds * 1000;
-      await cpi('POST', `/${ARTIFACT_TYPES[type].deploy}`, {
-        query: { Id: odataKey(artifact_id), Version: "'active'" },
-        responseType: 'text',
-        accept: '*/*',
-        expect: [200, 201, 202]
-      });
-      const result = { type, artifact_id, runtime_status: null, runtime_version: null, deployed_on: null, error_information: null, timed_out: false };
-      for (;;) {
-        const runtime = await cpi('GET', runtimePath(artifact_id), { expect: [200, 404], withStatus: true });
-        const deployed = runtime.status === 200;
-        result.runtime_status = deployed ? String(runtime.data?.Status ?? '').toUpperCase() : null;
-        result.runtime_version = deployed ? runtime.data?.Version ?? null : null;
-        result.deployed_on = deployed ? odataDate(runtime.data?.DeployedOn) ?? null : null;
-        if (deployed && result.runtime_status !== 'STARTING') break;
-        if (Date.now() >= deadline) {
-          result.timed_out = true;
-          result.note = 'Runtime artifact not started yet; poll cpi_list_runtime_artifacts.';
-          break;
-        }
-        await sleep(pollIntervalMs);
-      }
-      if (result.runtime_status === 'ERROR') result.error_information = await runtimeError(artifact_id);
-      return result;
-    });
 
   register('cpi_update_package', 'Update CPI package',
     'Change the name, short text, description or version of a CPI package; omitted fields keep their current values. Requires confirmation exactly equal to UPDATE CPI PACKAGE <package_id>.',
@@ -740,7 +637,7 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
       try {
         copied = await cpi('POST', '/CopyIntegrationPackage', {
           query: { Id: odataKey(package_id), ImportMode: `'${import_mode}'`, Suffix: suffix ? `'${suffix}'` : undefined },
-          expect: [200, 201]
+          expect: [200, 201], withStatus: true, responseType: 'text', accept: 'application/json'
         });
       } catch (error) {
         if (/\(HTTP 409\)/.test(error?.message)) {
@@ -748,7 +645,14 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
         }
         throw error;
       }
-      return { copied: true, import_mode, package: pick(copied ?? {}, ['Id', 'Name', 'Version']) };
+      let metadata;
+      try {
+        const body = JSON.parse(copied.data);
+        metadata = entity(body?.d ?? body);
+      } catch { /* HTTP acceptance is still evidence when the reply is not usable JSON. */ }
+      const identified = typeof metadata?.Id === 'string' && metadata.Id.length > 0;
+      return { accepted: true, copied: identified, outcome: identified ? 'succeeded' : 'unverified',
+        http_status: copied.status, import_mode, package: pick(metadata, ['Id', 'Name', 'Version']) };
     });
 
   // ---------------------------------------------------------------- security material
@@ -758,26 +662,28 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
     'List user credentials, OAuth2 client credentials or keystore entries (keystore system, backup_admin_system or KeyRenewal; default system) with deployment status. Passwords, client secrets and keys are never returned.',
     z.object({
       kind: z.enum(['user_credentials', 'oauth2_client_credentials', 'keystore_entries']),
-      keystore: z.enum(KEYSTORES).optional()
+      keystore: z.enum(KEYSTORES).optional(),
+      ...collectionInputs
     }).strict().refine(value => !value.keystore || value.kind === 'keystore_entries', { path: ['keystore'], message: 'keystore is only allowed with kind keystore_entries' }),
     READ_ONLY_ANNOTATIONS,
-    async ({ kind, keystore }) => {
+    async ({ kind, keystore, ...args }) => {
       if (kind === 'user_credentials') {
-        return redactSecrets(list(await cpi('GET', '/UserCredentials')).map(entry => ({
-          ...pick(entry, ['Name', 'Kind', 'Description', 'User', 'CompanyId']),
+        return pager.page({ ...args, path: '/UserCredentials', mode: 'local', project: entry => redactSecrets({
+          ...pick(entry, ['Name', 'Kind', 'Description']),
           deployment: deployment(entry.SecurityArtifactDescriptor)
-        })));
+        }) });
       }
       if (kind === 'oauth2_client_credentials') {
-        return redactSecrets(list(await cpi('GET', '/OAuth2ClientCredentials')).map(entry => ({
-          ...pick(entry, ['Name', 'Description', 'TokenServiceUrl', 'ClientId', 'ClientAuthentication', 'Scope', 'ScopeContentType', 'Resource', 'Audience']),
+        return pager.page({ ...args, path: '/OAuth2ClientCredentials', mode: 'local', project: entry => redactSecrets({
+          ...pick(entry, ['Name', 'Description', 'ClientAuthentication', 'ScopeContentType']),
           deployment: deployment(entry.SecurityArtifactDescriptor)
-        })));
+        }) });
       }
-      return redactSecrets(list(await cpi('GET', '/KeystoreEntries', { query: { keystoreName: keystore ?? 'system' } })).map(entry => ({
-        ...pick(entry, ['Alias', 'Hexalias', 'Type', 'Owner', 'KeyType', 'SubjectDN', 'IssuerDN', 'Status']),
-        ...dates(entry, ['ValidNotBefore', 'ValidNotAfter'])
-      })));
+      return pager.page({ ...args, path: '/KeystoreEntries', mode: 'local', query: { keystoreName: keystore ?? 'system' },
+        project: entry => ({
+          ...pick(entry, ['Alias', 'Hexalias', 'Type', 'KeyType', 'Status']),
+          ...dates(entry, ['ValidNotBefore', 'ValidNotAfter'])
+        }) });
     });
 
   register('cpi_set_user_credential', 'Set CPI user credential',
@@ -816,9 +722,9 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
       token_service_url: z.string().max(2048).regex(/^https:\/\/\S+$/, 'must be an https URL'),
       client_id: z.string().min(1).max(1024),
       client_secret: secretValue,
-      client_authentication: z.enum(['body', 'header']).default('body'),
+      client_authentication: z.enum(['body', 'header']).optional(),
       scope: z.string().max(2048).optional(),
-      scope_content_type: z.enum(['urlencoded', 'json']).default('urlencoded'),
+      scope_content_type: z.enum(['urlencoded', 'json']).optional(),
       resource: z.string().max(2048).optional(),
       audience: z.string().max(2048).optional(),
       description: z.string().max(1024).optional(),
@@ -834,15 +740,16 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
           TokenServiceUrl: token_service_url,
           ClientId: client_id,
           ClientSecret: client_secret,
-          ClientAuthentication: client_authentication,
-          Scope: scope ?? '',
-          ScopeContentType: scope_content_type,
-          Resource: resource ?? '',
-          Audience: audience ?? ''
+          ClientAuthentication: client_authentication ?? existing?.ClientAuthentication ?? 'body',
+          Scope: scope ?? existing?.Scope ?? '',
+          ScopeContentType: scope_content_type ?? existing?.ScopeContentType ?? 'urlencoded',
+          Resource: resource ?? existing?.Resource ?? '',
+          Audience: audience ?? existing?.Audience ?? ''
         }));
         return { [outcome]: true, name };
       } catch (error) {
-        throw withoutSecret(error, client_secret);
+        const evidence = cpiReleaseFailure(error);
+        throw new IntegrationError(`CPI OAuth2 client credential write failed${evidence.status ? ` (HTTP ${evidence.status})` : ''}; tenant response withheld`, evidence);
       }
     });
 
@@ -859,6 +766,10 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
     OVERWRITE_ANNOTATIONS,
     async ({ alias, certificate, update, confirmation: confirmed }) => {
       requireConfirmation(confirmed, `UPLOAD CERTIFICATE ${alias}`);
+      let parsedCertificate;
+      try { parsedCertificate = new X509Certificate(certificate); }
+      catch { throw new IntegrationError('Malformed PEM certificate'); }
+      const fingerprint_sha256 = parsedCertificate.fingerprint256.replaceAll(':', '').toLowerCase();
       // Keystore keys are the hex of the UTF-8 alias because slashes are not allowed in the URI even when encoded.
       const hexalias = Buffer.from(alias, 'utf8').toString('hex');
       try {
@@ -870,22 +781,31 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
           expect: [200, 204]
         });
       } catch (error) {
-        if (!update && /\(HTTP 400\)/.test(error?.message)) throw new IntegrationError(`Keystore alias ${alias} already exists; pass update: true to replace it`);
+        if (!update && (error?.status === 400 || /\(HTTP 400\)/.test(error?.message))) {
+          let exists = /\b(?:entry|alias|certificate)\b.{0,80}\b(?:already exists|exists already|exists)\b/i.test(error.message);
+          if (!exists) {
+            try {
+              const fresh = await cpi('GET', '/KeystoreEntries', { query: { keystoreName: 'system' } });
+              exists = list(fresh).some(entry => entry.Alias === alias || entry.Hexalias === hexalias);
+            } catch { /* Preserve the original upload cause when alias evidence is unavailable. */ }
+          }
+          if (exists) throw new IntegrationError(`Keystore alias ${alias} already exists; pass update: true to replace it`);
+        }
         throw error;
       }
-      return { uploaded: true, alias, hexalias, replaced: update };
+      return { uploaded: true, alias, hexalias, replaced: update, fingerprint_sha256, fingerprint_source: 'local_X509Certificate', tenant_fingerprint_verified: false };
     });
 
   // ---------------------------------------------------------------- number ranges, partner directory
 
   register('cpi_list_number_ranges', 'List CPI number ranges',
     'List number range objects (Name, Description, MinValue, MaxValue, CurrentValue = next value, Rotate, FieldLength, deployment).',
-    {},
+    collectionInputs,
     READ_ONLY_ANNOTATIONS,
-    async () => list(await cpi('GET', '/NumberRanges')).map(range => ({
-      ...pick(range, ['Name', 'Description', 'MinValue', 'MaxValue', 'CurrentValue', 'Rotate', 'FieldLength', 'DeployedBy']),
+    async args => pager.page({ ...args, path: '/NumberRanges', mode: 'local', project: range => ({
+      ...pick(range, ['Name', 'Description', 'MinValue', 'MaxValue', 'CurrentValue', 'Rotate', 'FieldLength']),
       ...dates(range, ['DeployedOn'])
-    })));
+    }) }));
 
   register('cpi_set_number_range', 'Set CPI number range',
     'Create or replace a number range object. Values are non-negative integers of at most 14 digits with min_value ≤ current_value ≤ max_value; current_value is the next value handed out (default: kept on update, min_value on create). field_length 0 means no zero padding. Requires confirmation exactly equal to SET NUMBER RANGE <name>.',
@@ -931,15 +851,19 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
     });
 
   register('cpi_list_partner_parameters', 'List Partner Directory parameters',
-    'List Partner Directory string parameters (Pid, Id, Value) and binary parameter metadata (Pid, Id, ContentType; content is not returned), optionally for one partner id.',
-    { pid: z.string().max(60).regex(partnerChars).optional(), top: topSchema(500, 200) },
+    'List Partner Directory parameter identities and binary content types, optionally for one partner id. Parameter values and binary content are not returned.',
+    z.object({ pid: z.string().max(60).regex(partnerChars).optional(), type: z.enum(['string', 'binary', 'all']).default('all'), ...collectionInputs }).strict()
+      .refine(value => !value.cursor || value.type !== 'all', { path: ['cursor'], message: 'cursor requires string or binary type' }),
     READ_ONLY_ANNOTATIONS,
-    async ({ pid, top }) => {
-      const query = { $filter: pid ? `Pid eq ${odataKey(pid)}` : undefined, $top: top };
-      const audit = entry => ({ ...pick(entry, ['LastModifiedBy']), ...dates(entry, ['LastModifiedTime']) });
-      const strings = list(await cpi('GET', '/StringParameters', { query })).map(entry => ({ ...pick(entry, ['Pid', 'Id', 'Value']), ...audit(entry) }));
-      const binaries = list(await cpi('GET', '/BinaryParameters', { query })).map(entry => ({ ...pick(entry, ['Pid', 'Id', 'ContentType']), ...audit(entry) }));
-      return { string_parameters: strings, binary_parameters: binaries };
+    async ({ pid, type, ...args }) => {
+      const query = { $filter: pid ? `Pid eq ${odataKey(pid)}` : undefined };
+      const read = selected => pager.page({ ...args, maxBytes: type === 'all' ? 46 * 1024 : 95 * 1024, path: selected === 'string' ? '/StringParameters' : '/BinaryParameters',
+        query, orderBy: 'Pid,Id', project: entry => ({
+          ...pick(entry, selected === 'string' ? ['Pid', 'Id'] : ['Pid', 'Id', 'ContentType']),
+          ...dates(entry, ['LastModifiedTime'])
+        }) });
+      if (type !== 'all') return read(type);
+      return { string_parameters: await read('string'), binary_parameters: await read('binary') };
     });
 
   register('cpi_set_partner_parameter', 'Set Partner Directory parameter',
@@ -973,65 +897,6 @@ export function registerCpiTools(register, client, { pollIntervalMs }) {
       return { [outcome]: true, pid, id, type };
     });
 
-  // ---------------------------------------------------------------- data stores, variables, JMS (the data store APIs accept no query options)
-
-  register('cpi_list_data_stores', 'List CPI data stores',
-    'List data stores with their iFlow, type, visibility and message counts; optionally only stores with overdue entries.',
-    { overdue_only: z.boolean().default(false) },
-    READ_ONLY_ANNOTATIONS,
-    async ({ overdue_only }) => list(await cpi('GET', '/DataStores', { query: { overdueonly: overdue_only ? 'true' : undefined } }))
-      .map(store => pick(store, ['DataStoreName', 'IntegrationFlow', 'Type', 'Visibility', 'NumberOfMessages', 'NumberOfOverdueMessages'])));
-
-  register('cpi_list_data_store_entries', 'List data store entries',
-    `List entries of one data store (Id, Status, MessageId, due/created/retain dates; up to ${MAX_LIST_ENTRIES}). Entry payloads are never read. type is empty for Global and iFlow data stores.`,
-    { data_store: z.string().min(1).max(200), integration_flow: z.string().min(1).max(200), type: z.string().max(40).default('') },
-    READ_ONLY_ANNOTATIONS,
-    async ({ data_store, integration_flow, type }) => {
-      const entries = list(await cpi('GET', `/DataStores(DataStoreName=${key(data_store)},IntegrationFlow=${key(integration_flow)},Type=${key(type)})/Entries`))
-        .map(entry => ({ ...pick(entry, ['Id', 'Status', 'MessageId']), ...dates(entry, ['DueAt', 'CreatedAt', 'RetainUntil']) }));
-      return { total: entries.length, returned: Math.min(entries.length, MAX_LIST_ENTRIES), entries: entries.slice(0, MAX_LIST_ENTRIES) };
-    });
-
-  register('cpi_list_variables', 'List CPI variables',
-    'List global and iFlow variables (name, iFlow, visibility, updated/retain dates). Values are never read.',
-    {},
-    READ_ONLY_ANNOTATIONS,
-    async () => list(await cpi('GET', '/Variables'))
-      .map(variable => ({ ...pick(variable, ['VariableName', 'IntegrationFlow', 'Visibility']), ...dates(variable, ['UpdatedAt', 'RetainUntil']) })));
-
-  register('cpi_get_jms_broker_status', 'Get JMS broker status',
-    'Return JMS broker capacity and limit flags (0 ok, 1 over limit) and the queues in warning (1) or critical (2) state.',
-    {},
-    READ_ONLY_ANNOTATIONS,
-    async () => {
-      const broker = await cpi('GET', `/JmsBrokers(${key('Broker1')})`, { query: { $expand: 'QueueStates' } });
-      const queues = list(broker?.QueueStates);
-      const unhealthy = queues.filter(queue => Number(queue.State) !== 0).map(queue => pick(queue, ['Name', 'State']));
-      return { broker: pick(broker, JMS_BROKER_FIELDS), queue_count: queues.length, unhealthy_queue_count: unhealthy.length, unhealthy_queues: unhealthy };
-    });
-
-  register('cpi_get_message_log_steps', 'Get message processing steps',
-    `Return the processing steps of the latest run of a message (StepId, ModelStepId, Activity, Status, Error, start/stop), ordered by start time, up to ${MAX_RUN_STEPS}. Payloads are never read.`,
-    { message_guid: messageGuid },
-    READ_ONLY_ANNOTATIONS,
-    async ({ message_guid }) => {
-      const runs = list(await cpi('GET', `/MessageProcessingLogs(${key(message_guid)})/Runs`));
-      if (!runs.length) return { run_count: 0, run: null, total_steps: 0, steps: [] };
-      const latest = runs.reduce((best, run) => (time(run.RunStart) > time(best.RunStart) ? run : best));
-      const steps = list(await cpi('GET', `/MessageProcessingLogRuns(${key(latest.Id)})/RunSteps`))
-        .sort((left, right) => time(left.StepStart) - time(right.StepStart));
-      return {
-        run_count: runs.length,
-        run: { ...pick(latest, ['Id', 'OverallState', 'LogLevel']), ...dates(latest, ['RunStart', 'RunStop']) },
-        total_steps: steps.length,
-        ...(steps.length > MAX_RUN_STEPS ? { truncated: true } : {}),
-        steps: steps.slice(0, MAX_RUN_STEPS).map(step => ({
-          ...pick(step, ['StepId', 'ModelStepId', 'Activity', 'Status']),
-          Error: step.Error ? capText(String(step.Error), STEP_ERROR_CAP).text : null,
-          ...dates(step, ['StepStart', 'StepStop'])
-        }))
-      };
-    });
 }
 
 /** Names of every cpi_* tool, in registration order. */

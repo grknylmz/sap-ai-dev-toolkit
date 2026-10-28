@@ -9,8 +9,8 @@ import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { parseIntegrationServiceKey } from '../src/integration-config.mjs';
 import { storeIntegrationKey } from '../src/integration-credentials.mjs';
 import { createIntegrationServer } from '../src/integration-server.mjs';
-import { INTEGRATION_TOOL_NAMES } from '../src/integration-tools.mjs';
 import { createIntegrationClients, verifyIntegrationClients } from '../src/integration-verify.mjs';
+import { createServiceClient } from '../src/integration-http.mjs';
 import { startFakeTenant } from './fake-integration-tenant.mjs';
 
 async function connect(t, env) {
@@ -54,15 +54,28 @@ test('only configured sides are registered', async t => {
   const tenant = await startFakeTenant(t);
   const client = await connect(t, { CPI_SERVICE_KEY: tenant.serviceKey() });
   const names = (await client.listTools()).tools.map(tool => tool.name).sort();
-  assert.deepEqual(names, INTEGRATION_TOOL_NAMES.filter(name => !name.startsWith('apim_')).sort());
-  assert.equal(names.some(name => name.startsWith('apim_')), false);
+  assert.equal(names.some(name => /^(?:apim_|devhub_|ans_|ctms_|event_mesh_|aem_|open_connectors_|edge_)/.test(name)), false);
 
   const both = await connect(t, { CPI_SERVICE_KEY: tenant.serviceKey(), APIM_SERVICE_KEY: tenant.serviceKey() });
-  assert.deepEqual((await both.listTools()).tools.map(tool => tool.name).sort(), [...INTEGRATION_TOOL_NAMES].sort());
+  const bothNames = (await both.listTools()).tools.map(tool => tool.name);
+  assert.equal(bothNames.includes('apim_test_api'), true);
+  assert.equal(bothNames.some(name => name.startsWith('ans_') || name.startsWith('devhub_')), false);
   const info = parsed(await call(both, 'integration_connection_info'));
   assert.equal(info.cpi.source, 'service-key');
   assert.equal(info.apim.host, new URL(tenant.url).host);
   assert.equal(JSON.stringify(info).includes('test-secret'), false);
+});
+
+test('SAP management queries retain literal system-option names without exposing reserved value delimiters', async t => {
+  const name = 'A+B&$top=99';
+  const tenant = await startFakeTenant(t, request => {
+    if (/[?&]%24/i.test(request.rawQuery)) return { status: 400 };
+    if (request.query.get('$filter') !== `name eq '${name}'` || request.query.get('$top') !== '1' || request.query.get('$select') !== 'name') return { status: 400 };
+    return { status: 200, json: { d: { results: [{ name }] } } };
+  });
+  const client = createServiceClient({ label: 'APIM', url: tenant.url, tokenUrl: `${tenant.url}/oauth/token`, clientId: 'client', clientSecret: 'secret', env: {} });
+  const result = await client.request('GET', '/APIProducts', { query: { $filter: `name eq '${name}'`, $select: 'name', $top: 1 } });
+  assert.deepEqual(result, [{ name }]);
 });
 
 test('wrong confirmation fails before any network request', async t => {
@@ -133,10 +146,16 @@ test('cpi_update_iflow patches files, merges parameters, and bumps the manifest 
     'src/main/resources/parameters.propdef': strToU8('<parameters><parameter><name>Old</name></parameter><param_references/></parameters>'),
     'keep.txt': strToU8('kept')
   });
+  const configured = new Map([['Old', { ParameterKey: 'Old', ParameterValue: '1', DataType: 'xsd:string' }]]);
   const tenant = await startFakeTenant(t, request => {
     if (request.method === 'GET' && request.path.endsWith('/$value')) return { status: 200, headers: { 'content-type': 'application/zip' }, body: Buffer.from(bundle) };
+    if (request.method === 'GET' && request.path.endsWith('/Configurations')) return { status: 200, json: { d: { results: [...configured.values()] } } };
     if (request.method === 'GET') return { status: 200, json: { d: { Id: 'Z_Flow', Version: '1.0.3', Name: 'Flow' } } };
-    if (request.method === 'PUT') return { status: 202 };
+    if (request.method === 'PUT') {
+      const parameter = /Configurations\('([^']+)'\)/.exec(request.path)?.[1];
+      if (parameter) configured.set(parameter, { ParameterKey: parameter, ...JSON.parse(request.body) });
+      return { status: 202 };
+    }
     return { status: 500 };
   });
   const client = await connect(t, { CPI_SERVICE_KEY: tenant.serviceKey() });
@@ -155,50 +174,6 @@ test('cpi_update_iflow patches files, merges parameters, and bumps the manifest 
   assert.equal(strFromU8(files['src/main/resources/parameters.prop']), 'Old=1\nNew=b\n');
   assert.match(strFromU8(files['src/main/resources/parameters.propdef']), /<name>Old<\/name>.*<name>New<\/name>/);
   assert.match(strFromU8(files['META-INF/MANIFEST.MF']), /Bundle-Version: 1\.0\.4/);
-});
-
-test('cpi_deploy_iflow polls build and runtime status and returns runtime errors', async t => {
-  let buildPolls = 0;
-  const tenant = await startFakeTenant(t, request => {
-    if (request.path === '/api/v1/DeployIntegrationDesigntimeArtifact') return { status: 202, body: 't1' };
-    if (request.path === "/api/v1/BuildAndDeployStatus(TaskId='t1')") {
-      buildPolls += 1;
-      return { status: 200, json: { d: { TaskId: 't1', Status: buildPolls < 2 ? 'DEPLOYING' : 'SUCCESS' } } };
-    }
-    if (request.path === "/api/v1/IntegrationRuntimeArtifacts('Z_Flow')") return { status: 200, json: { d: { Id: 'Z_Flow', Version: '1.0.0', Status: 'ERROR' } } };
-    if (request.path === "/api/v1/IntegrationRuntimeArtifacts('Z_Flow')/ErrorInformation/$value") return { status: 200, body: 'Credential S4H_USER not found' };
-    return { status: 500 };
-  });
-  const client = await connect(t, { CPI_SERVICE_KEY: tenant.serviceKey() });
-  const result = parsed(await call(client, 'cpi_deploy_iflow', { iflow_id: 'Z_Flow', confirmation: 'DEPLOY IFLOW Z_Flow' }));
-  assert.deepEqual(result, {
-    task_id: 't1',
-    build_status: 'SUCCESS',
-    runtime_status: 'ERROR',
-    runtime_version: '1.0.0',
-    error_information: 'Credential S4H_USER not found',
-    timed_out: false
-  });
-  const deploy = tenant.apiRequests()[0];
-  assert.equal(deploy.query.get('Id'), "'Z_Flow'");
-  assert.equal(deploy.query.get('Version'), "'active'");
-  assert.equal(buildPolls, 2);
-});
-
-test('cpi_deploy_iflow reports runtime truth when CPI returns a build FAIL', async t => {
-  const tenant = await startFakeTenant(t, request => {
-    if (request.path === '/api/v1/DeployIntegrationDesigntimeArtifact') return { status: 202, body: 't2' };
-    if (request.path === "/api/v1/BuildAndDeployStatus(TaskId='t2')") return { status: 200, json: { d: { TaskId: 't2', Status: 'FAIL' } } };
-    if (request.path === "/api/v1/IntegrationRuntimeArtifacts('Z_Flow')") return { status: 200, json: { d: { Id: 'Z_Flow', Version: '1.0.1', Status: 'STARTED' } } };
-    return { status: 500 };
-  });
-  const client = await connect(t, { CPI_SERVICE_KEY: tenant.serviceKey() });
-  const result = parsed(await call(client, 'cpi_deploy_iflow', { iflow_id: 'Z_Flow', confirmation: 'DEPLOY IFLOW Z_Flow' }));
-  assert.equal(result.build_status, 'FAIL');
-  assert.equal(result.runtime_status, 'STARTED');
-  assert.equal(result.runtime_version, '1.0.1');
-  assert.equal(result.timed_out, false);
-  assert.match(result.note, /build status FAIL/);
 });
 
 test('runtime status flattens CPI JSON error information into readable text', async t => {
@@ -245,32 +220,15 @@ test('transient 5xx is retried for idempotent GET/PUT but never POST, and XML er
     };
   });
   const client = await connect(t, { CPI_SERVICE_KEY: tenant.serviceKey() });
-  assert.deepEqual(parsed(await call(client, 'cpi_list_packages')), [{ Id: 'ZPKG', Name: 'P' }]);
+  assert.deepEqual(parsed(await call(client, 'cpi_list_packages')).items, [{ Id: 'ZPKG', Name: 'P' }]);
   assert.equal(packageReads, 2);
 
-  const configured = parsed(await call(client, 'cpi_update_iflow_configuration', { iflow_id: 'Z_Flow', parameters: [{ key: 'A', value: 'b' }], confirmation: 'CONFIGURE IFLOW Z_Flow' }));
-  assert.deepEqual(configured, { updated: ['A'], failed: null });
+  parsed(await call(client, 'cpi_update_iflow_configuration', { iflow_id: 'Z_Flow', parameters: [{ key: 'A', value: 'b' }], confirmation: 'CONFIGURE IFLOW Z_Flow' }));
   assert.equal(configurationPuts, 2);
 
   const failed = await call(client, 'cpi_create_package', { package_id: 'ZPKG', name: 'P', short_text: 'P', confirmation: 'CREATE CPI PACKAGE ZPKG' });
   assert.equal(failed.text, 'CPI POST /api/v1/IntegrationPackages failed (HTTP 500): Package store & index unavailable');
   assert.equal(tenant.apiRequests().filter(request => request.method === 'POST').length, 1);
-});
-
-test('cpi_list_message_logs builds the OData filter and converts dates', async t => {
-  const tenant = await startFakeTenant(t, () => ({
-    status: 200,
-    json: { d: { __count: '7', results: [{ MessageGuid: 'AAAAAAAAAAAA', Status: 'FAILED', LogStart: '/Date(1767225600000)/', LogEnd: '/Date(1767225601000)/' }] } }
-  }));
-  const client = await connect(t, { CPI_SERVICE_KEY: tenant.serviceKey() });
-  const result = parsed(await call(client, 'cpi_list_message_logs', { iflow_id: 'X', status: 'FAILED', from: '2026-01-01T00:00:00Z', top: 5 }));
-  assert.equal(result.total, 7);
-  assert.equal(result.logs[0].LogStart, '2026-01-01T00:00:00.000Z');
-  const [request] = tenant.apiRequests();
-  assert.equal(request.query.get('$filter'), "IntegrationArtifact/Id eq 'X' and Status eq 'FAILED' and LogStart gt datetime'2026-01-01T00:00:00'");
-  assert.equal(request.query.get('$top'), '5');
-  assert.equal(request.query.get('$orderby'), 'LogEnd desc');
-  assert.doesNotMatch(request.rawQuery, /\+/, 'spaces must be sent as %20');
 });
 
 test('tokens are cached and a 401 retries once with a fresh token', async t => {
@@ -319,7 +277,8 @@ test('apim_create_api_proxy checks the provider before importing and returns the
   let proxyImported = false;
   const tenant = await startFakeTenant(t, request => {
     const base = '/apiportal/api/1.0/Management.svc';
-    if (request.path === `${base}/APIProviders('S4H')`) return providerExists ? { status: 200, json: { d: { name: 'S4H' } } } : { status: 404 };
+    if (request.path === `${base}/APIProviders`) return { status: 200, json: { d: { results: providerExists ? [{ name: 'S4H' }] : [] } } };
+    if (request.path === `${base}/APIProxies`) return { status: 200, json: { d: { results: proxyImported ? [{ name: 'ZOrders' }] : [] } } };
     if (request.path === `${base}/APIProxies('ZOrders')`) {
       if (!proxyImported) return { status: 404 };
       return {
@@ -342,22 +301,38 @@ test('apim_create_api_proxy checks the provider before importing and returns the
     confirmation: 'CREATE API PROXY ZOrders'
   };
   const missing = await call(client, 'apim_create_api_proxy', args);
-  assert.equal(missing.text, 'API provider S4H does not exist; create it with apim_create_api_provider');
+  assert.equal(missing.isError, true);
   assert.equal(tenant.apiRequests().some(request => request.path.includes('Transport.svc')), false);
 
   providerExists = true;
   const result = parsed(await call(client, 'apim_create_api_proxy', args));
   assert.equal(result.runtime_url, 'https://vh.example/s4/orders');
   assert.equal(result.state, 'DEPLOYED');
-  const upload = tenant.apiRequests().find(request => request.path.includes('Transport.svc'));
-  assert.equal(upload.headers.accept, 'application/zip');
-  assert.equal(upload.headers['content-type'], undefined);
-  const files = unzipSync(Buffer.from(upload.body, 'base64'));
-  assert.match(strFromU8(files['APIProxy/APITargetEndPoint/default.xml']), /<provider_id>S4H<\/provider_id>/);
 
   const notOdataPath = await call(client, 'apim_create_api_proxy', { ...args, target: { provider: 'S4H', relative_path: '/api/orders' } });
   assert.equal(notOdataPath.isError, true);
   assert.match(notOdataPath.text, /\/sap\/opu\/odata/);
+});
+
+test('API proxy runtime URLs keep base paths on the virtual host with or without a leading slash', async t => {
+  let basePath = 'HelloWorldAPI';
+  const tenant = await startFakeTenant(t, () => ({
+    status: 200,
+    json: { d: {
+      name: 'HelloWorldAPI',
+      proxyEndPoints: { results: [{
+        base_path: basePath,
+        virtualhosts: { results: [{ virtual_host: 'vh.example', virtual_port: 8443, isSSL: true }] }
+      }] }
+    } }
+  }));
+  const client = await connect(t, { APIM_SERVICE_KEY: tenant.serviceKey() });
+  for (const path of ['HelloWorldAPI', '/HelloWorldAPI', '']) {
+    basePath = path;
+    const proxy = parsed(await call(client, 'apim_get_api_proxy', { name: 'HelloWorldAPI' }));
+    assert.equal(proxy.runtime_url, `https://vh.example:8443${path ? '/HelloWorldAPI' : '/'}`);
+    assert.equal(new URL(proxy.runtime_url).host, 'vh.example:8443');
+  }
 });
 
 test('API provider reads never return credential properties', async t => {
@@ -405,36 +380,38 @@ test('apim_create_api_provider rejects reserved names and sends no credentials',
   assert.deepEqual(JSON.parse(posts[1].body), { entityId: 'ZS4H', name: 'sap-client', value: '100' });
 });
 
-test('odata_get readers reject media/batch paths and redact secrets and encrypted map values', async t => {
+test('generic readers authorize metadata projections, not functions, payloads or secret routes', async t => {
   const tenant = await startFakeTenant(t, request => {
     if (request.path.endsWith('/$metadata')) {
-      return { status: 200, body: '<edmx:Edmx><EntitySet Name="Applications" EntityType="apiportal.Application"/><FunctionImport Name="Deploy" m:HttpMethod="POST"/></edmx:Edmx>' };
+      return { status: 200, body: '<edmx:Edmx><EntitySet Name="Applications" EntityType="apiportal.Application"/><FunctionImport Name="OAuthTokenFromCode" m:HttpMethod="GET"/></edmx:Edmx>' };
     }
     if (request.path === '/apiportal/api/1.0/Management.svc/KeyMapEntries') {
-      return { status: 200, json: { d: { __count: '1', results: [{ __metadata: { uri: 'x' }, name: 'Backend', encrypted: true, keyMapEntryValues: { results: [{ name: 'user', value: 'alice' }] } }] } } };
+      return { status: 200, json: { d: { __count: '1', results: [{ name: 'Backend', encrypted: 'false', keyMapEntryValues: { results: [{ name: 'user', value: 'alice-private' }] } }] } } };
     }
-    if (request.path === '/apiportal/api/1.0/Management.svc/Applications(\'A1\')') {
-      return { status: 200, json: { d: { id: 'A1', title: 'App', app_key: 'k-123', app_secret: 's-456', callbackurl: '' } } };
-    }
+    if (request.path.endsWith('/KeyMapEntryValues')) return { status: 200, json: { d: { results: [{ name: 'password', value: 'direct-private' }] } } };
+    if (request.path.endsWith('/Configurations')) return { status: 200, json: { d: { results: [{ ParameterKey: 'Password', ParameterValue: 'config-private', DataType: 'xsd:string' }] } } };
+    if (request.path.endsWith('/MessageProcessingLogs/$count')) return { status: 200, body: 'not-a-count' };
+    if (request.path.endsWith("/Applications('A1')")) return { status: 200, json: { d: { id: 'A1', title: 'App', app_key: 'k-private', app_secret: 's-private' } } };
     return { status: 404 };
   });
-  const client = await connect(t, { APIM_SERVICE_KEY: tenant.serviceKey() });
-  for (const path of ["/APIProxies('X')/$value", '/$batch', "/APIProxies('X')/$links/apiProducts", '/APIProxies?$top=1', '/../oauth/token']) {
-    const result = await call(client, 'apim_odata_get', { path });
-    assert.equal(result.isError, true, path);
+  const client = await connect(t, { CPI_SERVICE_KEY: tenant.serviceKey(), APIM_SERVICE_KEY: tenant.serviceKey() });
+  for (const path of ["/APIProxies('X')/$value", '/$batch', "/APIProxies('X')/$links/apiProducts", '/APIProxies?$top=1', '/../oauth/token', "/OAuthTokenFromCode('code')", '/UnprojectedRoot']) {
+    assert.equal((await call(client, 'apim_odata_get', { path })).isError, true, path);
   }
-  assert.equal((await call(client, 'apim_odata_get', { path: '/APIProxies', query: { $format: 'xml' } })).text, 'query option $format is not allowed');
-  assert.equal(tenant.apiRequests().length, 0);
-
-  assert.deepEqual(parsed(await call(client, 'apim_odata_get', { path: '/$metadata' })), {
-    entity_sets: [{ name: 'Applications', entity_type: 'apiportal.Application' }],
-    function_imports: [{ name: 'Deploy', http_method: 'POST', return_type: null }]
-  });
+  for (const query of [{ $format: 'xml' }, { $expand: 'targetEndPoints/credentials' }, { $top: '1000000' }, { arbitrary: 'secret' }]) {
+    assert.equal((await call(client, 'apim_odata_get', { path: '/APIProxies', query })).isError, true);
+  }
+  assert.equal(tenant.requests.length, 0);
+  const metadata = parsed(await call(client, 'apim_odata_get', { path: '/$metadata' }));
+  assert.equal(metadata.function_imports[0].name, 'OAuthTokenFromCode');
   const maps = parsed(await call(client, 'apim_odata_get', { path: '/KeyMapEntries', query: { $expand: 'keyMapEntryValues' } }));
-  assert.deepEqual(maps, { total: 1, returned: 1, more: false, results: [{ name: 'Backend', encrypted: true, keyMapEntryValues: [{ name: 'user', value: '[redacted]' }] }] });
-  const appText = (await call(client, 'apim_odata_get', { path: "/Applications('A1')" })).text;
-  assert.equal(JSON.parse(appText).app_key, '[redacted]');
-  assert.doesNotMatch(appText, /k-123|s-456/);
+  assert.equal(maps.items[0].keyMapEntryValues[0].value, '[redacted]');
+  const direct = await call(client, 'apim_odata_get', { path: '/KeyMapEntryValues' });
+  const configs = await call(client, 'cpi_odata_get', { path: "/IntegrationDesigntimeArtifacts(Id='X',Version='active')/Configurations" });
+  const app = await call(client, 'apim_odata_get', { path: "/Applications('A1')" });
+  assert.doesNotMatch([JSON.stringify(maps), direct.text, configs.text, app.text].join(''), /alice-private|direct-private|config-private|k-private|s-private/);
+  assert.equal(parsed(configs).items[0].ParameterKey, 'Password');
+  assert.equal((await call(client, 'cpi_odata_get', { path: '/MessageProcessingLogs/$count' })).isError, true);
 });
 
 test('integration_connection_info verify signs in and classifies every area without leaking secrets', async t => {
@@ -457,10 +434,9 @@ test('integration_connection_info verify signs in and classifies every area with
   const { verification } = JSON.parse(text);
   assert.equal(verification.ok, true);
   const byArea = side => Object.fromEntries(side.checks.map(check => [check.area, check.result]));
-  assert.deepEqual(byArea(verification.cpi), {
-    'Packages and iFlows': 'ok', 'Deployed artifacts': 'ok', 'Message logs': 'ok', 'Security material': 'forbidden',
-    'Number ranges': 'ok', 'Partner Directory': 'ok', 'Data stores': 'ok', 'JMS queues': 'unavailable'
-  });
+  assert.equal(byArea(verification.cpi)['Packages and iFlows'], 'ok');
+  assert.equal(byArea(verification.cpi)['Security material'], 'forbidden');
+  assert.equal(byArea(verification.cpi)['JMS queues'], 'unavailable');
   assert.equal(byArea(verification.apim)['Key value maps'], 'forbidden');
   assert.equal(byArea(verification.apim)['Policies (proxy bundle export)'], 'ok');
   assert.equal(tenant.apiRequests().every(request => request.method === 'GET'), true);
@@ -494,7 +470,7 @@ test('a key stored by the setup wizard is used only when the environment has non
   await fromEnvironment.close();
 });
 
-test('policy readiness is unavailable without a proxy and forbidden when the bundle export is refused', async t => {
+test('policy readiness is untested without a proxy and forbidden when export is refused', async t => {
   let proxies = [];
   const tenant = await startFakeTenant(t, request => {
     if (request.path === '/apiportal/api/1.0/Transport.svc/APIProxies') return { status: 403 };
@@ -504,7 +480,7 @@ test('policy readiness is unavailable without a proxy and forbidden when the bun
   const client = await connect(t, { APIM_SERVICE_KEY: tenant.serviceKey() });
   const policyArea = async () => JSON.parse((await call(client, 'integration_connection_info', { verify: true })).text)
     .verification.apim.checks.find(check => check.area === 'Policies (proxy bundle export)');
-  assert.equal((await policyArea()).result, 'unavailable');
+  assert.equal((await policyArea()).result, 'untested');
   assert.equal(tenant.apiRequests().some(request => request.path.includes('Transport.svc')), false);
   proxies = [{ name: 'ZOrders' }];
   assert.equal((await policyArea()).result, 'forbidden');

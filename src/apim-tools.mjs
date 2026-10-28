@@ -1,6 +1,8 @@
 // MCP tools for SAP API Management (APIM) over the API portal Management.svc / Transport.svc APIs.
 import { z } from 'zod';
-import { attachPolicies, buildApiProxyBundle, bundlePolicyNames, patchProxyBundle } from './apim-bundle.mjs';
+import { randomUUID } from 'node:crypto';
+import { attachPolicies, buildApiProxyBundle, bundleDocumentation, bundlePolicyNames, patchBundleDocumentation, patchProxyBundle } from './apim-bundle.mjs';
+import { DOCUMENTATION_METHODS, MAX_DOCUMENTATION_BYTES, parseApiDocumentation, summarizeApiDocumentation } from './apim-documentation.mjs';
 import {
   CREATE_ANNOTATIONS,
   OVERWRITE_ANNOTATIONS,
@@ -12,18 +14,21 @@ import {
   key,
   list,
   pick,
+  redactSecrets,
   registerODataReader,
   requireConfirmation,
   secretValue,
-  sleep,
   top,
   withoutSecrets
 } from './integration-common.mjs';
 import { IntegrationError, odataKey } from './integration-http.mjs';
 import { readBundle, writeBundle } from './iflow-bundle.mjs';
+import { registerApimDeleteTools } from './apim-delete-tools.mjs';
+import { createCollectionPager, cursorSchema } from './integration-collections.mjs';
+import { APIM_BASE, exportApiProxyBundle, importApiProxyBundle, readApiProxy } from './apim-content.mjs';
+import { registerApimMonitoringTools } from './apim-monitoring.mjs';
+import { registerApimPolicyStepTools } from './apim-policy-steps.mjs';
 
-const APIM_BASE = '/apiportal/api/1.0/Management.svc';
-const APIM_TRANSPORT = '/apiportal/api/1.0/Transport.svc/APIProxies';
 const RESERVED_PROVIDER_NAMES = new Set(['DEST_CI', 'APIMGMT_PORTAL', 'ContentCatalog', 'ON_PREM', 'TC']);
 
 const apimName = z.string().regex(/^[A-Za-z][A-Za-z0-9_-]{0,99}$/);
@@ -148,22 +153,54 @@ function withoutValues(error, values) {
   return new IntegrationError(message);
 }
 
+function requireNamedMetadata(value, name, kind) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.name !== name) {
+    throw new IntegrationError(`${kind} ${name} returned malformed metadata; response withheld`);
+  }
+  return value;
+}
+
+// Management metadata is not an authoring/source surface. Keep operational URL
+// paths, but never return embedded credentials or request query/fragment values.
+function safeMetadata(value) {
+  if (Array.isArray(value)) return value.map(safeMetadata);
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([name, entry]) => [name, safeMetadata(entry)]));
+  if (typeof value === 'string' && /^https?:\/\//i.test(value)) {
+    try {
+      const url = new URL(value);
+      url.username = ''; url.password = ''; url.search = ''; url.hash = '';
+      return url.href;
+    } catch { return null; }
+  }
+  return value;
+}
+
+
+
 /** Register apim_* tools for one APIM client. */
 export function registerApimTools(register, client, { readBackDelayMs }) {
   const apim = (method, path, options) => client.request(method, `${APIM_BASE}${path}`, options);
+  const collections = createCollectionPager(client, { root: APIM_BASE, request: apim });
+  registerApimDeleteTools(register, { request: apim, readBackDelayMs });
+  registerApimMonitoringTools(register, client);
+  registerApimPolicyStepTools(register, client, { readBackDelayMs });
 
-  async function exists(path) {
-    const { status } = await apim('GET', path, { expect: [200, 404], withStatus: true });
-    return status === 200;
+  async function exists(collection, name) {
+    // Name-only collection reads avoid resolving provider destinations or proxy details.
+    const matches = list(await apim('GET', collection, {
+      query: { $filter: `name eq ${odataKey(name)}`, $select: 'name', $top: 1 }
+    }));
+    return matches.some(entry => entry.name === name);
   }
 
   async function getProvider(name) {
     const { status, data } = await apim('GET', `/APIProviders(${key(name)})`, { expect: [200, 404], withStatus: true });
     if (status === 404) return null;
+    const provider = requireNamedMetadata(entity(data), name, 'API provider');
     // $expand=additionalProperties returns an empty list on live tenants; the navigation link is reliable.
     const additional = list(await apim('GET', `/APIProviders(${key(name)})/additionalProperties`))
       .map(entry => pick(entry, ['name', 'value']));
-    return withoutSecrets({ ...entity(data), additionalProperties: additional });
+    return safeMetadata(withoutSecrets(redactSecrets({ ...provider, additionalProperties: additional })));
   }
 
   async function writeSapClient(name, sapClient) {
@@ -173,48 +210,9 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
     });
   }
 
-  function runtimeUrl(proxy, defaultHost) {
-    const candidates = [proxy?.publishUrl, ...list(proxy?.deploymentInfo).map(entry => entry?.publishUrl), proxy?.deploymentInfo?.publishUrl];
-    const published = candidates.find(value => typeof value === 'string' && /^https?:\/\/\S+$/.test(value));
-    if (published) return published;
-    const endpoint = list(proxy?.proxyEndPoints)[0];
-    const host = list(endpoint?.virtualhosts)[0] ?? defaultHost;
-    if (!endpoint || !host?.virtual_host) return null;
-    const port = Number(host.virtual_port);
-    const portText = !port || port === 443 || port === 80 ? '' : `:${port}`;
-    return `${host.isSSL ? 'https' : 'http'}://${host.virtual_host}${portText}${endpoint.base_path ?? ''}`;
-  }
 
-  async function getProxy(name) {
-    const { status, data } = await apim('GET', `/APIProxies(${key(name)})`, {
-      query: { $expand: 'proxyEndPoints,targetEndPoints,proxyEndPoints/virtualhosts,deploymentInfo' },
-      expect: [200, 404],
-      withStatus: true
-    });
-    if (status === 404) return null;
-    let defaultHost = null;
-    if (!list(list(data?.proxyEndPoints)[0]?.virtualhosts).length) {
-      defaultHost = list(await apim('GET', '/VirtualHosts', { query: { $filter: 'isDefault eq true' } }))[0] ?? null;
-    }
-    const url = runtimeUrl(data, defaultHost);
-    return { ...withoutSecrets(entity(data)), runtime_url: url };
-  }
-
-  async function exportBundle(name) {
-    const { status, data } = await client.request('GET', APIM_TRANSPORT, {
-      query: { name },
-      accept: 'application/zip, application/octet-stream',
-      responseType: 'bytes',
-      expect: [200, 404],
-      withStatus: true
-    });
-    if (status === 404) return null;
-    try {
-      return readBundle(data);
-    } catch {
-      throw new IntegrationError(`API proxy ${name} export is not a readable zip archive`);
-    }
-  }
+  const getProxy = name => readApiProxy(client, name);
+  const exportBundle = name => exportApiProxyBundle(client, name);
 
   async function requireBundle(name, missingHint = '') {
     const files = await exportBundle(name);
@@ -222,27 +220,10 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
     return files;
   }
 
-  /** Transport.svc import (creates or replaces and deploys), then wait briefly for the read-back. */
-  async function importBundle(name, bytes) {
-    await client.request('POST', APIM_TRANSPORT, {
-      body: Buffer.from(bytes).toString('base64'),
-      accept: 'application/zip',
-      responseType: 'text',
-      expect: [200, 201]
-    });
-    let proxy = null;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      if (attempt) await sleep(readBackDelayMs);
-      proxy = await getProxy(name);
-      if (proxy) break;
-    }
-    const result = { name, runtime_url: proxy?.runtime_url ?? null, state: proxy?.state ?? null };
-    if (!proxy) result.note = 'Proxy imported; APIM read-back is delayed — call apim_get_api_proxy shortly.';
-    return result;
-  }
+  const importBundle = (name, bytes) => importApiProxyBundle(client, name, bytes, { readBackDelayMs });
 
   async function requireProvider(target) {
-    if (target.provider && !(await exists(`/APIProviders(${key(target.provider)})`))) {
+    if (target.provider && !(await exists('/APIProviders', target.provider))) {
       throw new IntegrationError(`API provider ${target.provider} does not exist; create it with apim_create_api_provider`);
     }
     return target.provider ? { provider: target.provider, relativePath: target.relative_path } : { url: target.url };
@@ -251,13 +232,13 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
   async function getProduct(name) {
     const { status, data } = await apim('GET', `/APIProducts(${key(name)})`, { query: { $expand: 'apiProxies' }, expect: [200, 404], withStatus: true });
     if (status === 404) return null;
-    const { apiProxies, ...product } = entity(data);
-    return { ...product, api_proxies: list(apiProxies).map(proxy => proxy?.name).filter(Boolean) };
+    const { apiProxies, ...product } = requireNamedMetadata(entity(data), name, 'API product');
+    return { ...pick(product, PRODUCT_PUT_FIELDS), api_proxies: list(apiProxies).map(proxy => proxy?.name).filter(Boolean) };
   }
 
   async function getKeyValueMap(name) {
     const { status, data } = await apim('GET', `/KeyMapEntries(${key(name)})`, { query: { $expand: 'keyMapEntryValues' }, expect: [200, 404], withStatus: true });
-    return status === 404 ? null : entity(data);
+    return status === 404 ? null : requireNamedMetadata(entity(data), name, 'Key value map');
   }
 
   registerODataReader(register, {
@@ -265,6 +246,8 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
     title: 'Read APIM OData API',
     service: 'API Management Management.svc',
     request: apim,
+    client,
+    root: APIM_BASE,
     examples: '/Applications, /Developers, /CertificateStoreReferences, /APIResources with $filter'
   });
 
@@ -272,11 +255,13 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
 
   register('apim_list_api_providers', 'List API providers',
     'List API Management API providers (connection metadata only; credential fields are never selected).',
-    { top: top() },
+    { top: top(), cursor: cursorSchema },
     READ_ONLY_ANNOTATIONS,
-    async ({ top }) => withoutSecrets(entity(list(await apim('GET', '/APIProviders', {
-      query: { $top: top, $select: 'name,title,description,destType,host,port,useSSL,isOnPremise,cloudConnectorLocation,pathPrefix' }
-    })))));
+    async args => collections.page({
+      ...args, path: '/APIProviders', orderBy: 'name asc', identity: provider => provider.name,
+      query: { $select: 'name,title,description,destType,host,port,useSSL,isOnPremise,cloudConnectorLocation,pathPrefix' },
+      project: provider => pick(provider, ['name', 'title', 'description', 'destType', 'host', 'port', 'useSSL', 'isOnPremise', 'cloudConnectorLocation', 'pathPrefix'])
+    }));
 
   register('apim_get_api_provider', 'Get API provider',
     'Read one API provider; credential properties are removed before returning.',
@@ -334,11 +319,19 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
       if (args.path_prefix) body.pathPrefix = args.path_prefix;
       await apim('POST', '/APIProviders', { json: body, expect: [201] });
       if (args.sap_client) await writeSapClient(args.name, args.sap_client);
-      return {
+      const result = {
         created: true,
-        provider: await getProvider(args.name),
-        note: 'APIM reads may lag about 20 seconds after a create; re-read with apim_get_api_provider if provider is null.'
+        name: args.name,
+        provider: null,
+        note: 'Provider created. APIM reads may lag; re-read with apim_get_api_provider if provider is null. Do not repeat creation.'
       };
+      try {
+        result.provider = await getProvider(args.name);
+      } catch (error) {
+        if (!(error instanceof IntegrationError)) throw error;
+        result.read_back_error = error.message;
+      }
+      return result;
     });
 
   register('apim_update_api_provider', 'Update API provider',
@@ -396,11 +389,13 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
 
   register('apim_list_api_proxies', 'List API proxies',
     'List API Management API proxies (name, title, service type, state, version, provider).',
-    { top: top() },
+    { top: top(), cursor: cursorSchema },
     READ_ONLY_ANNOTATIONS,
-    async ({ top }) => entity(list(await apim('GET', '/APIProxies', {
-      query: { $top: top, $select: 'name,title,description,service_code,state,version,provider_name' }
-    }))));
+    async args => collections.page({
+      ...args, path: '/APIProxies', orderBy: 'name asc', identity: proxy => proxy.name,
+      query: { $select: 'name,title,description,service_code,state,version,provider_name' },
+      project: proxy => pick(proxy, ['name', 'title', 'description', 'service_code', 'state', 'version', 'provider_name'])
+    }));
 
   register('apim_get_api_proxy', 'Get API proxy',
     'Read one API proxy with its proxy/target endpoints, virtual hosts and deployment info, plus the computed runtime_url.',
@@ -409,7 +404,7 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
     async ({ name }) => {
       const proxy = await getProxy(name);
       if (!proxy) throw new IntegrationError(`API proxy ${name} does not exist`);
-      return proxy;
+      return safeMetadata(withoutSecrets(redactSecrets(requireNamedMetadata(proxy, name, 'API proxy'))));
     });
 
   register('apim_export_api_proxy', 'Export API proxy bundle',
@@ -420,20 +415,22 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
 
   register('apim_list_virtual_hosts', 'List virtual hosts',
     'List API Management virtual hosts (host, port, SSL, default flag).',
-    {},
+    { top: top(), cursor: cursorSchema },
     READ_ONLY_ANNOTATIONS,
-    async () => list(await apim('GET', '/VirtualHosts'))
-      .map(host => pick(host, ['id', 'name', 'virtual_host', 'virtual_port', 'isSSL', 'isDefault'])));
+    async args => collections.page({
+      ...args, path: '/VirtualHosts', mode: 'local',
+      project: host => pick(host, ['id', 'name', 'virtual_host', 'virtual_port', 'isSSL', 'isDefault'])
+    }));
 
   register('apim_create_api_proxy', 'Create API proxy',
-    'Create and deploy an API proxy (Transport.svc import) for an existing API provider or a fixed https URL; for OData provider targets relative_path must be a /sap/opu/odata(4)/ service path. Returns the runtime_url. Requires confirmation exactly equal to CREATE API PROXY <name>.',
-    proxyInput,
+    'Create and deploy an API proxy (Transport.svc import) for an existing API provider or a fixed https URL; for OData provider targets relative_path must be a /sap/opu/odata(4)/ service path. Optional policies use the same templates as apim_attach_api_proxy_policies and are included before the first deployment, avoiding an unsecured revision. Returns the runtime_url. Requires confirmation exactly equal to CREATE API PROXY <name>.',
+    proxyInput.safeExtend({ policies: z.array(policySpec).min(1).max(10).optional() }),
     CREATE_ANNOTATIONS,
     async args => {
       requireConfirmation(args.confirmation, `CREATE API PROXY ${args.name}`);
-      if (await exists(`/APIProxies(${key(args.name)})`)) throw new IntegrationError(`API proxy ${args.name} already exists; use apim_update_api_proxy`);
+      if (await exists('/APIProxies', args.name)) throw new IntegrationError(`API proxy ${args.name} already exists; use apim_update_api_proxy`);
       const target = await requireProvider(args.target);
-      const bundle = buildApiProxyBundle({
+      let bundle = buildApiProxyBundle({
         name: args.name,
         title: args.title ?? args.name,
         description: args.description ?? '',
@@ -441,6 +438,11 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
         serviceType: args.service_type,
         target
       });
+      if (args.policies) {
+        const files = readBundle(bundle);
+        attachPolicies(files, args.name, args.policies);
+        bundle = writeBundle(files);
+      }
       return { imported: true, base_path: args.base_path, ...(await importBundle(args.name, bundle)) };
     });
 
@@ -459,33 +461,80 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
         basePath: args.base_path,
         target
       });
+      const deployment = await importBundle(args.name, writeBundle(files));
       return {
-        updated: true,
-        imported: true,
+        updated: deployment.content_verified,
         base_path: args.base_path,
         preserved_policies: preservedPolicies,
-        ...(await importBundle(args.name, writeBundle(files)))
+        ...deployment
       };
     });
 
   register('apim_attach_api_proxy_policies', 'Attach API proxy policies',
-    'Add or replace policies on an existing API proxy from templates (verify_api_key, quota, spike_arrest, cors, assign_headers, oauth_verify_access_token, ip_allow, response_cache, basic_auth_from_kvm, raise_fault, javascript, custom): exports the bundle, writes Policy/<name>.xml, registers it, appends a flow step (sequence = last + 1) and re-imports, which deploys a new revision. Re-attaching a name replaces its XML without duplicating its step. response_cache always steps on proxy preFlow request and postFlow response; basic_auth_from_kvm adds <name>_kvm (KVM Get into private.<name>.user/password) then <name> (BasicAuthentication Encode into request.header.Authorization), default target preFlow request. Requires confirmation exactly equal to UPDATE API PROXY POLICIES <name>.',
+    'Add or replace policies from templates (verify_api_key, quota, spike_arrest, cors, assign_headers, oauth_verify_access_token, ip_allow, response_cache, basic_auth_from_kvm, raise_fault, javascript, custom). Export, replace policy XML, register, append new steps and import; this replaces the draft, imports a new revision and requests deployment. Re-attaching replaces policy XML without duplicating or moving its exact supported assignment; a supplied condition updates that assignment, while omission preserves its condition. Use apim_edit_policy_steps for moves, removals or ordering. response_cache steps on proxy preFlow request and postFlow response; basic_auth_from_kvm adds <name>_kvm then <name>, default target preFlow request. Requires confirmation exactly equal to UPDATE API PROXY POLICIES <name>.',
     z.object({ name: apimName, policies: z.array(policySpec).min(1).max(10), confirmation }).strict(),
     OVERWRITE_ANNOTATIONS,
     async args => {
       requireConfirmation(args.confirmation, `UPDATE API PROXY POLICIES ${args.name}`);
       const files = await requireBundle(args.name);
       const { policies, stepsAdded } = attachPolicies(files, args.name, args.policies);
-      return { updated: true, policies, steps_added: stepsAdded, ...(await importBundle(args.name, writeBundle(files))) };
+      const deployment = await importBundle(args.name, writeBundle(files));
+      return { updated: deployment.content_verified, policies, steps_added: stepsAdded, ...deployment };
+    });
+
+  register('apim_get_api_documentation', 'Get API documentation',
+    'Read registered OpenAPI JSON as a safe summary of version, security schemes and path/method inventory (100 operations per page; continue with next_operation_offset), optionally selecting one bounded operation. Examples, raw schemas and arbitrary extension payloads are never returned.',
+    z.object({
+      name: apimName,
+      path: z.string().min(1).max(2048).optional(),
+      method: z.enum(DOCUMENTATION_METHODS).optional(),
+      operation_offset: z.number().int().min(0).max(1_000_000).default(0)
+    }).strict().superRefine((value, context) => {
+      if ((value.path === undefined) !== (value.method === undefined)) context.addIssue({ code: 'custom', message: 'path and method must be supplied together' });
+    }),
+    READ_ONLY_ANNOTATIONS,
+    async ({ name, path, method, operation_offset }) => {
+      const document = bundleDocumentation(await requireBundle(name), name);
+      return { name, documentation_path: document.path, ...summarizeApiDocumentation(document.text, { path, method, operationOffset: operation_offset }) };
+    });
+
+  register('apim_update_api_documentation', 'Update API documentation',
+    'Replace the registered English SWAGGER_JSON documentation of an existing proxy with self-contained OpenAPI 2.0 or 3.0/3.1 JSON (maximum 1 MiB). Its explicit HTTPS public runtime URL must match the named proxy; external references and ambiguous layouts are rejected. Exports fresh, changes only documentation bytes, imports/redeploys and reads the decoded document back. Requires confirmation exactly equal to UPDATE API DOCUMENTATION <name>.',
+    z.object({
+      name: apimName,
+      openapi_json: z.string().min(2).max(MAX_DOCUMENTATION_BYTES).refine(value => Buffer.byteLength(value, 'utf8') <= MAX_DOCUMENTATION_BYTES, 'must not exceed 1 MiB'),
+      confirmation
+    }).strict(),
+    OVERWRITE_ANNOTATIONS,
+    async ({ name, openapi_json, confirmation: approved }) => {
+      requireConfirmation(approved, `UPDATE API DOCUMENTATION ${name}`);
+      parseApiDocumentation(openapi_json);
+      const proxy = await getProxy(name);
+      if (!proxy) throw new IntegrationError(`API proxy ${name} does not exist`);
+      if (!proxy.runtime_url) throw new IntegrationError(`API proxy ${name} has no resolved public runtime URL`);
+      parseApiDocumentation(openapi_json, proxy.runtime_url);
+      const files = await requireBundle(name);
+      const { path } = patchBundleDocumentation(files, name, openapi_json);
+      const deployment = await importBundle(name, writeBundle(files));
+      const summary = summarizeApiDocumentation(openapi_json);
+      return {
+        updated: deployment.content_verified, ...deployment, documentation_path: path,
+        title: summary.title, version: summary.version, openapi_version: summary.openapi_version,
+        submitted_sha256: summary.sha256, submitted_bytes: summary.bytes,
+        path_count: summary.path_count, operation_count: summary.operation_count
+      };
     });
 
   // ---------------------------------------------------------------- products
 
   register('apim_list_api_products', 'List API products',
     'List API Management products (publish state, quota, scope).',
-    { top: top() },
+    { top: top(), cursor: cursorSchema },
     READ_ONLY_ANNOTATIONS,
-    async ({ top }) => entity(list(await apim('GET', '/APIProducts', { query: { $top: top, $select: PRODUCT_FIELDS.join(',') } }))));
+    async args => collections.page({
+      ...args, path: '/APIProducts', orderBy: 'name asc', identity: product => product.name,
+      query: { $select: PRODUCT_FIELDS.join(',') }, project: product => pick(product, PRODUCT_FIELDS)
+    }));
 
   register('apim_get_api_product', 'Get API product',
     'Read one API product with the names of its API proxies (api_proxies).',
@@ -512,9 +561,9 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
     CREATE_ANNOTATIONS,
     async args => {
       requireConfirmation(args.confirmation, `CREATE API PRODUCT ${args.name}`);
-      if (await exists(`/APIProducts(${key(args.name)})`)) throw new IntegrationError(`API product ${args.name} already exists; use apim_update_api_product`);
+      if (await exists('/APIProducts', args.name)) throw new IntegrationError(`API product ${args.name} already exists; use apim_update_api_product`);
       for (const proxy of args.proxies) {
-        if (!(await exists(`/APIProxies(${key(proxy)})`))) throw new IntegrationError(`API proxy ${proxy} does not exist; nothing was created`);
+        if (!(await exists('/APIProxies', proxy))) throw new IntegrationError(`API proxy ${proxy} does not exist; nothing was created`);
       }
       const body = {
         name: args.name,
@@ -523,7 +572,7 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
         version: '1',
         scope: args.scope ?? '',
         isPublished: args.publish,
-        ...(args.publish ? { status_code: 'PUBLISHED' } : {}),
+        status_code: args.publish ? 'PUBLISHED' : 'DRAFT',
         ...quotaFields(args.quota),
         apiProxies: args.proxies.map(proxy => ({ __metadata: { uri: `APIProxies(name=${odataKey(proxy)})` } }))
       };
@@ -553,8 +602,50 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
       if (args.scope !== undefined) body.scope = args.scope;
       if (args.quota !== undefined) Object.assign(body, quotaFields(args.quota));
       if (args.publish === true) Object.assign(body, { isPublished: true, status_code: 'PUBLISHED' });
-      if (args.publish === false) body.isPublished = false;
-      await apim('PUT', `/APIProducts(${key(args.name)})`, { json: body, expect: [200, 204] });
+      if (args.publish === false) Object.assign(body, { isPublished: false, status_code: 'DRAFT' });
+      const batch = `batch_${randomUUID()}`;
+      const changeset = `changeset_${randomUUID()}`;
+      const payload = [
+        `--${batch}`,
+        `Content-Type: multipart/mixed; boundary=${changeset}`,
+        '',
+        `--${changeset}`,
+        'Content-Type: application/http',
+        'Content-Transfer-Encoding: binary',
+        'Content-ID: 1',
+        '',
+        `PUT APIProducts(name=${odataKey(args.name)}) HTTP/1.1`,
+        'Content-Type: application/json',
+        'Accept: application/json',
+        '',
+        JSON.stringify(body),
+        `--${changeset}--`,
+        `--${batch}--`,
+        ''
+      ].join('\r\n');
+      const response = await apim('POST', '/$batch', {
+        body: payload,
+        contentType: `multipart/mixed; boundary=${batch}`,
+        accept: 'multipart/mixed',
+        responseType: 'text',
+        expect: [200, 202]
+      });
+      const statuses = [...String(response).matchAll(/(?:^|\r?\n)HTTP\/1\.[01] (\d{3})(?:[ \r\n])/g)].map(match => Number(match[1]));
+      if (statuses.length !== 1 || ![200, 204].includes(statuses[0])) {
+        throw new IntegrationError(statuses.length
+          ? `API product update changeset failed (HTTP ${statuses.join(', ')})`
+          : 'API product update returned no embedded HTTP result; update is not confirmed');
+      }
+      const inner = String(response).slice(String(response).search(/HTTP\/1\.[01] /));
+      const headerEnd = /\r?\n\r?\n/.exec(inner);
+      const responseBody = headerEnd ? inner.slice(headerEnd.index + headerEnd[0].length).split(/\r?\n--/)[0].trim() : '';
+      if (responseBody) {
+        let decoded;
+        try { decoded = JSON.parse(responseBody); } catch {
+          throw new IntegrationError('API product update returned an unreadable embedded response; update is not confirmed');
+        }
+        if (decoded?.error) throw new IntegrationError('API product update changeset returned an embedded OData error');
+      }
       return { updated: true, product: await getProduct(args.name) };
     });
 
@@ -562,21 +653,23 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
 
   register('apim_list_key_value_maps', 'List key value maps',
     'List environment key value maps (name, encrypted, scope); values are not read.',
-    { top: top() },
+    { top: top(), cursor: cursorSchema },
     READ_ONLY_ANNOTATIONS,
-    async ({ top }) => entity(list(await apim('GET', '/KeyMapEntries', { query: { $top: top, $select: 'name,encrypted,scope' } }))));
+    async args => collections.page({
+      ...args, path: '/KeyMapEntries', orderBy: 'name asc', identity: map => map.name,
+      query: { $select: 'name,encrypted,scope' }, project: map => pick(map, ['name', 'encrypted', 'scope'])
+    }));
 
   register('apim_get_key_value_map', 'Get key value map',
-    'Read one key value map with its entry names; values of encrypted maps are returned as [redacted].',
+    'Read one key value map with its entry names; all values are write-only and returned as [redacted], regardless of encryption.',
     { name: apimName },
     READ_ONLY_ANNOTATIONS,
     async ({ name }) => {
       const map = await getKeyValueMap(name);
       if (!map) throw new IntegrationError(`Key value map ${name} does not exist`);
-      const encrypted = map.encrypted !== false && map.encrypted !== 'false';
       return {
         ...pick(map, ['name', 'encrypted', 'scope']),
-        entries: list(map.keyMapEntryValues).map(entry => (encrypted ? { name: entry.name, value: REDACTED } : pick(entry, ['name', 'value'])))
+        entries: list(map.keyMapEntryValues).map(entry => ({ name: entry.name, value: REDACTED }))
       };
     });
 
@@ -586,7 +679,7 @@ export function registerApimTools(register, client, { readBackDelayMs }) {
     CREATE_ANNOTATIONS,
     async args => {
       requireConfirmation(args.confirmation, `CREATE KEY VALUE MAP ${args.name}`);
-      if (await exists(`/KeyMapEntries(${key(args.name)})`)) throw new IntegrationError(`Key value map ${args.name} already exists; use apim_set_key_value_map_entries`);
+      if (await getKeyValueMap(args.name)) throw new IntegrationError(`Key value map ${args.name} already exists; use apim_set_key_value_map_entries`);
       try {
         await apim('POST', '/KeyMapEntries', {
           json: {

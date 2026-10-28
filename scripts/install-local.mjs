@@ -1,6 +1,5 @@
 import { spawn } from 'node:child_process';
-import { lstat } from 'node:fs/promises';
-import { readFile } from 'node:fs/promises';
+import { lstat, readFile, realpath } from 'node:fs/promises';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,8 +17,8 @@ function usage() {
     '             for the selected harnesses).',
     '  --link     Installs with npm link instead of a tarball; edits to src/',
     '             and scripts/ take effect immediately without reinstalling.',
-    '  --verify   Verifies the global sap-ai-dev command resolves to this',
-    '             workspace installation.'
+    '  --verify   Verifies the global command, installed package version,',
+    '             and workspace target when using npm link.'
   ].join('\n');
 }
 
@@ -88,10 +87,18 @@ async function verify() {
     console.log(`Expected location:  ${expected}`);
     throw new Error('Global installation does not match the expected npm layout');
   }
+  const installedPackage = JSON.parse(await readFile(join(installedRoot, 'package.json'), 'utf8'));
+  if (installedPackage.name !== pkg.name || installedPackage.version !== pkg.version) {
+    throw new Error(`Installed ${installedPackage.name}@${installedPackage.version} does not match workspace ${pkg.name}@${pkg.version}; run npm run install:local`);
+  }
   if (!await lstat(serverCommand).catch(() => null)) {
     throw new Error(`Global sap-ai-dev command is missing at ${serverCommand}`);
   }
   const stats = await lstat(installedRoot).catch(() => null);
+  if (stats?.isSymbolicLink() && await realpath(installedRoot) !== await realpath(root)) {
+    throw new Error('Global npm link points to a different workspace');
+  }
+  console.log(`Installed version:  ${installedPackage.version}`);
   console.log(`Install mode:       ${stats?.isSymbolicLink() ? 'npm link (live workspace)' : 'tarball (snapshot)'}`);
   return 0;
 }

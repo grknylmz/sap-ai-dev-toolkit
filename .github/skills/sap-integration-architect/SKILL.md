@@ -9,7 +9,7 @@ Use this skill to design an integration on SAP Integration Suite before anything
 
 Tool names shown in PascalCase (such as `GetSource` or `LintABAP`) are logical names; the live MCP surface exposes them as lowercase snake_case. A server scoped to a single destination (the normal case for generated `mcp.json` entries) exposes them unprefixed, so `GetSource` appears as `get_source` and `LintABAP` as `lint_abap`; when several destinations share one server, each name is destination-prefixed with its slug for disambiguation (for example `cfd_run_query`). Always call the exact names returned by `tools/list`.
 
-The Integration Suite companion server is never destination-prefixed. Read its live `tools/list` once and follow each returned input schema; `cpi_*` tools appear only when CPI credentials are configured and `apim_*` tools only when APIM credentials are configured.
+The Integration Suite companion server is never destination-prefixed. Discover its live `tools/list` and follow each returned schema. Operational tools require their own component credentials; `integration_connection_info({verify:true})` supplies the full capability catalog, native handoffs and primary sources even for unconfigured components. Use current [tool contracts](../../../tools.md), not remembered endpoints or aliases.
 
 ## 1. Requirement checklist
 
@@ -17,12 +17,14 @@ Consumers and providers · direction and trigger (synchronous request/reply, asy
 
 ## 2. Assess before designing (read-only)
 
-- `integration_connection_info` — which tenants are bound.
-- CPI: `cpi_list_packages`, `cpi_list_iflows`, `cpi_get_iflow` (models and configuration of similar flows), `cpi_list_service_endpoints`, `cpi_get_iflow_runtime_status`, `cpi_list_message_logs` with status `FAILED`, `cpi_get_message_log`.
-- APIM: `apim_list_api_providers`, `apim_get_api_provider`, `apim_list_api_proxies`, `apim_get_api_proxy`, `apim_list_virtual_hosts`.
-- SAP backend: confirm on the ABAP destination server that the OData service is published (`PublishServiceBinding` belongs to RAP service delivery) and take the service path from it; check SAP-delivered APIs with `GetAPIReleaseState`.
-
-Reuse matching providers, packages and iFlows instead of duplicating them.
+- Call `integration_connection_info({verify:true})`; record environment label, immutable bound hosts, configured components, access results and public-contract evidence. A label never switches tenants or credentials. Different environments require independently configured servers; common-subaccount identity remains unverified without authoritative evidence.
+- CPI: reuse `cpi_list_packages`, `cpi_list_package_artifacts`, `cpi_list_iflows`, `cpi_get_iflow` and `cpi_get_artifact`; inspect configuration, versions, runtime and endpoints.
+- APIM: reuse providers/proxies/products, inspect virtual hosts, `apim_get_api_proxy_status`, registered API documentation and `apim_inspect_api_proxy_security`.
+- Traverse every relevant `{items,next_cursor}` collection with unchanged filters until verified end, or report `complete:false` and its `stop_reason`. A first page, `total:null` or missing continuation is not exhaustive inventory. Reuse matching providers, packages, iFlows and shared content instead of duplicating them.
+- Inspect exact targets with `integration_inspect_dependencies`; retain `bundle_sha256`, configuration-aware `state_sha256`, literal alias/provider/KVM/certificate references and unresolved dynamic dependencies. Never expose source, configuration values or secrets in summaries.
+- SAP backend: confirm on the ABAP destination server that the OData service is published (`PublishServiceBinding` belongs to RAP service delivery) and use its reported service path; check SAP-delivered APIs with `GetAPIReleaseState`.
+- Distinguish absent configuration, unauthenticated, forbidden, unavailable, untested, error, empty data and unknown entitlement. HTTP 401/403/404 does not establish the missing role, activation or entitlement cause. No probe may provision services or grant roles. Core CF provisioning requires explicit setup-wizard approval; optional setup stores existing separately typed credentials only.
+- Generic OData discovery is not authority to read arbitrary entities/functions or pass through raw schemas. Use only implemented safe metadata projections; monitoring never reads payloads, message bodies, secrets or source bundles. Keep artifact/source inspection explicitly in the authoring phase.
 
 ## 3. Pattern decision guide
 
@@ -40,18 +42,40 @@ Cloud Integration: prefer the vetted `https-request-reply-http` template (HTTPS 
 
 | Hop | How it authenticates |
 |---|---|
-| Client → API Management | Toolkit-created proxies carry no policies; the client `Authorization` header is forwarded unchanged. Add API-key or OAuth policies in the APIM UI when the gateway must authenticate consumers. |
+| Client → API Management | Include API-key or OAuth verification in `apim_create_api_proxy.policies` to protect the first deployed revision. Without policies, the client `Authorization` header is forwarded unchanged. |
 | Client or APIM → Cloud Integration | OAuth token from a Process Integration Runtime `integration-flow` client with role `ESBMessaging.send`; calls without it get HTTP 401. |
 | Cloud Integration → backend | Receiver authentication None, Basic, OAuth2 Client Credentials, Client Certificate or Principal Propagation; security materials are referenced by name and must already exist on the tenant. |
-| API Management → backend | API providers store no credentials; use Cloud Connector principal propagation or forward the client credentials. |
+| API Management → backend | API providers store no credentials; use Cloud Connector principal propagation, forward the client credentials, or include `basic_auth_from_kvm` with securely populated encrypted backend credentials. |
 
-Never ask for, print or store secrets. Credentials belong in the MCP host environment (`CPI_SERVICE_KEY`, `APIM_SERVICE_KEY`, or `VCAP_SERVICES`).
+Never request or print secrets. Configure credentials through the MCP host environment or hidden setup input. Consumer keys are provisioned by `devhub_create_application` and used privately by `apim_test_api`; OAuth verification works without DEVHUB. No credentials in plans or results.
 
-## 5. Errors, operations and platform timing
+## 5. Plan release, operations and recovery
 
-- A receiver error fails the message and returns HTTP 500 to the caller; define how the consumer reacts.
-- Operate with message processing logs: status, error text and custom header properties (payloads are never read).
-- Proven on live tenants: deployments can stay `STARTING` beyond a minute (`cpi_deploy_iflow` returns `timed_out` after 50 seconds; then poll `cpi_get_iflow_runtime_status`); service endpoints and message logs appear minutes after `STARTED`; API proxy read-back lags after import. Build these waits into acceptance tests instead of treating them as failures.
+Design the entire lifecycle, then delegate implementation to `integration-suite-delivery`:
+
+1. Discover capabilities and exact host/object identities → reuse content → inspect dependencies and digests → approve author/configure actions. Preserve source defaults separately from fresh configured values; partial configuration restoration must stop the release.
+2. Save an explicit retained iFlow version with `cpi_save_iflow_version` using fresh current-version/bundle preconditions. A patch update changes the draft, not retained history. Validate that **selected saved version** with `cpi_validate_iflow`; HTTP acceptance is not `Passed`.
+3. Preview and separately approve `integration_snapshot_content` for immutable private original ZIPs/configuration. Check `integration_check_release_readiness` against exact target versions (`cpi_iflow:<id>` / `apim_proxy:<id>` keys). Readiness needs the latest matching successful validation, including configured-state digest, within its 15-minute lifetime; failed, unknown, stale or configuration-changed evidence cannot reuse an older success.
+4. Separately approve selected-version deployment or native promotion. Continue an accepted deployment with `cpi_get_deployment_task` after timeout; never repeat the deploy POST. Require build/task success **and fresh runtime identity for the requested version**, not an old `STARTED`. Same-version redeploy without freshness proof remains unverified. Endpoint registration/log visibility may lag.
+5. APIM create/import, routing, policy and documentation changes deploy a new revision and may replace the draft. Plan private intended-content/preserved-resource read-back separately from runtime observation and approved consumer smoke reads. Existing `DEPLOYED`, an import acceptance or a runtime URL alone proves neither the new content nor effective security. `apim_test_api` supports APIM-only issuer-pinned OAuth from a privately read named CF key; API-key mode additionally needs DEVHUB.
+6. Plan bounded UTC `[from,to)` observations, at most 31 days: CPI `cpi_get_message_statistics`, MPL/run/step evidence and `cpi_get_operational_summary`; APIM aggregate/series/error-group reports with source watermark. No traffic is not healthy; incomplete sources stay explicit. Rates need complete nonzero denominators; no fabricated percentiles, consumer analytics or instantaneous-health claims.
+7. Use `integration_monitoring_readiness` and native ALM/ANS evidence. An administrator owns dedicated monitoring credentials, collection/categories, Health Monitoring and thresholds/notifications. Require observed collection and separately approved synthetic notification delivery before claiming continuous monitoring verified; API access or valid rules alone is insufficient.
+8. Plan incident ownership and separately approved recovery/retirement. Retained CPI rollback is exact-version deployment. Snapshot restore previews current state hashes, checks every target and restores CPI active draft/configuration only; deployment is separate. APIM ZIP restoration imports/deploys a new revision, not native retained Revert. Neither rollback nor restore reverses messages, datastores, security material, issued tokens or receiver transactions.
+
+### Operational design recipes
+
+- **Failed business correlation:** freeze exact message/business identifiers and UTC window; use exact MPL filters and `cpi_trace_message`, enumerate runs and freeze the selected run ID (or explicitly record the latest chosen run), then page all selected-run steps. No correlation means seed-only evidence, not a guessed trace or APIM linkage; never read bodies/attachments.
+- **Stuck asynchronous work:** combine broker limits, warning/critical/inactive queues, named queue metadata, overdue stores/entries and variable metadata. Global stores use `integration_flow:''`. Store totals differ from fetched entry counts; positive backlog/depth or processing alone is not unhealthy. Resolve a MessageId before linking MPL. Queue retry/consume/start/stop is not automatic remediation.
+- **APIM policy versus target errors:** compare `apim_get_analytics`, `apim_get_analytics_series` and `apim_get_api_error_breakdown` over the same window/proxy scope. Pair policy/target error totals and weighted latency with static policy attachments, provider, KVM and issuer evidence. Static configuration is not proof of effective authentication/trust, and source lag prevents current-health inference.
+- **Certificate impact:** map `cpi_get_certificate_health` findings to referenced aliases/dependencies. Referenced expired/not-yet-valid certificates block; unrelated expiry is an inventory finding, not an unrelated release blocker. Missing/invalid validity and unproven trust/connectivity remain unknown.
+- **Consumer offboarding:** inventory exact owner, subscriptions and legacy product links with Developer Hub tools. Separately approve unsubscription and fresh dry-run application deletion; incomplete/ambiguous relationships block, changed dependencies invalidate approval, and partial failure stops. API-key invalidation, native key/secret rotation, portal-access revoke and issued OAuth-token revocation are different outcomes; none may be substituted for another.
+
+### Native promotion and wider Suite boundaries
+
+- `integration_transport_readiness` must cover every selected package artifact group/version, not the first page or first 20 iFlows. `ctms_list_nodes` proves node visibility only. Authorized owners verify Content Agent assembly, export node, destinations and route, name the request set, separately approve assembly/upload/import, track native request/action logs, then verify content/version/runtime through an **independently target-bound server**. Snapshots/iFlow ZIPs are not MTARs; partial import and reset-to-Repeatable are not rollback.
+- Use ANS rule inspection/validation and narrowly approved condition/subscription changes only. cTMS alerts use trusted internal ANS integration with intentional event/node scope, not obsolete `ALERT_NOTIFICATION_SERVICE` destinations. APIM anomaly events differ from analytics polling; CPI failures are not automatically ANS events.
+- Narrow adapters: standalone `event_mesh_get_queue`; AEM `aem_list_brokers`, `aem_get_broker`, `aem_get_broker_operation`; broker-local SEMP `aem_list_queues`; Open Connectors identity reads and separately approved enabled-state action; Edge local metadata/MPL reads. Keep each credential/host authority separate. Queue metadata is not consumption, connector disable is not deletion or provider-health proof, and Edge metadata does not establish component-control schemas.
+- Follow source-backed native sequences in the capability catalog/[tool contracts](../../../tools.md) for Suite-embedded Event Mesh, TPM agreement activation/interchanges, Advisor MIG/MAG validation/export, Assessment API Reference, Migration extraction/evaluation/conversion, new Integration Cell API/MCP design/deploy/monitor, Edge Operations Cockpit, shared-artifact creation/version history, queue controls/retry, CPI cancellation/design deletion, APIM retained Revert/standalone Undeploy and consumer key rotation/portal revoke. Include exact identities, prerequisites, authorized owner, safety impact and post-action reads. Never replace a missing/inaccessible public contract with a guessed API, generated Partner Directory edits or broader platform administration.
 
 ## 6. Naming and versioning rules
 
@@ -60,17 +84,17 @@ Never ask for, print or store secrets. Credentials belong in the MCP host enviro
 - API proxy and provider names: letters, digits, `_`, `-`. Reserved provider names: `TC_*`, `DEST_CI`, `APIMGMT_PORTAL`, `ON_PREM`, `Apimgmt_rt*`, and ContentCatalog.
 - Base paths and sender paths: unique, lowercase, versioned (for example `/s4/salesorder/v1`); no `//`, `..` or trailing `/`.
 - API proxy descriptions are stored as HTML (`<`, `>`, `&` come back escaped).
-- Every iFlow update needs `expected_version` from a fresh read and bumps the patch version; every proxy update is a new revision.
+- Every iFlow update needs `expected_version` from a fresh read and bumps the draft patch version; only explicit SaveAsVersion creates retained history. APIM import/update/policy/documentation changes deploy a new revision; disclose that release effect.
 
-## 7. Design deliverable
+## 7. Design deliverable and approval
 
-1. Chosen pattern, rationale and rejected alternatives.
-2. Component flow (consumer → gateway → integration → backend).
-3. Per-hop table: host, port, path, route (Internet or Cloud Connector), authentication.
-4. Objects to create or change: package, iFlows (template or custom), externalized parameters, security materials, value mappings, API providers (`sap-client` where needed), API proxies, gateway policies, key value maps, API products.
-5. Ordered build calls with their exact confirmation strings: `cpi_create_package` (`CREATE CPI PACKAGE <id>`), `cpi_create_iflow` (`CREATE IFLOW <id>`), `cpi_update_iflow_configuration` (`CONFIGURE IFLOW <id>`), `cpi_update_iflow` (`UPDATE IFLOW <id>`), `cpi_set_user_credential` (`SET USER CREDENTIAL <name>`), `cpi_set_oauth2_client_credential` (`SET OAUTH2 CLIENT CREDENTIAL <name>`), `cpi_deploy_iflow` (`DEPLOY IFLOW <id>`), `cpi_deploy_artifact` (`DEPLOY ARTIFACT <id>`), `cpi_undeploy_artifact` (`UNDEPLOY ARTIFACT <id>`), `apim_create_api_provider` (`CREATE API PROVIDER <name>`), `apim_create_api_proxy` (`CREATE API PROXY <name>`), `apim_update_api_proxy` (`UPDATE API PROXY <name>`), `apim_create_key_value_map` (`CREATE KEY VALUE MAP <name>`), `apim_attach_api_proxy_policies` (`UPDATE API PROXY POLICIES <name>`), `apim_create_api_product` (`CREATE API PRODUCT <name>`).
-6. Prerequisites outside the tools, with owners: Cloud Connector mappings, `integration-flow` clients, applications and API keys, API proxy undeploy, role assignments.
-7. Acceptance tests and how they are verified: `cpi_get_iflow_runtime_status` is `STARTED`, `cpi_list_service_endpoints` returns the endpoint, `apim_get_api_proxy` returns `runtime_url` and state, and test calls appear as `COMPLETED` message logs.
-8. Risks and open questions.
+1. Chosen pattern, rationale and rejected alternatives; component flow (consumer → gateway → integration → backend).
+2. Per-hop host, port, path, route (Internet or Cloud Connector), authentication and separately managed credential owner.
+3. Complete objects/identities/versions to reuse, create, configure or retire: package, iFlows/template, parameters, security aliases, shared artifacts, providers (`sap-client` where needed), proxies, policies, KVMs, products and consumer subscriptions.
+4. Ordered build/release calls with exact live-schema confirmation strings, fresh optimistic hashes/versions, selected-version validation, immutable snapshot and readiness gates. Include partial-progress stop conditions; no implicit deployment or mutation retries.
+5. Deployment versus native-promotion approvals, target-bound verification and explicit runtime/synthetic-test approval. Consumer onboarding/governance, Cloud Connector, runtime clients, account entitlements, platform roles and native operations have named owners.
+6. Bounded observation window, expected signals, completeness/watermark limits, native collection/delivery evidence, diagnostic recipes and incident/recovery ownership.
+7. Separately approved recovery/retirement sequence. `devhub_unsubscribe_application` and `devhub_delete_application` handle guarded consumer retirement, not APIM cleanup. APIM product/proxy deletion remains dependency-blocked; explicit-list cleanup never cascades into consumers/providers/KVMs/credentials. Include full target set, `allow_deployed` / `allow_active_subscriptions` permissions where applicable and returned dry-run confirmations.
+8. Observed evidence, unresolved prerequisites and source-backed next actions, clearly separating acceptance, read-back, runtime proof and unexercised native criteria.
 
-Present the deliverable and wait for explicit user approval before any create, update, configure, deploy or undeploy call. There are no delete tools; design-time deletion and API proxy undeploy are manual steps in the Integration Suite UI.
+Present tenant hosts, exact actions and confirmations and obtain explicit user approval before **every write**, including validation, saved history, snapshots, deployment, alert changes, restore and deletion. A correct confirmation or preview hash is not approval. Never ask for secrets in chat or broaden authority to grant roles, provision optional services, consume/retry messages or bypass governance.
