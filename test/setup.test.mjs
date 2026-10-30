@@ -534,7 +534,7 @@ test('Integration Suite step: without credentials Enter skips it and y still add
   const skipped = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['\r']);
   assert.deepEqual(skipped.installs, [[]]);
 
-  // y, then "Continue without credentials" (c + Enter) in the credential menu.
+  // y, then Done ("c" + Enter) in the credential menu.
   const added = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['y\r', 'c\r']);
   assert.deepEqual(added.installs, [['integration-suite']]);
   assert.equal(added.verifyIntegration.calls.length, 0);
@@ -544,8 +544,8 @@ test('Integration Suite step: a pasted multi-line CPI key is verified, saved use
   const home = await mkdtemp(join(tmpdir(), 'integration-step-paste-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const pastedKey = JSON.stringify(JSON.parse(CPI_KEY_FOR_WIZARD), null, 2);
-  // y = add; Enter = default "paste CPI key"; the paste (with line breaks); then Continue.
-  const { installs, text, verifyIntegration } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['y\r', '\r', `${pastedKey}\r`, '\r']);
+  // y = add; Enter = default "paste"; Enter = default key type (CPI); the paste (with line breaks); then Done.
+  const { installs, text, verifyIntegration } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['y\r', '\r', '\r', `${pastedKey}\r`, '\r']);
   assert.deepEqual(installs, [['integration-suite']]);
   assert.deepEqual(verifyIntegration.calls.map(config => Object.keys(config)), [['cpi']]);
   assert.equal(verifyIntegration.calls[0].cpi.clientSecret, 'wizard-secret-value');
@@ -560,8 +560,8 @@ test('Integration Suite step: a pasted multi-line CPI key is verified, saved use
 test('Integration Suite step: a key that cannot sign in is not saved unless confirmed', async t => {
   const home = await mkdtemp(join(tmpdir(), 'integration-step-badkey-'));
   t.after(() => rm(home, { recursive: true, force: true }));
-  // y = add; Enter = paste CPI key; paste; Enter = do not save; c = continue without credentials.
-  const { text } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['y\r', '\r', `${CPI_KEY_FOR_WIZARD}\r`, '\r', 'c\r'], { verifyIntegration: fakeVerification({ signedIn: false }) });
+  // y = add; Enter = paste; Enter = CPI; paste; Enter = do not save; c = done without credentials.
+  const { text } = await runWizardToIntegrationStep({ HOME: home, SAP_AI_DEV_TOOLKIT_MCP_CONFIG: join(home, 'mcp.json') }, ['y\r', '\r', '\r', `${CPI_KEY_FOR_WIZARD}\r`, '\r', 'c\r'], { verifyIntegration: fakeVerification({ signedIn: false }) });
   await assert.rejects(stat(join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json')), { code: 'ENOENT' });
 });
 
@@ -1261,7 +1261,8 @@ test('Integration Suite step: a pasted DEVHUB key is checked, stored user-only a
   const home = await mkdtemp(join(tmpdir(), 'integration-step-devhub-paste-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const key = JSON.stringify({ url: 'https://devhub.example', tokenUrl: 'https://auth.example/oauth/token', clientId: 'devhub-id', clientSecret: 'devhub-wizard-secret' });
-  const { installs, text, verifyIntegration } = await runWizardToIntegrationStep({ HOME: home }, ['y\r', 'd\r', `${key}\r`, '\r']);
+  // y = add; p = paste; d = Developer Hub; the key; Enter = Done.
+  const { installs, text, verifyIntegration } = await runWizardToIntegrationStep({ HOME: home }, ['y\r', 'p\r', 'd\r', `${key}\r`, '\r']);
   assert.deepEqual(installs, [['integration-suite']]);
   assert.deepEqual(verifyIntegration.calls.map(config => Object.keys(config)), [['devhub']]);
   const path = join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json');
@@ -1343,7 +1344,8 @@ test('optional hidden setup stores typed existing ANS credentials without CF dis
   const forbidden = async () => { calls.push('forbidden'); throw new Error('Optional setup must not use CF mutation/discovery wrappers'); };
   const integrationCloudFoundry = { getTarget: async () => ({ available: false }), findInstances: forbidden, serviceKey: forbidden, createInstance: forbidden };
   const value = { url: 'https://alerts.example', username: 'technical-client', password: 'hidden-optional-password' };
-  const { installs, text } = await runWizardToIntegrationStep({ HOME: home }, ['y\r', 'n\r', `${JSON.stringify(value)}\r`, '\r'], { integrationCloudFoundry });
+  // y = add; p = paste; n = Alert Notification (optional); the config; Enter = Done.
+  const { installs, text } = await runWizardToIntegrationStep({ HOME: home }, ['y\r', 'p\r', 'n\r', `${JSON.stringify(value)}\r`, '\r'], { integrationCloudFoundry });
   assert.deepEqual(installs, [['integration-suite']]);
   assert.deepEqual(calls, []);
   const path = join(home, '.config', 'sap-ai-dev-toolkit', 'integration-suite.json');

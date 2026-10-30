@@ -292,18 +292,20 @@ export function integrationSuiteCredentialStatus(env = process.env) {
     const config = resolveIntegrationConfig(env, { stored: readStoredIntegrationKeys(env) });
     const keys = ['cpi', 'apim', 'devhub', ...OPTIONAL_COMPONENT_KEYS];
     const side = (key, value) => {
-      if (!value) return 'not configured';
       const host = value.url ? new URL(value.url).host : key === 'aem' ? 'api.solace.cloud' : 'unknown';
       return `configured from ${value.source}${value.bindingName ? ` (${value.bindingName})` : ''}, host ${host}`;
     };
-    return { found: keys.some(key => Boolean(config[key])), config, lines: [
-      `Environment label: ${config.environment ?? 'default'} (tenant authority remains bound host identity)`,
-      ...keys.map(key => `${key.toUpperCase()}: ${side(key, config[key])}`),
-      ...(config.optional_config_errors ?? []).map(error => `${error.component.toUpperCase()}: invalid optional configuration (${error.source}); adapter disabled`)
+    const configured = keys.filter(key => config[key]);
+    const errors = (config.optional_config_errors ?? []).map(error => `${error.component.toUpperCase()}: invalid optional configuration (${error.source}); adapter disabled`);
+    if (!configured.length && !errors.length) return { found: false, config, lines: ['No Integration Suite credentials configured yet.'] };
+    return { found: configured.length > 0, config, lines: [
+      ...(config.environment ? [`Environment label: ${config.environment}`] : []),
+      ...configured.map(key => `${key.toUpperCase()}: ${side(key, config[key])}`),
+      ...errors
     ] };
   } catch (error) {
     const message = String(error?.message || '');
-    if (/^Configure CPI/.test(message)) return { found: false, config: null, lines: ['No Integration Suite component credentials were found in this environment.'] };
+    if (/^Configure CPI/.test(message)) return { found: false, config: null, lines: ['No Integration Suite credentials configured yet.'] };
     return { found: false, config: null, lines: [`Credentials found but not usable: ${message}`] };
   }
 }
@@ -330,7 +332,7 @@ function pastedServiceKey(side, value, env) {
 }
 
 async function printIntegrationVerification(config, { env, output, verifyIntegration }) {
-  const stop = startProgress('Checking configured core and optional Integration Suite access', { output, env, label: 'Integration Suite' });
+  const stop = startProgress('Checking Integration Suite access', { output, env, label: 'Integration Suite' });
   let report;
   try { report = await verifyIntegration(config, { env }); }
   finally { stop(); }
@@ -344,12 +346,12 @@ async function printIntegrationVerification(config, { env, output, verifyIntegra
   }
   const core = [report.cpi, report.apim, report.devhub].filter(side => side?.configured);
   const denied = core.flatMap(side => side.checks ?? []).filter(check => check.result === 'forbidden').length;
-  const message = !core.length ? 'No core clients configured; optional checks are reported separately.'
-    : report.ok ? `Configured core access verified${denied ? `; ${denied} capability checks were access-denied (cause not established)` : ''}.`
-      : 'Configured core reads did not pass. Inspect the individual access evidence; a role or entitlement diagnosis is not established.';
+  const message = !core.length ? 'No core service configured yet.'
+    : report.ok ? (denied ? `Connected; ${denied} area(s) were access-denied — the key may lack roles.` : 'Connection verified.')
+      : 'Sign-in or core read failed; see the lines above.';
   print(output, formatStatus(message, report.ok && !denied ? 'success' : 'warning', output, 'Integration Suite'));
   const optional = OPTIONAL_COMPONENT_KEYS.filter(side => report[side]?.configured);
-  if (optional.length) print(output, `  Optional capability completeness: ${report.optional_completeness?.complete === true ? 'complete' : 'unverified/partial'}; core access is a separate result.`);
+  if (optional.length) print(output, `  Optional services: ${report.optional_completeness?.complete === true ? 'all verified' : 'not fully verified'} (separate from core access).`);
   return report;
 }
 
@@ -470,6 +472,26 @@ async function useCloudFoundrySpace(target, context) {
   }
 }
 
+// The paste flow asks which service the key belongs to; APIM and Developer Hub keys share one OAuth shape,
+// so the type is never guessed from the key itself.
+async function chooseKeyType({ input, output, status }) {
+  return await selectPrompt({
+    message: colorText('Which service is this key for?', 'cyan', output),
+    defaultValue: ['CPI', 'APIM', 'DEVHUB'].find(side => !status.config?.[side.toLowerCase()]) ?? 'CPI',
+    choices: [
+      { value: 'CPI', shortcut: 'i', name: 'Cloud Integration (CPI) — Process Integration Runtime, plan api' },
+      { value: 'APIM', shortcut: 'a', name: 'API Management — plan apiportal-apiaccess' },
+      { value: 'DEVHUB', shortcut: 'd', name: 'Developer Hub — plan devportal-apiaccess (AuthGroup.API.Admin)' },
+      ...OPTIONAL_COMPONENT_KEYS.map(side => ({
+        value: side.toUpperCase(),
+        shortcut: { ctms: 't', ans: 'n', event_mesh: 'e', aem: 'm', aem_semp: 's', open_connectors: 'o', edge: 'g' }[side],
+        name: `Optional: ${OPTIONAL_INPUTS[side].label} (${OPTIONAL_INPUTS[side].variable}, existing credentials only)`
+      })),
+      { value: '', shortcut: 'b', name: 'Back' }
+    ]
+  }, { input, output });
+}
+
 // Verify the detected credentials online and let the user take CPI/APIM/DEVHUB keys from the logged-in CF space or
 // paste them. A key is checked online first and saved to the user-only store (never to mcp.json); it is used
 // when the environment has no key.
@@ -502,20 +524,13 @@ async function configureIntegrationCredentials({ env, input, output, verifyInteg
       : [];
     const choice = await selectPrompt({
       message: colorText('🔑 Integration Suite credentials', 'cyan', output),
-      defaultValue: healthy ? 'done' : (fixes[0]?.value ?? (target.available ? 'cf' : (status.found ? 'done' : 'cpi'))),
+      defaultValue: healthy ? 'done' : (fixes[0]?.value ?? (target.available ? 'cf' : (status.found ? 'done' : 'paste'))),
       choices: [
         ...fixes,
-        { name: !status.found ? 'Continue without credentials (operational tools need configured component access)' : (healthy ? 'Continue' : 'Continue with current access (unavailable capabilities remain unverified)'), value: 'done', shortcut: 'c' },
-        ...(target.available ? [{ name: `Use the logged-in CF space (${space}): find instances, reuse or create keys`, value: 'cf', shortcut: 'f' }] : []),
-        { name: 'Paste a Cloud Integration (CPI) service key — Process Integration Runtime, plan api', value: 'cpi', shortcut: 'p' },
-        { name: 'Paste an API Management service key — API Management, plan apiportal-apiaccess', value: 'apim', shortcut: 'a' },
-        { name: 'Paste a Developer Hub service key — API Management, Developer Hub, plan devportal-apiaccess (AuthGroup.API.Admin)', value: 'devhub', shortcut: 'd' },
-        ...OPTIONAL_COMPONENT_KEYS.map(side => ({
-          name: `Paste existing ${OPTIONAL_INPUTS[side].label} configuration — ${OPTIONAL_INPUTS[side].variable} (no provisioning)`,
-          value: `optional-${side}`,
-          shortcut: { ctms: 't', ans: 'n', event_mesh: 'e', aem: 'm', aem_semp: 's', open_connectors: 'o', edge: 'g' }[side]
-        })),
-        ...(status.found ? [{ name: 'Check the configured credentials online again', value: 'verify', shortcut: 'v' }] : [])
+        ...(target.available ? [{ value: 'cf', shortcut: 'f', name: `Get keys from Cloud Foundry (${space})` }] : []),
+        { value: 'paste', shortcut: 'p', name: 'Paste a service key (JSON or path to a .json file)' },
+        ...(status.found ? [{ value: 'verify', shortcut: 'v', name: 'Check credentials again' }] : []),
+        { value: 'done', shortcut: 'c', name: status.found ? (healthy ? 'Done' : 'Done (some checks did not pass)') : 'Skip for now (run sap-ai-dev --setup-integration later)' }
       ]
     }, { input, output });
     if (choice === 'done') return status;
@@ -527,8 +542,9 @@ async function configureIntegrationCredentials({ env, input, output, verifyInteg
       await createDedicatedInstance(choice.slice('create-'.length).toUpperCase(), context);
     } else if (choice === 'cf') {
       await useCloudFoundrySpace(target, context);
-    } else {
-      const side = (choice.startsWith('optional-') ? choice.slice('optional-'.length) : choice).toUpperCase();
+    } else if (choice === 'paste') {
+      const side = await chooseKeyType({ input, output, status });
+      if (!side) continue; // Back: show the menu again without refreshing status.
       const pasted = await textPrompt({
         message: `Paste existing ${side} credential JSON or the path to its .json file`,
         secret: true,
@@ -550,16 +566,12 @@ async function configureIntegrationCredentials({ env, input, output, verifyInteg
 
 async function promptIntegrationSuite({ env, alreadyConfigured, input, output, verifyIntegration = defaultVerifyIntegration, integrationCloudFoundry, ask = true }) {
   print(output, '');
-  print(output, formatStatus('SAP Integration Suite tools (core lifecycle and separately credentialed optional services).', 'step', output, 'Integration Suite'));
-  print(output, '  Adds the sap-ai-integration MCP server: author/configure/release, bounded monitoring and diagnosis, guarded recovery/retirement, and evidence-backed optional/native workflows.');
-  print(output, '  Writes require exact approval; private previews are not approval. Optional setup accepts existing credentials only, without provisioning. Agents: SAP Integration Architect, SAP Integration Developer.');
+  print(output, formatStatus('SAP Integration Suite tools', 'step', output, 'Integration Suite'));
+  print(output, '  Connects your AI agent to Cloud Integration (CPI), API Management and Developer Hub. Keys are checked read-only and stored only for you, never in mcp.json.');
   if (alreadyConfigured) print(output, '  Already configured in this MCP config; keeping it and refreshing its version.');
   const status = integrationSuiteCredentialStatus(env);
   for (const line of status.lines) print(output, `  ${line}`);
-  if (!status.found) {
-    print(output, '  Configure existing core or optional component credentials in the MCP host environment,');
-    print(output, '  or paste typed credential JSON in the next hidden step. Credentials are verified read-only and stored user-only, never in mcp.json.');
-  }
+  if (!status.found) print(output, '  No credentials found yet. Next you can get them from your Cloud Foundry space or paste a service key.');
   if (ask && !alreadyConfigured) {
     print(output, '');
     const defaultYes = status.found;
