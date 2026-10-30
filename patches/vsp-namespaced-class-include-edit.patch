@@ -1,0 +1,134 @@
+diff --git a/pkg/adt/edit_namespaced_include_test.go b/pkg/adt/edit_namespaced_include_test.go
+new file mode 100644
+index 0000000..514ab35
+--- /dev/null
++++ b/pkg/adt/edit_namespaced_include_test.go
+@@ -0,0 +1,80 @@
++package adt
++
++import (
++	"context"
++	"io"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"sync"
++	"testing"
++)
++
++// TestEditSource_NamespacedClassInclude guards against double-encoding the
++// class name of a namespaced class include: the object URL arrives with
++// "%2FABC%2F", and every request (read, lock, hash check, PUT, unlock,
++// activate) must keep exactly one encoding — never "%252F".
++func TestEditSource_NamespacedClassInclude(t *testing.T) {
++	const source = "CLASS lcl_x DEFINITION.\n  \" old\nENDCLASS.\n"
++	const classPath = "/sap/bc/adt/oo/classes/%2FABC%2FCL_TEST"
++
++	for _, include := range []string{"definitions", "implementations", "testclasses"} {
++		for _, withHash := range []bool{false, true} {
++			name := include
++			if withHash {
++				name += "/hash"
++			}
++			t.Run(name, func(t *testing.T) {
++				includePath := classPath + "/includes/" + include
++				var mu sync.Mutex
++				var puts []string
++				current := source
++				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++					w.Header().Set("x-csrf-token", "TOKEN")
++					raw := r.URL.EscapedPath()
++					if strings.Contains(raw, "%25") {
++						t.Errorf("double-encoded request: %s %s", r.Method, r.RequestURI)
++						w.WriteHeader(http.StatusNotFound)
++						return
++					}
++					switch {
++					case r.URL.Query().Get("_action") == "LOCK":
++						w.Header().Set("Content-Type", "application/xml")
++						_, _ = w.Write([]byte(`<?xml version="1.0"?><asx:abap xmlns:asx="http://www.sap.com/abapxml">
++						  <asx:values><DATA><LOCK_HANDLE>HANDLE-1</LOCK_HANDLE>
++						  <MODIFICATION_SUPPORT>Modification</MODIFICATION_SUPPORT></DATA></asx:values></asx:abap>`))
++					case r.Method == http.MethodGet && raw == includePath:
++						mu.Lock()
++						_, _ = w.Write([]byte(current))
++						mu.Unlock()
++					case r.Method == http.MethodPut:
++						mu.Lock()
++						puts = append(puts, raw)
++						body, _ := io.ReadAll(r.Body)
++						current = string(body)
++						mu.Unlock()
++					default:
++						w.WriteHeader(http.StatusOK)
++					}
++				}))
++				defer srv.Close()
++
++				opts := &EditSourceOptions{}
++				if withHash {
++					opts.ExpectedSourceHash = SourceHash(source)
++				}
++				c := NewClient(srv.URL, "TESTUSER", "pw")
++				res, err := c.EditSourceWithOptions(context.Background(), includePath, "\" old", "\" new", opts)
++				if err != nil {
++					t.Fatalf("EditSourceWithOptions: %v", err)
++				}
++				if !res.Success {
++					t.Fatalf("edit failed: %s", res.Message)
++				}
++				if len(puts) != 1 || puts[0] != includePath {
++					t.Fatalf("PUT paths = %v, want [%s]", puts, includePath)
++				}
++			})
++		}
++	}
++}
+diff --git a/pkg/adt/workflows_edit.go b/pkg/adt/workflows_edit.go
+index 6da5df7..01c02e0 100644
+--- a/pkg/adt/workflows_edit.go
++++ b/pkg/adt/workflows_edit.go
+@@ -3,6 +3,7 @@ package adt
+ import (
+ 	"context"
+ 	"fmt"
++	"net/url"
+ 	"strings"
+ )
+ 
+@@ -204,9 +205,9 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
+ 		if idx := strings.Index(objectURL, classesPrefix); idx >= 0 {
+ 			rest := objectURL[idx+len(classesPrefix):]
+ 			if slashIdx := strings.Index(rest, "/"); slashIdx > 0 {
+-				classNameForMethod = rest[:slashIdx]
++				classNameForMethod = decodeClassNameSegment(rest[:slashIdx])
+ 			} else {
+-				classNameForMethod = rest
++				classNameForMethod = decodeClassNameSegment(rest)
+ 			}
+ 		}
+ 		result.Method = opts.Method
+@@ -227,7 +228,7 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
+ 			classesPrefix := "/sap/bc/adt/oo/classes/"
+ 			if strings.Contains(objectURL, classesPrefix) {
+ 				classStart := strings.Index(objectURL, classesPrefix) + len(classesPrefix)
+-				className = objectURL[classStart:includesIdx]
++				className = decodeClassNameSegment(objectURL[classStart:includesIdx])
+ 				includeType = ClassIncludeType(objectURL[includesIdx+len("/includes/"):])
+ 				parentClassURL = objectURL[:includesIdx]
+ 			}
+@@ -488,3 +489,14 @@ func (c *Client) EditSourceWithOptions(ctx context.Context, objectURL, oldString
+ 	}
+ 	return result, nil
+ }
++
++// decodeClassNameSegment turns the class-name path segment of an object URL
++// ("%2FABC%2FCL_TEST") into the raw name ("/ABC/CL_TEST"). Downstream helpers
++// (GetClassIncludeSourceURL, GetClassMethods, activation) escape the name
++// themselves, so passing the still-encoded segment would yield "%252F".
++func decodeClassNameSegment(segment string) string {
++	if decoded, err := url.PathUnescape(segment); err == nil {
++		return decoded
++	}
++	return segment
++}

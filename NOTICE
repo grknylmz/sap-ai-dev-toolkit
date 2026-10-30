@@ -2,7 +2,8 @@ Third-party notices for sap-ai-dev-toolkit
 
 This package includes patched VSP (vibing-steampunk) binaries built from upstream commit
 9886d2727f47506368b0a3c2f1c1766f1200f747. The BAS proxy-auth change is documented in
-patches/vsp-bas-proxy-auth.patch. The following upstream notice is reproduced from VSP:
+patches/vsp-bas-proxy-auth.patch; the namespaced class-include EditSource fix is documented in
+patches/vsp-namespaced-class-include-edit.patch. The following upstream notice is reproduced from VSP:
 
 vibing-steampunk (vsp)
 Copyright (c) 2025-2026 Alice Vinogradova and contributors

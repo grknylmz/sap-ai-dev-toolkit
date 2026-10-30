@@ -33,7 +33,9 @@ async function main() {
   await mkdir(dirname(source), { recursive: true });
   await run('git', ['clone', '--filter=blob:none', upstream, source]);
   await run('git', ['-C', source, 'checkout', '--detach', commit]);
-  await run('patch', ['-p1', '-i', join(root, 'patches', 'vsp-bas-proxy-auth.patch')], { cwd: source });
+  for (const patchFile of ['vsp-bas-proxy-auth.patch', 'vsp-namespaced-class-include-edit.patch']) {
+    await run('patch', ['-p1', '-i', join(root, 'patches', patchFile)], { cwd: source });
+  }
   await mkdir(dist, { recursive: true });
   const checksums = [];
   for (const [goos, goarch, os, arch, extension] of targets) {
