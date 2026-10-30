@@ -30,7 +30,7 @@ const PROXY_URL = `ZAI_SmokeUrl${RUN}`;
 const PROXY_ODATA = `ZAI_SmokeOData${RUN}`;
 const PROXY_CPI = `ZAI_SmokeCpi${RUN}`;
 const config = resolveIntegrationConfig(process.env, { stored: readStoredIntegrationKeys() });
-const SECRETS = Object.values(config).filter(Boolean).map(side => side.clientSecret);
+const SECRETS = Object.values(config).filter(Boolean).map(side => side.clientSecret).filter(Boolean);
 const PRODUCT = `ZAI_SmokeProduct${RUN}`;
 const KVM = `ZAI_SmokeKvm${RUN}`;
 const CREDENTIAL = `ZAI_SMOKE_USER_${RUN}`;
@@ -99,7 +99,7 @@ async function invoke(url, { method = 'POST', body, headers = {}, auth = true, d
     const text = await response.text();
     let json;
     try { json = JSON.parse(text); } catch { /* not JSON */ }
-    result = { status: response.status, text, json };
+    result = { status: response.status, headers: Object.fromEntries(response.headers), text, json };
     if (done(result)) return result;
     await sleep(5000);
   }
@@ -562,7 +562,7 @@ await scenario('S41', 'runtime call to the template iFlow passes body and query 
   expect(/\/anything\/configured/.test(result.json.url), `receiver url ${result.json.url}`);
   expect(result.json.args.probe === RUN, `query ${JSON.stringify(result.json.args)}`);
   expect(JSON.parse(result.json.data).kind === 'direct', `body ${result.json.data}`);
-  ctx.directGuid = result.json.headers['Sap-Messageprocessinglogid'];
+  ctx.directGuid = result.headers['sap_messageprocessinglogid'];
   expect(ctx.directGuid, 'no MPL id header forwarded');
   return `MPL ${ctx.directGuid}`;
 });
@@ -579,7 +579,7 @@ await scenario('S43', 'APIM proxy in front of CPI forwards the caller bearer tok
   const result = await invoke(proxy.runtime_url, { body: JSON.stringify({ via: 'apim-url-target', run: RUN }) });
   expect(result.status === 200, `HTTP ${result.status}: ${result.text.slice(0, 200)}`);
   expect(JSON.parse(result.json.data).via === 'apim-url-target', result.json.data);
-  ctx.apimGuid = result.json.headers['Sap-Messageprocessinglogid'];
+  ctx.apimGuid = result.headers['sap_messageprocessinglogid'];
   return `${proxy.runtime_url} → CPI → httpbin`;
 });
 
@@ -611,8 +611,8 @@ await scenario('S46', 'iFlow with Unicode description, POST receiver and static 
   const { runtime } = await deployAndWait(IFLOW_POST);
   expect(runtime.Status === 'STARTED', JSON.stringify(runtime));
   const endpoints = ok(await call('cpi_list_service_endpoints', { iflow_id: IFLOW_POST }), 'endpoints').items;
-  ctx.postEndpoint = endpoints.flatMap(entry => entry.urls)[0] ?? ctx.cpiEndpoint.replace(`/http/ai/smoke${RUN}`, `/http/ai/post${RUN}`);
-  return `description "${listed.Description}"`;
+  ctx.postEndpoint = endpoints.flatMap(entry => entry.urls)[0] ?? ctx.cpiEndpoint?.replace(`/http/ai/smoke${RUN}`, `/http/ai/post${RUN}`);
+  expect(ctx.postEndpoint, 'no POST endpoint; run with S18 in ONLY');
 });
 
 await scenario('S47', 'POST receiver gets method, static query and body', async () => {
@@ -914,7 +914,7 @@ await scenario('S79', 'full chain after recovery: client → APIM (provider) →
   const proxy = ok(await call('apim_get_api_proxy', { name: PROXY_CPI_PROVIDER }), 'get');
   const result = await invoke(proxy.runtime_url, { body: '{"final":true}', done: response => response.status === 200 && /restored/.test(response.json?.url || '') });
   expect(result.status === 200 && JSON.parse(result.json.data).final === true, `HTTP ${result.status}`);
-  const detail = await waitForGuid(result.json.headers['Sap-Messageprocessinglogid']);
+  const detail = await waitForGuid(result.headers['sap_messageprocessinglogid']);
   expect(detail.log.Status === 'COMPLETED', detail.log.Status);
 });
 
