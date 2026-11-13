@@ -75,6 +75,16 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 
 **Prerequisite:** Node.js 20 or newer. The pinned runtime ships with the package; no Go toolchain is installed or required.
 
+## 🆕 What's new
+
+| Version | Change |
+| --- | --- |
+| 0.9.9924 | **One SAP logon per runtime, shared by parallel tool calls.** AI assistants fire many tool calls at once; each used to reach SAP before the first security-session cookie came back, so every call logged on again and SM04 / the SAP GUI "already logged on" list filled with dozens of sessions. Now the first request logs on, the parallel ones wait for it and reuse its `SAP_SESSIONID` cookie (Basic, SSO and local SAP GUI entries alike); after an expired session the next burst again shares one fresh logon. |
+| 0.9.9923 | **Oh My Pi (OMP) receives all twelve agents** as task agents (`~/.omp/agent/agents/<id>.md`, dispatched by kebab-case id) next to the twenty-two skills. **Four new companion MCP servers:** SAP Datasphere (`sap-ai-datasphere`, incl. BW → Datasphere migration), SAP Build Process Automation (`sap-ai-process-automation`, all eight BPA APIs), SAP BTP platform administration (`sap-ai-btp`, on your own `btp login --sso`), and SAP Cloud ALM (`sap-ai-cloud-alm`), each with its own agent, skills and `--setup-*` wizard. |
+| 0.9.9922 | `EditSource` no longer double-encodes namespaced class names (`/NS/CL_…`) on class-include writes. |
+| 0.9.9921 | Simpler Integration Suite setup wizard: shorter intro, clearer status lines, and a single credential menu. |
+| 0.9.9920 | **Integration Suite companion** (`sap-ai-integration`, since 0.9.9914) expanded across the lifecycle: API Management content, documentation, runtime and monitoring reads, confirmation-gated cleanup and delete tools, and asynchronous Cloud Integration monitoring. |
+
 ## 🤖 Available agents and skills
 
 **Agents:** Twelve user-invocable custom agents are included. Select the best fit from the agent picker in your harness's chat (GitHub Copilot, Claude Code, or opencode), dispatch the matching OMP task agent by its kebab-case id, or use the matching Pi prompt command, as shown in Quick start. Harnesses without custom agents (OpenAI Codex, Cursor, Gemini CLI, Cline, Roo Code, Windsurf / Devin Desktop) get the same workflows as skills, for example `sap-integration-architect` and `integration-suite-delivery`.
@@ -100,11 +110,11 @@ Agents and skills install for the harnesses you pick during global installation:
 
 ## ✨ Your SAP development cockpit, inside your AI assistant
 
-`sap-ai-dev-toolkit` installs `sap-ai-dev`, discovers your BAS destinations or local SAP GUI systems, and exposes a curated SAP development toolset through MCP. Instead of manually switching between chat, terminal commands, repository searches, ADT screens, and SAP checks, describe the outcome you want and let the appropriate bundled agent coordinate the available tools.
+`sap-ai-dev-toolkit` installs `sap-ai-dev`, discovers your BAS destinations or local SAP GUI systems, and exposes a curated SAP development toolset through MCP. Optional companion servers from the same package reach the rest of the landscape: HANA Cloud, Integration Suite, Datasphere, Build Process Automation, the BTP platform, and Cloud ALM. Instead of manually switching between chat, terminal commands, repository searches, ADT screens, cockpits, and SAP checks, describe the outcome you want and let the appropriate bundled agent coordinate the available tools.
 
 <p align="center"><strong>💬 Request → 🔎 Inspect → 🧠 Reason → 🧑‍💻 Implement → 🧪 Verify → 📋 Report</strong></p>
 
-The workflow covers ABAP, CDS, RAP, repository analysis, table and query access, testing, ATC, application logs, transports, and controlled source changes. The live MCP tool list remains the source of truth for what your connected SAP system and active runtime mode expose.
+The workflow covers ABAP, CDS, RAP, repository analysis, table and query access, testing, ATC, application logs, transports, and controlled source changes, plus integration, data, process and platform operations through the companions. The live MCP tool list remains the source of truth for what your connected SAP system and active runtime mode expose.
 
 ## 🌟 Feature highlights
 
@@ -116,6 +126,13 @@ The workflow covers ABAP, CDS, RAP, repository analysis, table and query access,
 | 🧩 | **CDS + RAP development** | Explore models and dependencies, then build RAP business objects and services with system context. |
 | 🗃️ | **Ground decisions in SAP data** | Inspect DDIC structures, read table contents, and run controlled ABAP SQL queries. |
 | ☁️ | **Read-only HANA Cloud inspection** | Inspect an environment-bound HDI schema, object metadata, and capped query results without exposing deployment credentials. |
+| 🔌 | **Integration Suite lifecycle** | Build, release, deploy, monitor, diagnose and recover Cloud Integration and API Management content with retained releases and confirmation-gated writes. |
+| 🗄️ | **Datasphere and BW migration** | Model, deploy, load and administer Datasphere content; inventory BW models and reconcile BW against Datasphere after migration. |
+| ⚙️ | **Build Process Automation operations** | Inspect definitions and instances, unstick failed workflows, work user-task queues, test decisions, and trace business events across all eight BPA APIs. |
+| 🏛️ | **BTP platform administration** | Audit account hierarchy, entitlements and quotas, service instances and keys, destinations, trust and Cloud Connectors on your own `btp` CLI login. |
+| 📡 | **Cloud ALM observability** | Find exception and alert hotspots per DEV/TEST/PROD tier and correlate them with live CPI message logs and SLG1. |
+| 🧩 | **Agents in eleven AI harnesses** | Copilot, Claude Code, opencode and OMP get native agents, Pi gets prompt commands, and every harness gets the skills. |
+| 🔁 | **One logon per runtime** | Parallel tool calls share a single SAP security session instead of opening one per call. |
 | ✍️ | **Edit ABAP safely** | Update supported source, stage reviewed change sets, create transport requests, and run syntax checks before requested activation. |
 | ✅ | **Quality built into the flow** | Pair local ABAP linting with SAP syntax checks, ABAP Unit, ATC, editor diagnostics, and formatting. |
 | 🐞 | **Debug with system context** | Investigate dumps, traces, application logs, runtime failures, capabilities, and installed components. |
@@ -197,17 +214,17 @@ The package ships with twelve custom agents plus twenty-two task-focused Agent S
 
 ## 🗺️ How it fits together
 
-Each selected BAS destination becomes its own isolated MCP server identity. The MCP client discovers the live tools and schemas, the add-on routes calls to the correct runtime process, and the process reaches SAP ADT through the selected BAS destination.
+Each selected BAS destination or local SAP GUI system becomes its own isolated MCP server identity. The MCP client discovers the live tools and schemas, the add-on routes calls to the correct runtime process, and that process reaches SAP ADT through the selected route over one shared SAP logon. Companion servers (HANA, Integration Suite, Datasphere, Process Automation, BTP, Cloud ALM) are separate stdio MCP processes with their own user-only credentials, so an agent can combine them — for example a Cloud ALM alert, the matching CPI message log, and the ABAP SLG1 entry.
 
 ## 🧰 Optional full-stack companion MCP servers
 
-ABAP/RAP backend access is provided by this add-on's BAS proxy. For end-to-end SAP development, setup can also add managed companion MCP entries for frontend, CAP, browser validation, and read-only HANA inspection:
+ABAP/RAP backend access is provided by this add-on's destination-scoped runtime. For end-to-end SAP development, setup can also add managed companion MCP entries for frontend, CAP, browser validation, read-only HANA inspection, Integration Suite, Datasphere, Build Process Automation, BTP platform administration, and Cloud ALM:
 
 ```sh
 sap-ai-dev --setup --tools
 ```
 
-The companion entries are optional and are launched through `npx` only when the MCP client starts them. They are marked as managed by `sap-ai-dev-toolkit`, so rerunning setup can update or remove them without touching unrelated MCP servers. The HANA, Integration Suite and Datasphere companions use `--ignore-scripts` so the toolkit postinstall wizard cannot run during MCP startup.
+The companion entries are optional and are launched through `npx` only when the MCP client starts them. They are marked as managed by `sap-ai-dev-toolkit`, so rerunning setup can update or remove them without touching unrelated MCP servers. The companions shipped in this package (HANA, Integration Suite, Datasphere, Process Automation, BTP, Cloud ALM) use `--ignore-scripts` so the toolkit postinstall wizard cannot run during MCP startup. Each has a dedicated wizard: `sap-ai-dev --setup-integration`, `--setup-datasphere`, `--setup-process-automation`, `--setup-btp`, and `--setup-cloud-alm`.
 
 | MCP entry | Package | Launches | Use when the agent needs to |
 | --- | --- | --- | --- |
@@ -219,6 +236,7 @@ The companion entries are optional and are launched through `npx` only when the 
 | `integration-suite` | `sap-ai-dev-toolkit` | `sap-ai-integration` | Build, deploy, undeploy, and monitor Cloud Integration content (iFlows, value mappings, script collections, security material, Partner Directory) and manage API Management providers, proxies, policies, products, and key value maps |
 | `datasphere` | `sap-ai-dev-toolkit` | `sap-ai-datasphere` | Model and administer SAP Datasphere: spaces, users, roles, database users, connections, modeling objects and packages, task chains, replication flows, Data Marketplace, consumption queries and Open SQL |
 | `process-automation` | `sap-ai-dev-toolkit` | `sap-ai-process-automation` | Inspect and operate SAP Build Process Automation across all eight BPA APIs: process definitions, workflow instances with contexts, logs and errors, stuck instances, user tasks and the user inbox, decisions, API triggers, automations, process visibility, administration jobs, process starts and business events |
+| `sap-btp` | `sap-ai-dev-toolkit` | `sap-ai-btp` | Audit and operate the BTP core platform through your own `btp login --sso`: account hierarchy, entitlements and quotas, Service Manager instances and service keys, destinations, trust, and Cloud Connectors |
 | `cloud-alm` | `sap-ai-dev-toolkit` | `sap-ai-cloud-alm` | Observe and triage SAP landscapes with SAP Cloud ALM: health, exception and alert hotspots per tier, Integration & Exception Monitoring records, monitoring events with CPI and SLG1 handoffs, analytics, feature and transport status, and confirmation-gated alert closing |
 
 Recommended profiles:
@@ -1094,6 +1112,8 @@ If `GetSystemInfo` or `RunQuery` reports a CSRF-token fetch failure, the runtime
 
 **`MCP config ... contains invalid JSON`** usually means one of three things, all healed automatically by setup: the file starts with a byte-order mark (Windows PowerShell `>` redirection, `Set-Content`, or Notepad's "UTF-8 with BOM" mode — invisible in editors and terminals), it contains comments or trailing commas (VS Code reads `mcp.json` as JSONC), or setup raced an editor save and read a torn file (retried once before healing). Unrecoverable content is backed up as `mcp.json.<kind>-<timestamp>.bak` and replaced; the backup path is printed in the setup warning. On older versions, re-save the file as UTF-8 without BOM (VS Code: "Change File Encoding → Save with Encoding → UTF-8") and rerun `sap-ai-dev --setup`.
 
+**SAP shows "You are already logged on to the system in the following sessions" with dozens of entries** (or SM04 fills with HTTP sessions of your user): runtimes before 0.9.9924 opened one SAP security session per parallel tool call until the first session cookie came back. Upgrade and restart the MCP server; each runtime process now logs on once and shares that session. Sessions left by older processes expire with the system's HTTP session timeout, or end them with **Cancel all existing logons** at the next SAP GUI logon. Every MCP server start (editor reload, `/mcp reload`, a second editor) is still one process with one logon of its own.
+
 If automatic runtime provisioning fails, check network access and the package's supported platform. You can install Go manually or set `GO_BINARY` as an explicit fallback. A trusted prebuilt executable can be supplied with `SAP_AI_DEV_TOOLKIT_BINARY`.
 
 ## 🧑‍💻 Development
@@ -1105,6 +1125,8 @@ npm test
 ```
 
 Install the checkout globally with `npm run install:local`, or use `npm run install:local -- --link` for a live workspace link. Verify without reinstalling using `npm run install:local -- --verify`: it checks the installed package version and, for a link, the actual workspace target, and refuses an outdated snapshot or a different checkout. After installation, exercise the installed executable with `sap-ai-integration --check`; npm-linked commands resolve their real entrypoint before starting the server.
+
+The ABAP runtime is upstream VSP pinned to one commit and patched with `patches/*.patch` (applied in the order listed in `scripts/build-vsp.mjs`). `npm run build:vsp` clones it into `.build/vibing-steampunk`, applies the patches, and builds `dist/`; run `go test ./pkg/adt/ ./internal/...` there to exercise a patch. To change a patch, commit the patched tree in `.build`, edit, and write `git diff` back to the patch file.
 
 The package repository is [grknylmz/sap-ai-dev-toolkit](https://github.com/grknylmz/sap-ai-dev-toolkit).
 

@@ -1,0 +1,258 @@
+diff --git a/pkg/adt/http.go b/pkg/adt/http.go
+index e420573..5386a26 100755
+--- a/pkg/adt/http.go
++++ b/pkg/adt/http.go
+@@ -12,6 +12,7 @@ import (
+ 	"os"
+ 	"strings"
+ 	"sync"
++	"sync/atomic"
+ 	"time"
+ )
+ 
+@@ -135,6 +136,10 @@ type Transport struct {
+ 	// from triggering simultaneous SAML dances.
+ 	reauthMu   sync.Mutex
+ 	lastReauth time.Time
++
++	// Logon single-flight: see http_logon_gate.go.
++	logonSlot    chan struct{}
++	logonSettled atomic.Bool
+ }
+ 
+ // NewTransport creates a new Transport with the given configuration.
+@@ -149,6 +154,7 @@ func NewTransportWithClient(cfg *Config, client HTTPDoer) *Transport {
+ 	t := &Transport{
+ 		config:     cfg,
+ 		httpClient: client,
++		logonSlot:  make(chan struct{}, 1),
+ 	}
+ 	if cfg.Cache {
+ 		t.cache = newResponseCache(cfg.CacheStore, cfg.CacheTTL)
+@@ -212,10 +218,10 @@ func (t *Transport) Request(ctx context.Context, path string, opts *RequestOptio
+ 		opts.Method = http.MethodGet
+ 	}
+ 	if t.cache == nil {
+-		return t.request(ctx, path, opts)
++		return t.gatedRequest(ctx, path, opts)
+ 	}
+ 	if !cacheable(path, opts) {
+-		resp, err := t.request(ctx, path, opts)
++		resp, err := t.gatedRequest(ctx, path, opts)
+ 		if isModifyingMethod(opts.Method) && !strings.HasPrefix(path, "/sap/bc/adt/datapreview/") {
+ 			t.cache.invalidate()
+ 		}
+@@ -229,7 +235,7 @@ func (t *Transport) Request(ctx context.Context, path string, opts *RequestOptio
+ 	if resp, ok := t.cache.get(key); ok {
+ 		return resp, nil
+ 	}
+-	resp, err := t.request(ctx, path, opts)
++	resp, err := t.gatedRequest(ctx, path, opts)
+ 	if err == nil && resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+ 		t.cache.put(key, resp)
+ 	}
+@@ -1062,6 +1068,8 @@ func (t *Transport) resetCookieJar() {
+ 	}
+ 	if jar, err := cookiejar.New(nil); err == nil {
+ 		client.Jar = jar
++		// The new jar holds no session: the next requests must share one logon again.
++		t.logonSettled.Store(false)
+ 	}
+ }
+ 
+diff --git a/pkg/adt/http_logon_gate.go b/pkg/adt/http_logon_gate.go
+new file mode 100644
+index 0000000..9e71c60
+--- /dev/null
++++ b/pkg/adt/http_logon_gate.go
+@@ -0,0 +1,76 @@
++package adt
++
++import (
++	"context"
++	"net/http"
++	"net/url"
++	"strings"
++)
++
++// Every request that reaches SAP without a security-session cookie is a new
++// logon: SAP authenticates it and opens a security session of its own, which
++// lingers in SM04 until it times out. MCP clients fan tool calls out in
++// parallel, so a cold transport used to send each of them without a cookie
++// and opened one session per call (dozens per burst for one user).
++//
++// gatedRequest lets exactly one request log on while the jar holds no session
++// cookie; the others wait for it and then reuse the cookie it brought back.
++// When that request succeeds without the server issuing a session cookie
++// (security sessions off, or a proxy chain that keeps them), the gate settles
++// open so requests are never serialized for nothing. Dropping the jar after an
++// expired session re-arms it.
++func (t *Transport) gatedRequest(ctx context.Context, path string, opts *RequestOptions) (*Response, error) {
++	if t.logonSlot == nil || t.logonSettled.Load() || t.hasSessionCookie() {
++		return t.request(ctx, path, opts)
++	}
++	select {
++	case t.logonSlot <- struct{}{}:
++	case <-ctx.Done():
++		return nil, ctx.Err()
++	}
++	if t.logonSettled.Load() || t.hasSessionCookie() {
++		<-t.logonSlot
++		return t.request(ctx, path, opts)
++	}
++	resp, err := t.request(ctx, path, opts)
++	if err == nil && !t.hasSessionCookie() {
++		t.logonSettled.Store(true)
++	}
++	<-t.logonSlot
++	return resp, err
++}
++
++// hasSessionCookie reports whether requests to the SAP system already carry
++// a security session: one the jar learned from the server, or one the caller
++// supplied for cookie authentication.
++func (t *Transport) hasSessionCookie() bool {
++	t.cookiesMu.RLock()
++	for name := range t.config.Cookies {
++		if isSessionCookieName(name) {
++			t.cookiesMu.RUnlock()
++			return true
++		}
++	}
++	t.cookiesMu.RUnlock()
++	client, ok := t.httpClient.(*http.Client)
++	if !ok || client.Jar == nil {
++		return false
++	}
++	base, err := url.Parse(strings.TrimRight(t.config.BaseURL, "/") + "/sap/bc/adt/")
++	if err != nil {
++		return false
++	}
++	for _, cookie := range client.Jar.Cookies(base) {
++		if isSessionCookieName(cookie.Name) {
++			return true
++		}
++	}
++	return false
++}
++
++// isSessionCookieName matches the ICF security-session cookie
++// (SAP_SESSIONID_<SID>_<client>). A MYSAPSSO2 logon ticket does not count:
++// every request presenting only the ticket opens another session.
++func isSessionCookieName(name string) bool {
++	return strings.HasPrefix(name, "SAP_SESSIONID")
++}
+diff --git a/pkg/adt/http_logon_gate_test.go b/pkg/adt/http_logon_gate_test.go
+new file mode 100644
+index 0000000..e973790
+--- /dev/null
++++ b/pkg/adt/http_logon_gate_test.go
+@@ -0,0 +1,108 @@
++package adt
++
++import (
++	"context"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++)
++
++// sapSessionServer mimics ICF security sessions: a request without a live
++// SAP_SESSIONID cookie is a logon and, when issueCookies, gets a new one.
++type sapSessionServer struct {
++	issueCookies bool
++	logons       atomic.Int32
++	inFlight     atomic.Int32
++	peak         atomic.Int32
++	mu           sync.Mutex
++	live         map[string]bool
++}
++
++func (s *sapSessionServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
++	now := s.inFlight.Add(1)
++	defer s.inFlight.Add(-1)
++	for {
++		peak := s.peak.Load()
++		if now <= peak || s.peak.CompareAndSwap(peak, now) {
++			break
++		}
++	}
++	s.mu.Lock()
++	cookie, err := r.Cookie("SAP_SESSIONID_T4D_100")
++	if err != nil || !s.live[cookie.Value] {
++		id := fmt.Sprintf("S%d", s.logons.Add(1))
++		if s.issueCookies {
++			s.live[id] = true
++			http.SetCookie(w, &http.Cookie{Name: "SAP_SESSIONID_T4D_100", Value: id, Path: "/"})
++		}
++	}
++	s.mu.Unlock()
++	w.Header().Add("Set-Cookie", "sap-usercontext=sap-client=100; path=/")
++	time.Sleep(30 * time.Millisecond)
++	fmt.Fprint(w, "ok")
++}
++
++func newSessionTransport(t *testing.T, issueCookies bool) (*Transport, *sapSessionServer) {
++	t.Helper()
++	sap := &sapSessionServer{issueCookies: issueCookies, live: map[string]bool{}}
++	server := httptest.NewServer(sap)
++	t.Cleanup(server.Close)
++	return NewTransport(NewConfig(server.URL, "EMSDI0845", "secret", WithClient("100"))), sap
++}
++
++func burst(t *testing.T, transport *Transport, n int) {
++	t.Helper()
++	var wg sync.WaitGroup
++	errs := make(chan error, n)
++	for i := range n {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			if _, err := transport.Request(context.Background(), fmt.Sprintf("/sap/bc/adt/oo/classes/ZCL_%d/source/main", i), nil); err != nil {
++				errs <- err
++			}
++		}()
++	}
++	wg.Wait()
++	close(errs)
++	for err := range errs {
++		t.Fatalf("request failed: %v", err)
++	}
++}
++
++func TestTransport_ConcurrentColdRequestsShareOneLogon(t *testing.T) {
++	transport, sap := newSessionTransport(t, true)
++
++	burst(t, transport, 12)
++	burst(t, transport, 12)
++
++	if got := sap.logons.Load(); got != 1 {
++		t.Fatalf("logons = %d, want 1: parallel tool calls must reuse one SAP security session", got)
++	}
++}
++
++func TestTransport_LogonGateOpensWhenServerKeepsNoSession(t *testing.T) {
++	transport, sap := newSessionTransport(t, false)
++
++	burst(t, transport, 12)
++
++	if peak := sap.peak.Load(); peak < 2 {
++		t.Fatalf("peak concurrency = %d: without session cookies the gate must not serialize every request", peak)
++	}
++}
++
++func TestTransport_LogonGateRearmsAfterJarReset(t *testing.T) {
++	transport, sap := newSessionTransport(t, true)
++
++	burst(t, transport, 6)
++	transport.resetCookieJar()
++	burst(t, transport, 6)
++
++	if got := sap.logons.Load(); got != 2 {
++		t.Fatalf("logons = %d, want 2 (one per session)", got)
++	}
++}
