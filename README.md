@@ -1126,7 +1126,7 @@ If `GetSystemInfo` or `RunQuery` reports a CSRF-token fetch failure, the runtime
 
 **`MCP config ... contains invalid JSON`** usually means one of three things, all healed automatically by setup: the file starts with a byte-order mark (Windows PowerShell `>` redirection, `Set-Content`, or Notepad's "UTF-8 with BOM" mode — invisible in editors and terminals), it contains comments or trailing commas (VS Code reads `mcp.json` as JSONC), or setup raced an editor save and read a torn file (retried once before healing). Unrecoverable content is backed up as `mcp.json.<kind>-<timestamp>.bak` and replaced; the backup path is printed in the setup warning. On older versions, re-save the file as UTF-8 without BOM (VS Code: "Change File Encoding → Save with Encoding → UTF-8") and rerun `sap-ai-dev --setup`.
 
-**SAP shows "You are already logged on to the system in the following sessions" with dozens of entries** (or SM04 fills with HTTP sessions of your user): runtimes before 0.9.9924 opened one SAP security session per parallel tool call until the first session cookie came back. Upgrade and restart the MCP server; each runtime process now logs on once and shares that session. Sessions left by older processes expire with the system's HTTP session timeout, or end them with **Cancel all existing logons** at the next SAP GUI logon. Every MCP server start (editor reload, `/mcp reload`, a second editor) is still one process with one logon of its own.
+**SAP shows "You are already logged on to the system in the following sessions" with dozens of entries** (or SM04 fills with HTTP sessions of your user): runtimes before 0.9.9924 opened one SAP security session per parallel tool call until the first session cookie came back. Upgrade and restart the MCP server; each runtime process now logs on once and shares that session. Check that your `mcp.json` entries no longer pin an older version (`--package=sap-ai-dev-toolkit@<version>` and `SAP_AI_DEV_TOOLKIT_VERSION`). Sessions left by older processes expire with the system's HTTP session timeout, or end them with **Cancel all existing logons** at the next SAP GUI logon — that also ends the session of every running MCP server for the same user, so restart those afterwards. Every MCP server start (editor reload, `/mcp reload`, a second editor) is still one process with one logon of its own.
 
 If automatic runtime provisioning fails, check network access and the package's supported platform. You can install Go manually or set `GO_BINARY` as an explicit fallback. A trusted prebuilt executable can be supplied with `SAP_AI_DEV_TOOLKIT_BINARY`.
 
@@ -1137,6 +1137,15 @@ Run the built-in Node.js test suite:
 ```sh
 npm test
 ```
+
+Run the live ABAP suite against a real system (read-only calls plus the curated tool surface):
+
+```sh
+SAP_URL=https://host:44300 SAP_CLIENT=100 SAP_USER=... SAP_PASSWORD=... \
+SAP_AI_DEV_LIVE_DESTINATION=SSA SAP_AI_DEV_LIVE_USE_MCP_CONFIG=0 npm run test:live:s4h
+```
+
+Without `SAP_AI_DEV_LIVE_USE_MCP_CONFIG=0` the suite looks up the destination's server in `SAP_AI_DEV_MCP_CONFIG`, `BAS_VSP_MCP_CONFIG` or the VS Code server `mcp.json` paths and runs its `command`, `args` and `env` — that tests the pinned package version, not the checkout. Credential values written as VS Code `${input:…}` prompts or OMP `!command` lookups are passed through literally and fail with HTTP 401, so resolve them into plain environment variables first (macOS keychain: `security find-generic-password -s <service> -w`). `SAP_AI_DEV_LIVE_COMMAND` / `SAP_AI_DEV_LIVE_ARGS` (JSON array) override the server command; `SAP_AI_DEV_LIVE_DESTINATION_SLUG` and `SAP_AI_DEV_LIVE_TIMEOUT_MS` (default 45000) tune the lookup and per-request timeout.
 
 Install the checkout globally with `npm run install:local`, or use `npm run install:local -- --link` for a live workspace link. Verify without reinstalling using `npm run install:local -- --verify`: it checks the installed package version and, for a link, the actual workspace target, and refuses an outdated snapshot or a different checkout. After installation, exercise the installed executable with `sap-ai-integration --check`; npm-linked commands resolve their real entrypoint before starting the server.
 
@@ -1154,7 +1163,7 @@ NPM_PUBLISH_TOKEN=npm_...
 
 - `npm run publish:npm` publishes the version already set in `package.json`.
 - To publish a patch bump, run `npm run publish:npm -- --patch`; it updates `package.json` and `package-lock.json` before publishing. If publishing fails after the bump, retry without `--patch`.
-- npm's `prepublishOnly` hook builds the pinned runtime binaries for all platforms (including the Go toolchain if missing) and refuses to ship a tarball whose `dist/checksums.txt` does not list all five assets; it guards `npm run publish:npm` and a plain `npm publish` alike. Pass `--skip-build` to republish an already-built `dist/` without rebuilding.
+- npm's `prepublishOnly` hook builds the pinned runtime binaries for all platforms — the Go `vsp` runtime (installing the Go toolchain if missing) and the Rust `sap-ai-aem` companion — and refuses to ship a tarball whose `dist/checksums.txt` does not list all ten assets; it guards `npm run publish:npm` and a plain `npm publish` alike. Pass `--skip-build` to republish an already-built `dist/` without rebuilding.
 - Preview the package without publishing, changing its version, or building with `npm run publish:npm -- --dry-run`.
 - GitHub Actions runs the test suite on pushes to `main` and pull requests. A push to `main` that changes the `package.json` version runs the same checks, builds the runtime binaries, publishes that version to npm, and creates a `v<version>` GitHub release with generated notes and the binaries plus `checksums.txt` attached for the download fallback.
 - The publish workflow uses the `NPM_PUBLISH_TOKEN` GitHub repository secret. Verify it with `gh secret list`; the token value is never stored in the repository.
