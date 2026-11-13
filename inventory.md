@@ -353,3 +353,14 @@ The standalone `sap-ai-cloud-alm` companion is not a BAS-proxy child and never d
 | Analytics | `calm_list_analytics_providers`, `calm_describe_analytics_provider`, `calm_query_analytics` | Authorized providers, provider fields and attribute values, one query summed/maxed per dimension combination or raw. |
 | Features | `calm_list_features`, `calm_get_feature` | Feature lifecycle status with transport ids; one feature by UUID or display id, or the features linked to a transport id. No per-system import status. |
 | Event situations | `calm_close_event_situation` | Close an alert by id or external id (mapped tickets closed unless `notify_ticketing: false`); `CLOSE CALM EVENT SITUATION <event_situation_id>` or `CLOSE CALM EVENT SITUATION BY EXTERNAL ID <external_id>`. |
+
+## Separate optional SAP Integration Suite, advanced event mesh server
+
+The standalone `sap-ai-aem` companion (native Rust executable behind a Node shim) is not a BAS-proxy child and never destination-prefixed. It exposes 29 tools over the advanced event mesh Cloud API (Mission Control, Event Portal) and broker SEMP v2, with a Cloud API token from `AEM_API_TOKEN` / `AEM_CONFIG` and/or explicit `AEM_SEMP_*` / `AEM_SEMP_CONFIG` broker credentials, or stored user-only in `~/.config/sap-ai-dev-toolkit/aem.json` by `sap-ai-dev --setup-aem`. Every write is confirmation-gated; results are secret-redacted.
+
+| Group | Tools | Behavior |
+|---|---|---|
+| Connection | `aem_connection_info` | Cloud API and SEMP hosts, VPN and credential sources; optional online verification. |
+| Mission Control | `aem_list_services`, `aem_get_service`, `aem_list_service_classes`, `aem_list_datacenters`, `aem_list_broker_versions`, `aem_create_service`, `aem_update_service`, `aem_resize_message_spool`, `aem_get_upgrade_status`, `aem_upgrade_service`, `aem_delete_service`, `aem_list_operations`, `aem_get_operation` | Broker service lifecycle with asynchronous operations polled to SUCCEEDED/FAILED; locked services cannot be deleted; no service-class change in the public API. |
+| SEMP v2 | `aem_semp_list_objects`, `aem_semp_get_object`, `aem_semp_create_object`, `aem_semp_update_object`, `aem_semp_delete_object`, `aem_semp_monitor`, `aem_semp_action` | Config CRUD for queues, subscriptions, topic endpoints, client usernames, client/ACL profiles and exceptions, REST delivery points, bridges and replay logs; monitor reads; actions. `service_id` resolves SEMP credentials from the Cloud API. |
+| Event Portal | `aem_portal_list`, `aem_portal_get`, `aem_portal_create`, `aem_portal_update`, `aem_portal_delete`, `aem_portal_set_version_state`, `aem_portal_associate_messaging_services`, `aem_portal_export_asyncapi` | Application domains, applications, events, schemas and their versions; version states; messaging-service association; AsyncAPI export. |

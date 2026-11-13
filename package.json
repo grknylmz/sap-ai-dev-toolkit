@@ -1,6 +1,6 @@
 {
   "name": "sap-ai-dev-toolkit",
-  "version": "0.9.9924",
+  "version": "0.9.9925",
   "description": "SAP AI development toolkit for BAS, ABAP, RAP, CAP, HANA Cloud, Fiori, UI5, and MCP",
   "author": "Gurkan Yilmaz",
   "type": "module",
@@ -25,7 +25,8 @@
     "sap-ai-datasphere": "src/datasphere-server.mjs",
     "sap-ai-process-automation": "src/process-automation-server.mjs",
     "sap-ai-btp": "src/btp-server.mjs",
-    "sap-ai-cloud-alm": "src/cloud-alm-server.mjs"
+    "sap-ai-cloud-alm": "src/cloud-alm-server.mjs",
+    "sap-ai-aem": "src/aem-server.mjs"
   },
   "scripts": {
     "postinstall": "node scripts/postinstall.mjs",
@@ -37,9 +38,10 @@
     "test:visibility": "node --test test/setup.test.mjs test/terminal-ui.test.mjs",
     "test:mutation": "node scripts/mutation-terminal-ui.mjs",
     "publish:npm": "node scripts/publish-npm.mjs",
-    "prepublishOnly": "node scripts/build-vsp.mjs && node scripts/publish-npm.mjs --verify-only",
+    "prepublishOnly": "node scripts/build-vsp.mjs && node scripts/build-aem.mjs && node scripts/publish-npm.mjs --verify-only",
     "ensure:go": "node scripts/ensure-go.mjs",
-    "build:vsp": "node scripts/build-vsp.mjs"
+    "build:vsp": "node scripts/build-vsp.mjs",
+    "build:aem": "node scripts/build-aem.mjs"
   },
   "repository": {
     "type": "git",

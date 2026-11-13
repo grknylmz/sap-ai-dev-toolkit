@@ -4,6 +4,7 @@ node_modules/
 # Build output and packaged artifacts
 .build/
 dist/
+native/aem/target/
 *.tgz
 *.tar.gz
 

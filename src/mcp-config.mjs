@@ -112,6 +112,15 @@ export const SAP_DEVELOPMENT_MCP_SERVERS = Object.freeze([
     bin: 'sap-ai-cloud-alm',
     ignoreScripts: true,
     priority: 'optional'
+  }),
+  Object.freeze({
+    id: 'advanced-event-mesh',
+    name: 'SAP Integration Suite, advanced event mesh',
+    description: 'Manage the full lifecycle of advanced event mesh (Solace) event broker services: create, inspect, resize, upgrade and delete brokers and poll their operations (Mission Control), configure, monitor and act on queues, subscriptions, client usernames, ACL and client profiles, REST delivery points and bridges (SEMP v2), and design Event Portal domains, applications, events and schemas with AsyncAPI export, using a Cloud API token or broker SEMP credentials from the host environment or saved with sap-ai-dev --setup-aem.',
+    packageName: 'sap-ai-dev-toolkit',
+    bin: 'sap-ai-aem',
+    ignoreScripts: true,
+    priority: 'optional'
   })
 ]);
 
@@ -644,7 +653,7 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
   // Values are full npx package specs; a bare version would become --package=<version>.
   const selfSpec = selfVersion ? `sap-ai-dev-toolkit@${selfVersion}` : '';
   const companionVersions = selfSpec
-    ? { 'sap-ai-dev-toolkit': selfSpec, 'hana-cloud-inspector': selfSpec, 'integration-suite': selfSpec, 'datasphere': selfSpec, 'process-automation': selfSpec, 'sap-btp': selfSpec, 'cloud-alm': selfSpec }
+    ? { 'sap-ai-dev-toolkit': selfSpec, 'hana-cloud-inspector': selfSpec, 'integration-suite': selfSpec, 'datasphere': selfSpec, 'process-automation': selfSpec, 'sap-btp': selfSpec, 'cloud-alm': selfSpec, 'advanced-event-mesh': selfSpec }
     : {};
   const generated = {
     ...buildMcpEntries(destinations, env),

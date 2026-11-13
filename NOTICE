@@ -43,3 +43,14 @@ Integration_Test_IFlow test artifact of FlashPipe
 (https://github.com/engswee/flashpipe), Copyright Eng Swee Yeoh, licensed under
 the Apache License, Version 2.0 (see LICENSE-APACHE-2.0.txt). It was modified to
 add a Request Reply step, an HTTP receiver adapter, and externalized parameters.
+
+--------------------------------------------------------------------------------
+Third-party software distributed in the sap-ai-aem binaries
+--------------------------------------------------------------------------------
+
+The dist/sap-ai-aem-* executables are built from native/aem (MIT, this package) and
+statically link Rust crates recorded with exact versions in native/aem/Cargo.lock,
+among them rmcp (Apache-2.0), tokio, serde, reqwest, hyper and url (MIT or
+Apache-2.0), rustls (Apache-2.0, ISC or MIT), ring (Apache-2.0 AND ISC) and
+webpki-roots (CDLA-Permissive-2.0, Mozilla root certificate data). Each crate's
+licence text ships in its crates.io source package.

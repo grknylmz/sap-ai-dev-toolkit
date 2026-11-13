@@ -24,14 +24,28 @@ export function binaryTarget(platform = process.platform, arch = process.arch) {
   return { os: target[0], arch: target[1], extension: target[2], asset: `vsp-${target[0]}-${target[1]}${target[2]}` };
 }
 
+export function aemBinaryTarget(platform = process.platform, arch = process.arch) {
+  const target = platformMap[`${platform}:${arch}`];
+  if (!target) throw new Error(`Unsupported platform ${platform}/${arch} for sap-ai-aem.`);
+  return { os: target[0], arch: target[1], extension: target[2], asset: `sap-ai-aem-${target[0]}-${target[1]}${target[2]}` };
+}
+
 // Every runtime asset the npm tarball must bundle; publish:npm refuses to ship a
 // package whose dist/checksums.txt does not list all of them.
 export function packagedBinaryAssets() {
-  return Object.keys(platformMap).map(key => binaryTarget(...key.split(':')).asset);
+  const keys = Object.keys(platformMap).map(key => key.split(':'));
+  return [
+    ...keys.map(key => binaryTarget(...key).asset),
+    ...keys.map(key => aemBinaryTarget(...key).asset)
+  ];
 }
 
 export function bundledBinaryPath(platform = process.platform, arch = process.arch) {
   return join(packageRoot, 'dist', binaryTarget(platform, arch).asset);
+}
+
+export function bundledAemBinaryPath(platform = process.platform, arch = process.arch) {
+  return join(packageRoot, 'dist', aemBinaryTarget(platform, arch).asset);
 }
 
 // The npm-published dist/checksums.txt is the trust anchor: unlike a GitHub
@@ -63,7 +77,7 @@ async function sha256File(path) {
 // Verifies a locally present binary against the packaged checksum manifest.
 // Returns true (verified), false (mismatch — must not be executed), or null
 // (no packaged entry; caller decides whether to trust the candidate).
-async function verifyAgainstPackagedChecksums(path, target) {
+export async function verifyAgainstPackagedChecksums(path, target) {
   const checksums = await packagedChecksums();
   const expected = checksums.get(target.asset);
   if (!expected) return null;

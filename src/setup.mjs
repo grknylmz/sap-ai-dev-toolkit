@@ -1,7 +1,11 @@
 import { readFileSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout } from 'node:process';
-import { platform } from 'node:os';
+import { platform, tmpdir } from 'node:os';
 import { isIP } from 'node:net';
 import { checkboxPrompt, colorText, formatStatus, selectPrompt, startProgress, textPrompt } from './terminal-ui.mjs';
 import { discoverDestinations, remediation } from './bas-discovery.mjs';
@@ -25,6 +29,7 @@ import { createBtpCli, locateBtpCli, loginBtpCli, readBtpSettings, storeBtpSetti
 import { parseCloudAlmCredentials, parseCloudAlmServiceKey, resolveCloudAlmConfig } from './cloud-alm-config.mjs';
 import { readStoredCloudAlmCredentials, storeCloudAlmCredentials } from './cloud-alm-credentials.mjs';
 import { createCloudAlmRestClient, verifyCloudAlmAccess } from './cloud-alm-client.mjs';
+import { readStoredAemCredentials, storeAemCredentials } from './aem-credentials.mjs';
 import { createStaticServiceClient } from './integration-http.mjs';
 import { connectHana } from './hana-database.mjs';
 import { diagnosticText } from './redact.mjs';
@@ -1204,6 +1209,153 @@ export async function runCloudAlmSetup({
   return { selected: [], ...(result || {}) };
 }
 
+const AEM_ENV_KEYS = ['AEM_API_TOKEN', 'AEM_CONFIG', 'AEM_SEMP_URL', 'AEM_SEMP_CONFIG'];
+
+export function aemCredentialStatus(env = process.env) {
+  if (AEM_ENV_KEYS.some(key => typeof env[key] === 'string' && env[key].trim())) {
+    return { found: true, source: 'environment', lines: ['Advanced event mesh credentials come from the MCP host environment'] };
+  }
+  let stored;
+  try {
+    stored = readStoredAemCredentials(env);
+  } catch (error) {
+    return { found: false, source: null, lines: [String(error?.message || '')] };
+  }
+  if (stored?.api || stored?.semp) {
+    const host = url => { try { return new URL(url).host; } catch { return 'unknown host'; } };
+    const lines = [];
+    if (stored.api) lines.push(`Cloud API ${host(stored.api.url)}`);
+    if (stored.semp) lines.push(`SEMP ${host(stored.semp.url)} VPN ${stored.semp.msg_vpn}`);
+    return { found: true, source: 'stored', lines };
+  }
+  return { found: false, source: null, lines: ['No advanced event mesh credentials configured yet'] };
+}
+
+// Runs the native server's --check with only the entered credentials (stored
+// file isolated through a temporary XDG_CONFIG_HOME).
+async function defaultVerifyAem(record, { env = process.env } = {}) {
+  const directory = await mkdtemp(join(tmpdir(), 'sap-ai-aem-verify-'));
+  try {
+    const childEnv = { XDG_CONFIG_HOME: directory };
+    for (const key of ['PATH', 'HOME', 'SAP_AI_DEV_TOOLKIT_AEM_BINARY']) if (env[key] !== undefined) childEnv[key] = env[key];
+    for (const [key, value] of Object.entries(env)) if (/^(?:https?_proxy|no_proxy)$/i.test(key)) childEnv[key] = value;
+    if (record.api) Object.assign(childEnv, { AEM_API_URL: record.api.url, AEM_API_TOKEN: record.api.token });
+    if (record.semp) {
+      Object.assign(childEnv, {
+        AEM_SEMP_URL: record.semp.url,
+        AEM_SEMP_MSG_VPN: record.semp.msg_vpn,
+        AEM_SEMP_USERNAME: record.semp.username,
+        AEM_SEMP_PASSWORD: record.semp.password
+      });
+    }
+    const server = fileURLToPath(new URL('./aem-server.mjs', import.meta.url));
+    const { code, stdout: out, stderr: err } = await new Promise(resolve => {
+      execFile(process.execPath, [server, '--check'], { env: childEnv, timeout: 60000 }, (error, stdout, stderr) => {
+        resolve({ code: error ? (error.code ?? 1) : 0, stdout: String(stdout || ''), stderr: String(stderr || '') });
+      });
+    });
+    const result = line => line.slice(line.indexOf(': ') + 2);
+    const lines = out.split(/\r?\n/).map(line => line.trim()).filter(line => /^[\w-]+: /.test(line));
+    const failed = lines.filter(line => result(line).startsWith('failed'));
+    if (failed.length) return { ok: false, message: diagnosticText(failed.join('; ')) };
+    if (code !== 0 && !lines.length) return { ok: false, message: diagnosticText(err.trim() || `sap-ai-aem --check exited with ${code}`) };
+    return { ok: true, message: lines.filter(line => result(line).startsWith('ok')).join('; ') };
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+}
+
+function aemUrlValidator(value) {
+  const text = String(value || '').trim();
+  if (!text) return true;
+  try {
+    const url = new URL(text);
+    if (url.protocol === 'https:') return true;
+    if (url.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname)) return true;
+  } catch {}
+  return 'must be an https URL';
+}
+
+/** Prompt for a Cloud API token and/or broker SEMP credentials, verify them online, and store them. */
+export async function promptAem({
+  env = process.env,
+  input = stdin,
+  output = stdout,
+  verifyAem = defaultVerifyAem
+} = {}) {
+  const label = 'Advanced Event Mesh';
+  print(output, '');
+  print(output, formatStatus('SAP Integration Suite, advanced event mesh tools', 'step', output, label));
+  print(output, '  Connects your AI agent to advanced event mesh through a Cloud API token (Cloud Console > User & Account > Token Management; grant Mission Control and Event Portal permissions) and, for brokers without a token, broker SEMP credentials. Credentials are checked online and stored only for you, never in mcp.json.');
+  const status = aemCredentialStatus(env);
+  for (const line of status.lines) print(output, `  ${line}`);
+  if (status.found) {
+    if (status.source === 'environment') return true;
+    if (!await confirmPrompt('Replace the stored advanced event mesh credentials? (y/n, Enter=no)', { input, output, defaultYes: false })) return true;
+  }
+
+  const apiUrl = (await textPrompt({
+    message: 'Cloud API base URL (Enter = https://api.solace.cloud)',
+    required: false,
+    placeholder: 'https://api.solace.cloud',
+    validate: aemUrlValidator
+  }, { input, output })).trim().replace(/\/$/, '') || 'https://api.solace.cloud';
+  const token = (await textPrompt({ message: 'Cloud API token (Enter = skip, for SEMP-only brokers)', secret: true, required: false }, { input, output })).trim();
+
+  const record = {};
+  if (token) record.api = { url: apiUrl, token };
+  if (await confirmPrompt('Add broker SEMP credentials too? (y/n, Enter=no)', { input, output, defaultYes: !token })) {
+    const url = (await textPrompt({
+      message: 'SEMP URL (https://<host>:943)',
+      validate: value => (String(value || '').trim() ? aemUrlValidator(value) : 'Enter a value (or press Ctrl+C to skip).')
+    }, { input, output })).trim().replace(/\/$/, '');
+    const msgVpn = (await textPrompt({ message: 'Message VPN' }, { input, output })).trim();
+    const username = (await textPrompt({ message: 'SEMP username' }, { input, output })).trim();
+    const password = await textPrompt({ message: 'SEMP password', secret: true }, { input, output });
+    record.semp = { url, msg_vpn: msgVpn, username, password };
+  }
+  if (!record.api && !record.semp) {
+    print(output, formatStatus('Nothing to save: give a Cloud API token or SEMP credentials.', 'warning', output, label));
+    return false;
+  }
+
+  const verification = await verifyAem(record, { env });
+  if (!verification.ok) {
+    print(output, formatStatus(`Verification failed: ${verification.message}`, 'warning', output, label));
+    if (!await confirmPrompt('Save these credentials anyway? (y/n, Enter=no)', { input, output, defaultYes: false })) return false;
+  } else {
+    print(output, formatStatus(`Advanced event mesh ${verification.message}.`, 'success', output, label));
+  }
+
+  const path = await storeAemCredentials(record, env);
+  print(output, formatStatus(`Saved to ${path}`, 'success', output, label));
+  return true;
+}
+
+/** `sap-ai-dev --setup-aem`: only the advanced event mesh step (token and/or SEMP, verify, add the server). */
+export async function runAemSetup({
+  env = process.env,
+  input = stdin,
+  output = stdout,
+  install = installMcpConfig,
+  verifyAem = defaultVerifyAem
+} = {}) {
+  if (!input.isTTY || !output.isTTY) {
+    print(output, formatStatus('Interactive setup needs a terminal. Rerun sap-ai-dev --setup-aem from a terminal.', 'warning', output, 'SAP AI Dev Toolkit'));
+    return { skipped: true, reason: 'non-tty' };
+  }
+  const ok = await promptAem({ env, input, output, verifyAem });
+  if (!ok) {
+    print(output, formatStatus('Advanced event mesh setup cancelled; no MCP entry was added.', 'warning', output, 'SAP AI Dev Toolkit'));
+    return { skipped: true, reason: 'no-credentials' };
+  }
+  const result = await install([], { env, sapDevelopmentServers: ['advanced-event-mesh'], additive: true });
+  print(output, '');
+  print(output, formatStatus(`Configured the SAP Integration Suite, advanced event mesh MCP server${result?.path ? ` in ${result.path}` : ''}.`, 'success', output, 'SAP AI Dev Toolkit'));
+  for (const message of Array.isArray(result?.warnings) ? result.warnings : []) print(output, formatStatus(message, 'warning', output, 'Warning'));
+  return { selected: [], ...(result || {}) };
+}
+
 function buildLocalClientDestination(destination, client, authMode, { multipleClients = false, duplicateSystemName = false, browserPath } = {}) {
   const name = localClientDestinationName(destination, client, { multipleClients, duplicateSystemName });
   const localDestination = { ...destination, name, serverName: name, client };
@@ -1717,13 +1869,14 @@ export async function runSetup({
     sapDevelopmentServers = ['integration-suite'];
   } else if (includeSapDevelopmentToolsPrompt) {
     print(output, '');
-    print(output, formatStatus('Optionally add companion MCP servers for full-stack SAP development, HANA inspection, Integration Suite (CPI/API Management/Developer Hub), SAP Datasphere, SAP Build Process Automation, SAP BTP platform administration, and SAP Cloud ALM.', 'step', output, 'Tools'));
+    print(output, formatStatus('Optionally add companion MCP servers for full-stack SAP development, HANA inspection, Integration Suite (CPI/API Management/Developer Hub), SAP Datasphere, SAP Build Process Automation, SAP BTP platform administration, SAP Cloud ALM, and SAP Integration Suite, advanced event mesh.', 'step', output, 'Tools'));
     print(output, '  HANA Cloud inspector is read-only and uses HANA_RO_* or VCAP_SERVICES already present in the MCP host environment; credentials are not written to mcp.json.');
     print(output, '  Integration Suite uses CPI/APIM/DEVHUB service keys from the MCP host environment or keys you paste next (verified online, saved for your user only); credentials are not written to mcp.json.');
     print(output, '  SAP Datasphere uses a Datasphere OAuth client from DATASPHERE_* in the MCP host environment or entered next (verified online, saved for your user only); credentials are not written to mcp.json.');
     print(output, '  SAP Build Process Automation uses a service key from PROCESS_AUTOMATION_* in the MCP host environment or pasted next (verified online, saved for your user only); credentials are not written to mcp.json.');
     print(output, '  SAP BTP platform administration uses your own btp CLI login (btp login --sso), checked next; the toolkit stores no credentials and writes none to mcp.json.');
     print(output, '  SAP Cloud ALM uses a service key from CLOUD_ALM_* in the MCP host environment or pasted next (verified online, saved for your user only); credentials are not written to mcp.json.');
+    print(output, '  Advanced event mesh uses a Cloud API token or broker SEMP credentials from AEM_* in the MCP host environment or entered next (verified online, saved for your user only); credentials are not written to mcp.json.');
     print(output, '  Leave empty to only configure ABAP/ADT destination servers.');
     print(output, '');
     sapDevelopmentServers = await checkboxPrompt({
@@ -1750,6 +1903,9 @@ export async function runSetup({
     }
     if (sapDevelopmentServers.includes('cloud-alm') && !await promptCloudAlm({ env, input, output })) {
       sapDevelopmentServers = sapDevelopmentServers.filter(id => id !== 'cloud-alm');
+    }
+    if (sapDevelopmentServers.includes('advanced-event-mesh') && !await promptAem({ env, input, output })) {
+      sapDevelopmentServers = sapDevelopmentServers.filter(id => id !== 'advanced-event-mesh');
     }
   } else if (await promptIntegrationSuite({ env, alreadyConfigured: integrationSuiteConfigured, input, output, verifyIntegration, integrationCloudFoundry })) {
     // Without --tools, Integration Suite still gets its own yes/no step instead of being hidden.

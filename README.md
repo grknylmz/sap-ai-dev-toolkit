@@ -79,6 +79,7 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 
 | Version | Change |
 | --- | --- |
+| 0.9.9925 | **New companion MCP server for SAP Integration Suite, advanced event mesh** (`sap-ai-aem`): a native Rust executable bundled prebuilt for Linux, macOS and Windows (x64/arm64), so no Rust toolchain is needed. 29 tools cover the whole lifecycle — Mission Control event broker services (create, rename/lock, resize the spool, upgrade, delete, operation polling), SEMP v2 configuration, monitoring and actions on queues, subscriptions, client usernames, ACL and client profiles, REST delivery points, bridges and replay logs, and Event Portal domains, applications, events and schemas with version states and AsyncAPI export. A Cloud API token resolves each broker's SEMP credentials automatically; brokers without a token use explicit SEMP credentials. Set up with `sap-ai-dev --setup-aem`; driven by the new **SAP Advanced Event Mesh Administrator** agent and `advanced-event-mesh-lifecycle` skill. Verified end to end against a local Solace PubSub+ broker. |
 | 0.9.9924 | **One SAP logon per runtime, shared by parallel tool calls.** AI assistants fire many tool calls at once; each used to reach SAP before the first security-session cookie came back, so every call logged on again and SM04 / the SAP GUI "already logged on" list filled with dozens of sessions. Now the first request logs on, the parallel ones wait for it and reuse its `SAP_SESSIONID` cookie (Basic, SSO and local SAP GUI entries alike); after an expired session the next burst again shares one fresh logon. |
 | 0.9.9923 | **Oh My Pi (OMP) receives all twelve agents** as task agents (`~/.omp/agent/agents/<id>.md`, dispatched by kebab-case id) next to the twenty-two skills. **Four new companion MCP servers:** SAP Datasphere (`sap-ai-datasphere`, incl. BW → Datasphere migration), SAP Build Process Automation (`sap-ai-process-automation`, all eight BPA APIs), SAP BTP platform administration (`sap-ai-btp`, on your own `btp login --sso`), and SAP Cloud ALM (`sap-ai-cloud-alm`), each with its own agent, skills and `--setup-*` wizard. |
 | 0.9.9922 | `EditSource` no longer double-encodes namespaced class names (`/NS/CL_…`) on class-include writes. |
@@ -87,7 +88,7 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 
 ## 🤖 Available agents and skills
 
-**Agents:** Twelve user-invocable custom agents are included. Select the best fit from the agent picker in your harness's chat (GitHub Copilot, Claude Code, or opencode), dispatch the matching OMP task agent by its kebab-case id, or use the matching Pi prompt command, as shown in Quick start. Harnesses without custom agents (OpenAI Codex, Cursor, Gemini CLI, Cline, Roo Code, Windsurf / Devin Desktop) get the same workflows as skills, for example `sap-integration-architect` and `integration-suite-delivery`.
+**Agents:** Thirteen user-invocable custom agents are included. Select the best fit from the agent picker in your harness's chat (GitHub Copilot, Claude Code, or opencode), dispatch the matching OMP task agent by its kebab-case id, or use the matching Pi prompt command, as shown in Quick start. Harnesses without custom agents (OpenAI Codex, Cursor, Gemini CLI, Cline, Roo Code, Windsurf / Devin Desktop) get the same workflows as skills, for example `sap-integration-architect` and `integration-suite-delivery`.
 
 | | Agent | Best for |
 | --- | --- | --- |
@@ -103,14 +104,15 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 | ⚙️ | **SAP Process Automation Developer** | Inspecting, testing and operating SAP Build Process Automation with the Process Automation companion: process definitions, workflow instances, stuck and failed instances, user-task queues, decisions, process triggers and business events |
 | ☁️ | **SAP BTP Infrastructure Admin** | Auditing and operating SAP BTP core platform setup with the BTP companion: account hierarchy, entitlements and quotas, Service Manager instances and service keys, destinations, trust, Cloud Connectors and principal propagation checks |
 | 📡 | **SAP DevOps & Observability Specialist** | Monitoring SAP landscapes with the Cloud ALM companion: Integration & Exception Monitoring, health and alert hotspots per DEV/TEST/PROD tier, incident triage correlated with CPI message logs and SLG1, and feature/transport status |
+| 📨 | **SAP Advanced Event Mesh Administrator** | Managing SAP Integration Suite, advanced event mesh with the AEM companion: broker service create, resize, upgrade and delete with operation polling, SEMP configuration, monitoring and actions, and Event Portal design with AsyncAPI export |
 
-**Included skills:** `abap-development` · `abap-testing-quality` · `cds-development` · `rap-development` · `abap-debugging` · `abap-runtime-analysis` · `rap-service-delivery` · `sap-standard-api-analysis` · `clean-core-extensibility` · `sap-sdlc-orchestration` · `sap-transport-release` · `hana-cloud-inspection` · `hana-cloud-native-development` · `hana-cloud-validation` · `sap-integration-architect` · `integration-suite-delivery` · `datasphere-development` · `datasphere-administration` · `bw-datasphere-migration` · `process-automation-development` · `btp-platform-administration` · `cloud-alm-operations`
+**Included skills:** `abap-development` · `abap-testing-quality` · `cds-development` · `rap-development` · `abap-debugging` · `abap-runtime-analysis` · `rap-service-delivery` · `sap-standard-api-analysis` · `clean-core-extensibility` · `sap-sdlc-orchestration` · `sap-transport-release` · `hana-cloud-inspection` · `hana-cloud-native-development` · `hana-cloud-validation` · `sap-integration-architect` · `integration-suite-delivery` · `datasphere-development` · `datasphere-administration` · `bw-datasphere-migration` · `process-automation-development` · `btp-platform-administration` · `cloud-alm-operations` · `advanced-event-mesh-lifecycle`
 
 Agents and skills install for the harnesses you pick during global installation: a multi-select offers GitHub Copilot and Claude Code pre-checked, plus OpenAI Codex, Cursor, Gemini CLI, opencode, Pi Coding Agent, Oh My Pi (OMP), Cline, Roo Code, and Windsurf / Devin Desktop. In non-interactive installs they are installed for GitHub Copilot only; run `sap-ai-dev --setup` afterwards to configure destinations or local SAP GUI systems. Repository-scoped installation instructions appear below.
 
 ## ✨ Your SAP development cockpit, inside your AI assistant
 
-`sap-ai-dev-toolkit` installs `sap-ai-dev`, discovers your BAS destinations or local SAP GUI systems, and exposes a curated SAP development toolset through MCP. Optional companion servers from the same package reach the rest of the landscape: HANA Cloud, Integration Suite, Datasphere, Build Process Automation, the BTP platform, and Cloud ALM. Instead of manually switching between chat, terminal commands, repository searches, ADT screens, cockpits, and SAP checks, describe the outcome you want and let the appropriate bundled agent coordinate the available tools.
+`sap-ai-dev-toolkit` installs `sap-ai-dev`, discovers your BAS destinations or local SAP GUI systems, and exposes a curated SAP development toolset through MCP. Optional companion servers from the same package reach the rest of the landscape: HANA Cloud, Integration Suite, Datasphere, Build Process Automation, the BTP platform, Cloud ALM, and advanced event mesh. Instead of manually switching between chat, terminal commands, repository searches, ADT screens, cockpits, and SAP checks, describe the outcome you want and let the appropriate bundled agent coordinate the available tools.
 
 <p align="center"><strong>💬 Request → 🔎 Inspect → 🧠 Reason → 🧑‍💻 Implement → 🧪 Verify → 📋 Report</strong></p>
 
@@ -131,6 +133,7 @@ The workflow covers ABAP, CDS, RAP, repository analysis, table and query access,
 | ⚙️ | **Build Process Automation operations** | Inspect definitions and instances, unstick failed workflows, work user-task queues, test decisions, and trace business events across all eight BPA APIs. |
 | 🏛️ | **BTP platform administration** | Audit account hierarchy, entitlements and quotas, service instances and keys, destinations, trust and Cloud Connectors on your own `btp` CLI login. |
 | 📡 | **Cloud ALM observability** | Find exception and alert hotspots per DEV/TEST/PROD tier and correlate them with live CPI message logs and SLG1. |
+| 📨 | **Advanced event mesh lifecycle** | Create, resize, upgrade and delete event brokers, configure and monitor queues, clients and bridges over SEMP, and design Event Portal APIs with AsyncAPI export. |
 | 🧩 | **Agents in eleven AI harnesses** | Copilot, Claude Code, opencode and OMP get native agents, Pi gets prompt commands, and every harness gets the skills. |
 | 🔁 | **One logon per runtime** | Parallel tool calls share a single SAP security session instead of opening one per call. |
 | ✍️ | **Edit ABAP safely** | Update supported source, stage reviewed change sets, create transport requests, and run syntax checks before requested activation. |
@@ -183,9 +186,9 @@ The catalog below covers source inspection, data, editing, quality, transports, 
 - Read SLG1 application logs
 - Review and create transport requests
 
-## 🧠 Twelve agents, twenty-two focused skills
+## 🧠 Thirteen agents, twenty-three focused skills
 
-The package ships with twelve custom agents plus twenty-two task-focused Agent Skills:
+The package ships with thirteen custom agents plus twenty-three task-focused Agent Skills:
 
 | | Skill | Best for |
 | --- | --- | --- |
@@ -211,20 +214,21 @@ The package ships with twelve custom agents plus twenty-two task-focused Agent S
 | ⚙️ | `process-automation-development` | Inspecting, testing and operating SAP Build Process Automation: definitions, instances, contexts, logs and errors, stuck instances, user tasks, decisions, process triggers and business events |
 | ☁️ | `btp-platform-administration` | Auditing and operating SAP BTP core platform setup: account hierarchy, entitlements and quotas, Service Manager instances and service keys, destinations, identity and destination trust, Cloud Connectors and principal propagation checks |
 | 📡 | `cloud-alm-operations` | Monitoring, triaging and tracking SAP landscapes with Cloud ALM: monitoring records and analytics, tier hotspots, CPI/SLG1 correlation, feature and transport status, confirmation-gated alert closing |
+| 📨 | `advanced-event-mesh-lifecycle` | Managing SAP Integration Suite, advanced event mesh: broker service lifecycle with operation polling, SEMP configuration, monitoring and actions, Event Portal design objects and AsyncAPI export |
 
 ## 🗺️ How it fits together
 
-Each selected BAS destination or local SAP GUI system becomes its own isolated MCP server identity. The MCP client discovers the live tools and schemas, the add-on routes calls to the correct runtime process, and that process reaches SAP ADT through the selected route over one shared SAP logon. Companion servers (HANA, Integration Suite, Datasphere, Process Automation, BTP, Cloud ALM) are separate stdio MCP processes with their own user-only credentials, so an agent can combine them — for example a Cloud ALM alert, the matching CPI message log, and the ABAP SLG1 entry.
+Each selected BAS destination or local SAP GUI system becomes its own isolated MCP server identity. The MCP client discovers the live tools and schemas, the add-on routes calls to the correct runtime process, and that process reaches SAP ADT through the selected route over one shared SAP logon. Companion servers (HANA, Integration Suite, Datasphere, Process Automation, BTP, Cloud ALM, advanced event mesh) are separate stdio MCP processes with their own user-only credentials, so an agent can combine them — for example a Cloud ALM alert, the matching CPI message log, and the ABAP SLG1 entry.
 
 ## 🧰 Optional full-stack companion MCP servers
 
-ABAP/RAP backend access is provided by this add-on's destination-scoped runtime. For end-to-end SAP development, setup can also add managed companion MCP entries for frontend, CAP, browser validation, read-only HANA inspection, Integration Suite, Datasphere, Build Process Automation, BTP platform administration, and Cloud ALM:
+ABAP/RAP backend access is provided by this add-on's destination-scoped runtime. For end-to-end SAP development, setup can also add managed companion MCP entries for frontend, CAP, browser validation, read-only HANA inspection, Integration Suite, Datasphere, Build Process Automation, BTP platform administration, Cloud ALM, and advanced event mesh:
 
 ```sh
 sap-ai-dev --setup --tools
 ```
 
-The companion entries are optional and are launched through `npx` only when the MCP client starts them. They are marked as managed by `sap-ai-dev-toolkit`, so rerunning setup can update or remove them without touching unrelated MCP servers. The companions shipped in this package (HANA, Integration Suite, Datasphere, Process Automation, BTP, Cloud ALM) use `--ignore-scripts` so the toolkit postinstall wizard cannot run during MCP startup. Each has a dedicated wizard: `sap-ai-dev --setup-integration`, `--setup-datasphere`, `--setup-process-automation`, `--setup-btp`, and `--setup-cloud-alm`.
+The companion entries are optional and are launched through `npx` only when the MCP client starts them. They are marked as managed by `sap-ai-dev-toolkit`, so rerunning setup can update or remove them without touching unrelated MCP servers. The companions shipped in this package (HANA, Integration Suite, Datasphere, Process Automation, BTP, Cloud ALM, advanced event mesh) use `--ignore-scripts` so the toolkit postinstall wizard cannot run during MCP startup. Each has a dedicated wizard: `sap-ai-dev --setup-integration`, `--setup-datasphere`, `--setup-process-automation`, `--setup-btp`, `--setup-cloud-alm`, and `--setup-aem`.
 
 | MCP entry | Package | Launches | Use when the agent needs to |
 | --- | --- | --- | --- |
@@ -238,6 +242,7 @@ The companion entries are optional and are launched through `npx` only when the 
 | `process-automation` | `sap-ai-dev-toolkit` | `sap-ai-process-automation` | Inspect and operate SAP Build Process Automation across all eight BPA APIs: process definitions, workflow instances with contexts, logs and errors, stuck instances, user tasks and the user inbox, decisions, API triggers, automations, process visibility, administration jobs, process starts and business events |
 | `sap-btp` | `sap-ai-dev-toolkit` | `sap-ai-btp` | Audit and operate the BTP core platform through your own `btp login --sso`: account hierarchy, entitlements and quotas, Service Manager instances and service keys, destinations, trust, and Cloud Connectors |
 | `cloud-alm` | `sap-ai-dev-toolkit` | `sap-ai-cloud-alm` | Observe and triage SAP landscapes with SAP Cloud ALM: health, exception and alert hotspots per tier, Integration & Exception Monitoring records, monitoring events with CPI and SLG1 handoffs, analytics, feature and transport status, and confirmation-gated alert closing |
+| `advanced-event-mesh` | `sap-ai-dev-toolkit` | `sap-ai-aem` | Manage SAP Integration Suite, advanced event mesh (Solace): create, resize, upgrade and delete event broker services with operation polling, configure, monitor and act on brokers over SEMP v2, and design Event Portal objects with AsyncAPI export |
 
 Recommended profiles:
 
@@ -465,6 +470,14 @@ The separate `cloud-alm` stdio MCP server connects to SAP Cloud ALM for operatio
 Set it up with **`sap-ai-dev --setup-cloud-alm`**: paste the service key (or the path to its `.json` file); it is verified against the Landscape and Analytics APIs and stored only for you in `~/.config/sap-ai-dev-toolkit/cloud-alm.json` (0600) — never in `mcp.json`. Environment variables win: `CLOUD_ALM_SERVICE_KEY`, or `CLOUD_ALM_URL` + `CLOUD_ALM_TOKEN_URL` + `CLOUD_ALM_CLIENT_ID` + `CLOUD_ALM_CLIENT_SECRET`. `sap-ai-cloud-alm --check` verifies access from the shell.
 
 The **SAP DevOps & Observability Specialist** agent plus the `cloud-alm-operations` skill drive hotspot finding, triage across Cloud ALM, CPI and ABAP, and deployment tracking. Cloud ALM exposes no per-system transport import status, so the agent never infers TEST/PROD arrival from Features data.
+
+### SAP Integration Suite, advanced event mesh
+
+The separate `advanced-event-mesh` stdio MCP server (`sap-ai-aem`) is a native Rust executable bundled prebuilt for Linux, macOS and Windows (x64/arm64); no Rust toolchain is needed. Its 29 tools cover the full lifecycle: Mission Control event broker services (list, inspect, create, rename/lock, resize the message spool, upgrade, delete, and poll operations), SEMP v2 configuration of queues, subscriptions, topic endpoints, client usernames, client and ACL profiles, REST delivery points, bridges and replay logs, SEMP monitoring and actions (clear stats, delete messages, replays, client disconnects), and Event Portal application domains, applications, events, schemas and their versions with version states, messaging-service association and AsyncAPI export. Every write requires an exact confirmation string; credentials in results are always redacted. These tool names do not overlap the Integration Suite companion's `aem_list_brokers` / `aem_list_queues`, so both servers can be registered together.
+
+Set it up with **`sap-ai-dev --setup-aem`**: enter a Cloud API token (Cloud Console → User & Account → Token Management, with Mission Control and Event Portal permissions) and, for brokers without a token, the broker SEMP URL, message VPN, user and password. They are verified online and stored only for you in `~/.config/sap-ai-dev-toolkit/aem.json` (0600) — never in `mcp.json`. With a token, SEMP credentials are fetched per service automatically (`service_id`). Environment variables win: `AEM_API_TOKEN` (+ optional `AEM_API_URL` for regional hosts), `AEM_CONFIG`, or `AEM_SEMP_URL` + `AEM_SEMP_MSG_VPN` + `AEM_SEMP_USERNAME` + `AEM_SEMP_PASSWORD` / `AEM_SEMP_CONFIG`. `sap-ai-aem --check` verifies access from the shell.
+
+The **SAP Advanced Event Mesh Administrator** agent plus the `advanced-event-mesh-lifecycle` skill drive broker provisioning, SEMP configuration and monitoring, Event Portal design, upgrades and decommissioning.
 
 ## 💡 Example requests
 

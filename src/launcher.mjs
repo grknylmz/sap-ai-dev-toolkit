@@ -10,7 +10,7 @@ import { adtBaseUrl, adtPort, detectAdtUrl, discoverSapGuiSystems, hasExplicitPo
 import { binaryTarget, cacheDirectory, downloadBinary, findBinary } from './binary.mjs';
 import { MCPProxy } from './mcp-proxy.mjs';
 import { configuredVersionHandoff, installMcpConfig, npxPackageLauncher, repairManagedMcpConfig } from './mcp-config.mjs';
-import { runBtpSetup, runCloudAlmSetup, runDatasphereSetup, runIntegrationSuiteSetup, runProcessAutomationSetup, runSetup } from './setup.mjs';
+import { runAemSetup, runBtpSetup, runCloudAlmSetup, runDatasphereSetup, runIntegrationSuiteSetup, runProcessAutomationSetup, runSetup } from './setup.mjs';
 import { runHarnessSetup } from './harness-setup.mjs';
 import { resolveConfiguredCloudFoundryDestination } from './cf-destination.mjs';
 import { createTlsServerNameAdtProxy } from './tls-adt-proxy.mjs';
@@ -42,6 +42,7 @@ function usage() {
     '  --setup-process-automation  Only set up the SAP Build Process Automation MCP server: paste a service key, choose technical or user sign-in, verify online',
     '  --setup-btp              Only set up the SAP BTP platform administration MCP server: locate the btp CLI and check your btp login --sso session',
     '  --setup-cloud-alm        Only set up the SAP Cloud ALM MCP server: paste the Cloud ALM API service key, verify online',
+    '  --setup-aem              Only set up the SAP Integration Suite, advanced event mesh MCP server: Cloud API token and/or broker SEMP credentials, verify online',
     '  --datasphere <command>   Run the bundled SAP Datasphere CLI with a tenant URL and browser temporary code',
     '  --list-destinations      List discovered BAS destinations',
     '  --list-destinations --json  Print redacted JSON status',
@@ -384,6 +385,7 @@ async function main() {
   const setupProcessAutomation = hasFlag('--setup-process-automation');
   const setupBtp = hasFlag('--setup-btp');
   const setupCloudAlm = hasFlag('--setup-cloud-alm');
+  const setupAem = hasFlag('--setup-aem');
   const setup = hasFlag('--setup');
   const check = hasFlag('--check');
   const list = hasFlag('--list-destinations');
@@ -393,7 +395,7 @@ async function main() {
     process.stdout.write(usage());
     return;
   }
-  if (!setup && !setupIntegration && !setupDatasphere && !setupProcessAutomation && !setupBtp && !setupCloudAlm && !check && !list && !doctor && !demo && await handOffToConfiguredVersion()) return;
+  if (!setup && !setupIntegration && !setupDatasphere && !setupProcessAutomation && !setupBtp && !setupCloudAlm && !setupAem && !check && !list && !doctor && !demo && await handOffToConfiguredVersion()) return;
   if (demo) {
     await runOfflineDemo();
     return;
@@ -468,6 +470,16 @@ async function main() {
       options.install = (selected, installOptions) => installMcpConfig(selected, { ...installOptions, ...launcher });
     }
     const result = await runCloudAlmSetup(options);
+    if (!result?.skipped) await runHarnessSetup(result?.servers, { env: runtimeEnv, root });
+    return;
+  }
+  if (setupAem) {
+    const options = {};
+    if (hasFlag('--npx')) {
+      const launcher = npxPackageLauncher(pkg.version);
+      options.install = (selected, installOptions) => installMcpConfig(selected, { ...installOptions, ...launcher });
+    }
+    const result = await runAemSetup(options);
     if (!result?.skipped) await runHarnessSetup(result?.servers, { env: runtimeEnv, root });
     return;
   }

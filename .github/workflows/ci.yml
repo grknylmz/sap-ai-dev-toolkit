@@ -24,5 +24,9 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci --ignore-scripts
+      - name: Test native AEM server
+        run: cargo test --locked --manifest-path native/aem/Cargo.toml
+      - name: Build native AEM server
+        run: cargo build --locked --manifest-path native/aem/Cargo.toml
       - name: Run test suite
         run: npm test

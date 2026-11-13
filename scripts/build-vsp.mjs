@@ -1,10 +1,10 @@
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm } from 'node:fs/promises';
 import { promisify } from 'node:util';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { createHash } from 'node:crypto';
 import { ensureGo } from './ensure-go.mjs';
+import { writeDistChecksums } from './dist-checksums.mjs';
 import { UPSTREAM_COMMIT } from '../src/binary.mjs';
 
 const exec = promisify(execFile);
@@ -37,7 +37,6 @@ async function main() {
     await run('patch', ['-p1', '-i', join(root, 'patches', patchFile)], { cwd: source });
   }
   await mkdir(dist, { recursive: true });
-  const checksums = [];
   for (const [goos, goarch, os, arch, extension] of targets) {
     const output = join(dist, `vsp-${os}-${arch}${extension}`);
     await exec(goPath, ['build', '-trimpath', '-ldflags', `-s -w -X main.Commit=${commit}`, '-o', output, './cmd/vsp'], {
@@ -45,10 +44,8 @@ async function main() {
       env: { ...process.env, CGO_ENABLED: '0', GOOS: goos, GOARCH: goarch },
       stdio: 'inherit'
     });
-    const bytes = await (await import('node:fs/promises')).readFile(output);
-    checksums.push(`${createHash('sha256').update(bytes).digest('hex')}  ${output.slice(dist.length + 1)}`);
   }
-  await writeFile(join(dist, 'checksums.txt'), `${checksums.join('\n')}\n`);
+  await writeDistChecksums(dist, targets.map(([, , os, arch, ext]) => `vsp-${os}-${arch}${ext}`));
   console.error(`Built ${targets.length} runtime executables at ${dist}`);
 }
 

@@ -12,7 +12,12 @@ test('packagedBinaryAssets lists every platform the platformMap supports', () =>
     'vsp-linux-arm64',
     'vsp-darwin-x64',
     'vsp-darwin-arm64',
-    'vsp-win32-x64.exe'
+    'vsp-win32-x64.exe',
+    'sap-ai-aem-linux-x64',
+    'sap-ai-aem-linux-arm64',
+    'sap-ai-aem-darwin-x64',
+    'sap-ai-aem-darwin-arm64',
+    'sap-ai-aem-win32-x64.exe'
   ]);
 });
 
@@ -34,7 +39,12 @@ test('missingDistBinaries reports only assets without a checksum entry', async (
       'vsp-linux-arm64',
       'vsp-darwin-x64',
       'vsp-darwin-arm64',
-      'vsp-win32-x64.exe'
+      'vsp-win32-x64.exe',
+      'sap-ai-aem-linux-x64',
+      'sap-ai-aem-linux-arm64',
+      'sap-ai-aem-darwin-x64',
+      'sap-ai-aem-darwin-arm64',
+      'sap-ai-aem-win32-x64.exe'
     ]);
   } finally {
     await rm(directory, { recursive: true, force: true });

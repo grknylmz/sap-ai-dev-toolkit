@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { installMcpConfig, npxMcpLauncher } from '../src/mcp-config.mjs';
-import { adtCandidate, parseSapClientList, runBtpSetup, runCloudAlmSetup, runDatasphereSetup, runProcessAutomationSetup, runSetup } from '../src/setup.mjs';
+import { adtCandidate, parseSapClientList, runAemSetup, runBtpSetup, runCloudAlmSetup, runDatasphereSetup, runProcessAutomationSetup, runSetup } from '../src/setup.mjs';
 import { parseIntegrationServiceKey } from '../src/integration-config.mjs';
 import { storeIntegrationKey } from '../src/integration-credentials.mjs';
 import { OPTIONAL_COMPONENT_KEYS } from '../src/integration-optional-config.mjs';
@@ -142,6 +142,7 @@ async function assertUserCopilotAssets(home) {
     'abap-development',
     'abap-runtime-analysis',
     'abap-testing-quality',
+    'advanced-event-mesh-lifecycle',
     'btp-platform-administration',
     'bw-datasphere-migration',
     'cds-development',
@@ -174,6 +175,7 @@ async function assertUserClaudeAssets(home) {
     'abap-runtime-debugger.md',
     'hana-cloud-hdi-specialist.md',
     'rap-service-developer.md',
+    'sap-advanced-event-mesh-administrator.md',
     'sap-btp-infrastructure-admin.md',
     'sap-bw-datasphere-migration-specialist.md',
     'sap-datasphere-developer.md',
@@ -187,7 +189,7 @@ async function assertUserClaudeAssets(home) {
   assert.match(architect, /^---\nname: [^\n]+\ndescription: [^\n]+\n---\n/s);
   assert.doesNotMatch(architect, /(^|\n)(target|user-invocable):/);
   const skillNames = (await readdir(join(claudeRoot, 'skills'))).sort();
-  assert.equal(skillNames.length, 22);
+  assert.equal(skillNames.length, 23);
   for (const skillName of skillNames) {
     assert.equal((await stat(join(claudeRoot, 'skills', skillName, 'SKILL.md'))).isFile(), true);
   }
@@ -892,10 +894,10 @@ test('global postinstall completes BAS selection before default Copilot asset in
   assert.equal(accepted.assetsAnswerSent, true, accepted.stdout);
   const acceptLogs = `${accepted.stdout}\n${accepted.stderr}`;
   assert.ok(acceptLogs.indexOf('Install bundled agents and skills for') > acceptLogs.indexOf('Configured 1 MCP server'), acceptLogs);
-  assert.match(acceptLogs, /GitHub Copilot: 34 files installed or updated in [^\n]*\.copilot; 0 already current/);
-  assert.match(acceptLogs, /Claude Code: 34 files installed or updated in [^\n]*\.claude; 0 already current/);
-  assert.match(acceptLogs, /Installed 68 files across 2 harnesses/);
-  assert.ok(acceptLogs.indexOf('Installation configuration summary') > acceptLogs.indexOf('Installed 68 files across 2 harnesses'), acceptLogs);
+  assert.match(acceptLogs, /GitHub Copilot: 36 files installed or updated in [^\n]*\.copilot; 0 already current/);
+  assert.match(acceptLogs, /Claude Code: 36 files installed or updated in [^\n]*\.claude; 0 already current/);
+  assert.match(acceptLogs, /Installed 72 files across 2 harnesses/);
+  assert.ok(acceptLogs.indexOf('Installation configuration summary') > acceptLogs.indexOf('Installed 72 files across 2 harnesses'), acceptLogs);
   assert.ok(acceptLogs.includes(`MCP config file: ${config}`), acceptLogs);
   assert.ok(acceptLogs.includes('Destination: BAS · alpha-system · client 100 · Basic'), acceptLogs);
   assert.ok(acceptLogs.split(/\r?\n/).some(line => line.trim() === `Launch: stdio · ${globalLauncher}`), acceptLogs);
@@ -913,12 +915,12 @@ test('global postinstall completes BAS selection before default Copilot asset in
   assert.equal(extended.code, 0, `${extended.stdout}\n${extended.stderr}`);
   assert.equal(extended.assetsAnswerSent, true, extended.stdout);
   const extendedLogs = `${extended.stdout}\n${extended.stderr}`;
-  assert.match(extendedLogs, /Cursor: 22 files installed or updated in [^\n]*\.cursor; 0 already current/);
-  assert.match(extendedLogs, /Installed 90 files across 3 harnesses/);
+  assert.match(extendedLogs, /Cursor: 23 files installed or updated in [^\n]*\.cursor; 0 already current/);
+  assert.match(extendedLogs, /Installed 95 files across 3 harnesses/);
   await assertUserCopilotAssets(extendedHome);
   await assertUserClaudeAssets(extendedHome);
   const cursorSkills = (await readdir(join(extendedHome, '.cursor', 'skills'))).sort();
-  assert.equal(cursorSkills.length, 22);
+  assert.equal(cursorSkills.length, 23);
   await assert.rejects(stat(join(extendedHome, '.cursor', 'agents')), { code: 'ENOENT' });
 
 });
@@ -1021,9 +1023,9 @@ test('non-TTY postinstall honors the harness environment override', async () => 
     assert.match(logs, /Installing bundled agents and skills for Claude Code, Gemini CLI, Oh My Pi \(OMP\), Cline, Roo Code, Windsurf \/ Devin Desktop by default because no interactive terminal is available/);
     await assertUserClaudeAssets(directory);
     const geminiSkills = (await readdir(join(directory, '.gemini', 'skills'))).sort();
-    assert.equal(geminiSkills.length, 22);
+    assert.equal(geminiSkills.length, 23);
     for (const root of [join(directory, '.omp', 'agent'), join(directory, '.cline'), join(directory, '.roo'), join(directory, 'xdg-config', 'devin')]) {
-      assert.equal((await readdir(join(root, 'skills'))).length, 22, root);
+      assert.equal((await readdir(join(root, 'skills'))).length, 23, root);
       assert.equal((await stat(join(root, 'skills', 'abap-development', 'SKILL.md'))).isFile(), true, root);
     }
     await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
@@ -1080,10 +1082,10 @@ test('postinstall harness selection honors the environment override in a live TT
   const logs = `${result.stdout}\n${result.stderr}`;
   assert.equal(result.code, 0, logs);
   assert.equal(result.assetsAnswerSent, true, logs);
-  assert.match(logs, /Gemini CLI: 22 files installed or updated in [^\n]*\.gemini; 0 already current/);
-  assert.match(logs, /Installed 22 files across 1 harness/);
+  assert.match(logs, /Gemini CLI: 23 files installed or updated in [^\n]*\.gemini; 0 already current/);
+  assert.match(logs, /Installed 23 files across 1 harness/);
   const geminiSkills = (await readdir(join(directory, '.gemini', 'skills'))).sort();
-  assert.equal(geminiSkills.length, 22);
+  assert.equal(geminiSkills.length, 23);
   await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
   await assert.rejects(stat(join(directory, '.claude')), { code: 'ENOENT' });
 });
@@ -1558,6 +1560,44 @@ test('runCloudAlmSetup stores a verified service key and adds the MCP entry', as
   assert.equal((await stat(path)).mode & 0o777, 0o600);
   assert.doesNotMatch(output.text(), /calm-setup-secret-value/);
   assert.match(output.text(), /Configured the SAP Cloud ALM MCP server/);
+});
+
+test('runAemSetup stores verified credentials and adds the MCP entry', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'aem-setup-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = outputStream();
+  const installs = [];
+  const seen = [];
+  const pending = runAemSetup({
+    env: { HOME: home, XDG_CONFIG_HOME: join(home, '.config') },
+    input,
+    output,
+    install: async (selected, options) => {
+      installs.push([selected, options.sapDevelopmentServers]);
+      return { path: join(home, 'mcp.json'), servers: {} };
+    },
+    verifyAem: async record => {
+      seen.push(record);
+      return { ok: true, message: 'Cloud API reachable' };
+    }
+  });
+  for (const keys of ['\r', 'tok-secret\r', '\r']) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    input.write(keys);
+  }
+  const result = await pending;
+  assert.equal(result.skipped, undefined);
+  assert.deepEqual(installs, [[[], ['advanced-event-mesh']]]);
+  const expected = { api: { url: 'https://api.solace.cloud', token: 'tok-secret' } };
+  assert.deepEqual(seen, [expected]);
+  const path = join(home, '.config', 'sap-ai-dev-toolkit', 'aem.json');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), expected);
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  assert.doesNotMatch(output.text(), /tok-secret/);
+  assert.match(output.text(), /Configured the SAP Integration Suite, advanced event mesh MCP server/);
 });
 
 test('runDatasphereSetup interactive path stores the rotated refresh token', async t => {
