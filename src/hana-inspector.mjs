@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { resolveHanaReadOnlyConfig } from './hana-config.mjs';
-import { connectReadOnlyHana } from './hana-database.mjs';
+import { connectHana } from './hana-database.mjs';
 import { registerHanaTools } from './hana-tools.mjs';
 
 const packageMetadata = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
@@ -21,7 +21,7 @@ function publicConnectionSummary(config) {
 }
 
 /** Create an injectable server runtime for tests and the stdio executable. */
-export function createHanaInspector({ env = process.env, driver, databaseFactory = connectReadOnlyHana } = {}) {
+export function createHanaInspector({ env = process.env, driver, databaseFactory = connectHana } = {}) {
   const config = resolveHanaReadOnlyConfig(env);
   const summary = publicConnectionSummary(config);
   let databasePromise;

@@ -125,7 +125,7 @@ export class HanaDatabase {
   }
 }
 
-export async function connectReadOnlyHana(config, { driver } = {}) {
+export async function connectHana(config, { driver, queryTimeoutMs } = {}) {
   let selectedDriver = driver;
   if (!selectedDriver) {
     try {
@@ -139,7 +139,7 @@ export async function connectReadOnlyHana(config, { driver } = {}) {
   }
 
   const connection = selectedDriver.createConnection();
-  const database = new HanaDatabase(connection, config);
+  const database = new HanaDatabase(connection, config, { queryTimeoutMs });
   try {
     await database.connect();
     return database;

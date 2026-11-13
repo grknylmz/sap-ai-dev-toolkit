@@ -76,6 +76,42 @@ export const SAP_DEVELOPMENT_MCP_SERVERS = Object.freeze([
     bin: 'sap-ai-integration',
     ignoreScripts: true,
     priority: 'optional'
+  }),
+  Object.freeze({
+    id: 'datasphere',
+    name: 'SAP Datasphere',
+    description: 'Full SAP Datasphere suite: spaces, users, roles, database users, connections, modeling objects and packages, task chains, replication flows, Data Marketplace, consumption data and Open SQL, using a Datasphere OAuth client from the host environment or saved with sap-ai-dev --setup-datasphere.',
+    packageName: 'sap-ai-dev-toolkit',
+    bin: 'sap-ai-datasphere',
+    ignoreScripts: true,
+    priority: 'optional'
+  }),
+  Object.freeze({
+    id: 'process-automation',
+    name: 'SAP Build Process Automation',
+    description: 'Inspect process definitions, running, failed and stuck workflow instances, user-task queues and decisions; start processes, send business events, and administer instances and tasks, using a Process Automation service key from the host environment or saved with sap-ai-dev --setup-process-automation.',
+    packageName: 'sap-ai-dev-toolkit',
+    bin: 'sap-ai-process-automation',
+    ignoreScripts: true,
+    priority: 'optional'
+  }),
+  Object.freeze({
+    id: 'sap-btp',
+    name: 'SAP BTP platform administration',
+    description: 'Inspect the global account hierarchy, entitlements and quotas, Service Manager instances and service keys, destinations, identity and destination trust, and Cloud Connectors, and create service instances and keys, through your own btp CLI login (btp login --sso) set up with sap-ai-dev --setup-btp.',
+    packageName: 'sap-ai-dev-toolkit',
+    bin: 'sap-ai-btp',
+    ignoreScripts: true,
+    priority: 'optional'
+  }),
+  Object.freeze({
+    id: 'cloud-alm',
+    name: 'SAP Cloud ALM',
+    description: 'Observe and triage SAP landscapes with SAP Cloud ALM: health, exception and alert hotspots per DEV/TEST/PROD tier, integration and exception monitoring records, monitoring events with CPI message log and SLG1 handoffs, analytics queries, feature and transport deployment status, and confirmation-gated alert closing, using a Cloud ALM API service key from the host environment or saved with sap-ai-dev --setup-cloud-alm.',
+    packageName: 'sap-ai-dev-toolkit',
+    bin: 'sap-ai-cloud-alm',
+    ignoreScripts: true,
+    priority: 'optional'
   })
 ]);
 
@@ -608,7 +644,7 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
   // Values are full npx package specs; a bare version would become --package=<version>.
   const selfSpec = selfVersion ? `sap-ai-dev-toolkit@${selfVersion}` : '';
   const companionVersions = selfSpec
-    ? { 'sap-ai-dev-toolkit': selfSpec, 'hana-cloud-inspector': selfSpec, 'integration-suite': selfSpec }
+    ? { 'sap-ai-dev-toolkit': selfSpec, 'hana-cloud-inspector': selfSpec, 'integration-suite': selfSpec, 'datasphere': selfSpec, 'process-automation': selfSpec, 'sap-btp': selfSpec, 'cloud-alm': selfSpec }
     : {};
   const generated = {
     ...buildMcpEntries(destinations, env),

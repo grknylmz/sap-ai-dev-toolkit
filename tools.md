@@ -353,3 +353,141 @@ Primary procedures for new artifacts: [API design](https://github.com/SAP-docs/b
 The existing Integration Architect/Developer agents and skills cover discover → reuse → dependencies → approved author/configure → retained save → selected-version validation → private snapshot/readiness → separately approved deploy/native promotion → independent target verification → bounded observation/native alert readiness → diagnosis → separately approved recovery/retirement. No extra operator persona is installed.
 
 Use `node scripts/check-live-integration.mjs --window-minutes 60 --top 3 --json` for connected read-only verification. It permits management GETs and exact configured token POSTs only, projects diagnostic metadata and reports absent optional adapters as `live_unverified`. It never validates/saves/imports/deploys/configures, probes consumer APIs, consumes/retries messages, deletes, or asserts native collection/delivery/promotion success. Exit 0 is read/schema execution evidence, not landscape health. `npm run test:live:integration` is the distinct mutating fixture runner and needs separate explicit approval.
+
+## Separate optional SAP Datasphere server
+
+The `datasphere` companion starts `sap-ai-datasphere` as a separate stdio MCP server. It does not use the BAS proxy or a destination prefix. Authentication is a Datasphere OAuth client from System > App Integration: **technical** (client credentials) or **interactive** (authorization code + refresh token; stored user-only in `~/.config/sap-ai-dev-toolkit/datasphere.json`). Technical clients reach only `configuration certificates`, `marketplace`, `objects`, `spaces connections` and `tasks` CLI commands; everything else needs interactive auth. Every write checks an exact confirmation string before any tenant call; secrets are write-only and results are redacted.
+
+- `datasphere_connection_info` / `datasphere_list_spaces` / `datasphere_list_assets` / `datasphere_get_asset_metadata` — identity and Consumption catalog access; verification is read-only and never returns credentials.
+- `datasphere_query_relational` / `datasphere_query_analytical` / `datasphere_reconcile` — consumption reads with `$select/$filter/$orderby/$top/$skip` (relational also `$count`), parameters as `(Name='value')/Set` segments, and baseline reconciliation with tolerances.
+- `datasphere_list_objects` / `datasphere_read_object` / `datasphere_create_object` / `datasphere_update_object` / `datasphere_delete_object` / `datasphere_export_package` — the CSN object lifecycle through the pinned `@sap/datasphere-cli`; updates are guarded by `expected_changed_on` and every result includes a read-back (`status`, `deployedOn`, `changedOn`).
+- `datasphere_list_connections` / `datasphere_validate_connection` / `datasphere_list_task_logs` / `datasphere_get_task_log` / `datasphere_run_task_chain` / `datasphere_retry_task_chain` / `datasphere_cancel_task_chain` / `datasphere_replication_flow` — connections, task chains and replication flows (Tasks REST API plus CLI).
+- `datasphere_list_data_providers` / `datasphere_list_data_products` / `datasphere_read_data_product` / `datasphere_create_data_product` / `datasphere_set_data_product_status` / `datasphere_install_data_product` — Data Marketplace data products end to end.
+- `datasphere_build_local_table_csn` — pure BW/Data-Dictionary field list → local-table CSN conversion (`/BIC/`-stripping, DDIC type mapping, duplicate detection).
+- `datasphere_list_commands` / `datasphere_describe_command` / `datasphere_run_read_command` / `datasphere_run_command` — the discovery-driven generic surface for every other CLI command (spaces, users, roles, dbusers, workload, certificates, future commands), with `usable_with_current_auth` flags, managed-option rejection and `x-user-to-confirm` → automatic `--force`. Command lists omit parameters by default; use `include_parameters` with a prefix or describe one command for its options.
+- `datasphere_sql_query` / `datasphere_sql_execute` — Open SQL schema access through a configured Datasphere database user (`DATASPHERE_SQL_*`); queries are single `SELECT` statements wrapped with `LIMIT`, executes are confirmation-gated single statements (including `"DWC_GLOBAL"` data-lake procedure calls).
+
+The CLI child processes run with an environment allowlist and per-run `secrets.json` in a private state directory; the `login --authorization-flow` fallback applies only to CLI cache initialization. BW → Datasphere migrations reuse the read-only ABAP destination tools (`GetTable`, `RunQuery`) for inventory and baselines; BW itself stays strictly read-only.
+
+## Separate optional SAP Build Process Automation server
+
+The `process-automation` companion starts `sap-ai-process-automation` as a separate stdio MCP server with 51 tools covering all eight SAP Build Process Automation APIs of the Business Accelerator Hub package plus business events. It does not use the BAS proxy or a destination prefix. Authentication is a service key of a `process-automation-service` instance: **technical** (XSUAA client credentials; error responses include SAP's message) or **interactive** (authorization code + refresh token with the same client, stored user-only in `~/.config/sap-ai-dev-toolkit/process-automation.json`; error bodies are withheld, messages carry the HTTP status). Every write checks an exact confirmation string before any tenant call; results are redacted, contexts and outputs above 48 KiB are replaced by their byte size and top-level keys.
+
+Optional access settings: `PROCESS_AUTOMATION_API_KEY` (environment API key from Control Tower > Environments > API Keys; stored as `apikey`) and `PROCESS_AUTOMATION_ENVIRONMENT_ID` (default environment for API triggers and process starts; stored as `environmentid`). `sap-ai-dev --setup-process-automation` asks for both after verification (Enter skips); environment variables override stored values. The automation tools (`irpa-api-key`, scopes `TRIGGER_READ`, `TRIGGER_EXECUTE`, `BAM_DOWNLOAD`, `JOB_DATA_DOWNLOAD`) fail before any tenant call without an API key; Unified API triggers and `bpa_start_instance` send it as `api-key` only when configured. Workflow API status filters are sent as repeated parameters (OR-combined). Asynchronous operations (definition undeploy, purge, bulk instance delete, bulk task update) return `job_id` for `bpa_get_job`. Exports write to a new local file (absolute path, never overwritten, mode 0600).
+
+Connection
+
+- `bpa_connection_info` — `api_host`, `uaa_host`, `auth`, `source`, `task_attribution`, `api_key_configured`, `environment_id`; optional read-only Workflow API verification.
+
+Workflow definitions (`/public/workflow/rest/v1`)
+
+- `bpa_list_process_definitions` — latest version of each deployed definition; `orderby`, `top`, `skip`.
+- `bpa_get_process_definition` — one definition (latest or `version`) with optional `model`, `sample_start_context` and `versions`.
+- `bpa_delete_process_definition` — undeploy all versions of a classic (SAP Business Application Studio) workflow definition and delete its instances (`cascade` optional); asynchronous, returns `job_id`; confirmation `DELETE BPA DEFINITION <definition_id>`.
+- `bpa_list_task_definitions` — user-task definitions, optionally with custom attribute definitions.
+- `bpa_delete_form` — undeploy all versions of a classic workflow form; confirmation `DELETE BPA FORM <form_id>`.
+
+Instances
+
+- `bpa_list_instances` — filters by definition/version, status (OR-combined; without a status BPA returns RUNNING and ERRONEOUS), business key, contained text, subject, starter, start/completion time ranges, root/parent instance and project; newest first by default.
+- `bpa_get_instance` — one instance with includes `context` (or one `context_path` fragment), `outputs` (COMPLETED only), `execution_logs` (`log_limit`), `error_messages` (default), `attributes`, `roles`.
+- `bpa_find_stuck_instances` — erroneous (first 10 with error messages), suspended and running instances older than `running_longer_than_minutes`.
+- `bpa_trace_process` — exactly one of `instance_id`, `business_key`, `contains_text`; per instance its status, error messages, all tasks and the last 20 execution log entries.
+- `bpa_start_instance` — start the latest version with a start context (optional `environment_id`); confirmation `START BPA PROCESS <definition_id>`.
+- `bpa_change_instance_status` — cancel/suspend/resume/retry after checking the current status (`cascade` for subflows); confirmation `CANCEL BPA INSTANCE <instance_id>`, `SUSPEND BPA INSTANCE <instance_id>`, `RESUME BPA INSTANCE <instance_id>` or `RETRY BPA INSTANCE <instance_id>`.
+- `bpa_update_instance_context` — merge (PATCH) or replace (PUT) the context, e.g. before retry; suspend first; confirmation `MERGE BPA CONTEXT <instance_id>` or `REPLACE BPA CONTEXT <instance_id>`.
+- `bpa_update_instance_roles` — overwrite instance viewer/admin/context viewer/context admin users and groups (max 100 each); confirmation `UPDATE BPA ROLES <instance_id>`.
+- `bpa_delete_instances` — permanently delete up to 1000 instances; asynchronous for larger sets, returns `job_id`; confirmation `DELETE BPA INSTANCES <count>` (count of unique ids).
+- `bpa_send_message` — deliver a message to classic workflows waiting in an intermediate message event, by instance id, definition and/or business key; confirmation `SEND BPA MESSAGE <message_definition_id>`. Processes built in SAP Build resume through `bpa_execute_api_trigger` with `execution_id`.
+
+User tasks
+
+- `bpa_list_tasks` — task instances (statuses `READY`, `RESERVED`, `COMPLETED`, `CANCELED`; open by default), filters by priority, instance, definitions, activity, recipients, processor, text and time ranges.
+- `bpa_get_task` — one task with its context (default) and optional attributes.
+- `bpa_complete_task` — complete an open (READY/RESERVED) task with optional `decision` (form button id) and context; confirmation `COMPLETE BPA TASK <task_id>`.
+- `bpa_update_tasks` — administratively change up to 100 tasks (subject, description, recipients, processor, due date, priority, confidence level, UI URI); asynchronous, returns `job_id`; confirmation `UPDATE BPA TASKS <count>`.
+- `bpa_update_task_context` — merge a payload into a task's stored context; confirmation `UPDATE BPA TASK CONTEXT <task_id>`.
+
+Administration / jobs
+
+- `bpa_export_workflow_data` — ZIP export (`ALL`, `TASK_INSTANCES`, `WORKFLOW_INSTANCES`, `ALL_DEFINITIONS`) to a new local `output_file`.
+- `bpa_purge_workflow_data` — irreversibly erase all workflow definitions, instances and forms of the tenant; asynchronous, returns `job_id`; confirmation `PURGE ALL BPA WORKFLOW DATA`.
+- `bpa_get_job` — status of an asynchronous workflow job.
+
+Inbox (`/public/workflow/odata/v1/tcm`; needs `ProcessAutomationParticipant`; shows the signed-in user's inbox, with technical auth the technical client's, normally empty)
+
+- `bpa_inbox_list_tasks` — typed filters (status `READY`/`RESERVED`/`IN_PROGRESS`/`EXECUTED`, task definition, priority, dates, custom attributes), up to two sort keys, `count_only`.
+- `bpa_inbox_get_task` — one task by `origin` (`NA` for BPA) and `instance_id`, with optional task definition, workflow logs, description and custom attributes.
+- `bpa_inbox_list_task_definitions` — task definitions (or `count_only`), or the custom attribute definitions of one.
+- `bpa_inbox_task_action` — claim, release or forward (`forward_to`); confirmation `CLAIM BPA INBOX TASK <instance_id>`, `RELEASE BPA INBOX TASK <instance_id>` or `FORWARD BPA INBOX TASK <instance_id>`.
+- `bpa_inbox_list_substitution_rules` — the user's rules (`my_rules`) or rules where the user substitutes (`substituting_for`).
+- `bpa_inbox_create_substitution_rule` — `RECEIVE_TASKS` (planned, needs `end_date`) or `TAKE_OVER`; confirmation `CREATE BPA SUBSTITUTION FOR <user>`.
+- `bpa_inbox_change_substitution_rule` — enable, disable or delete; confirmation `ENABLE BPA SUBSTITUTION <rule_id>`, `DISABLE BPA SUBSTITUTION <rule_id>` or `DELETE BPA SUBSTITUTION <rule_id>`.
+
+Decisions (`/public/rule/runtime/rest/v2/rule-services`)
+
+- `bpa_invoke_decision` — evaluate a deployed rule service (optional `revision`/`version`); no side effects. Rule-service ids come from the deployed project; there is no list API.
+- `bpa_test_decision` — sequential subset-match test cases (object → `Result[0]`, array → `Result`); a per-case HTTP error is recorded and the run continues.
+
+API triggers (Unified API `/public/unified/v1`; `api-key` scope `trigger_read`/`trigger_execute` when configured; `environment_id` defaults to `PROCESS_AUTOMATION_ENVIRONMENT_ID`)
+
+- `bpa_list_api_triggers` — process API triggers of an environment (`filter`, `expand`).
+- `bpa_get_api_trigger` — one trigger by UUID or `projectId.triggerId` (the latter needs an environment).
+- `bpa_execute_api_trigger` — start a process with `inputs` and optional `business_key`, or resume a "Wait for an API Call" step with `execution_id` (the process instance id); confirmation `EXECUTE BPA TRIGGER <trigger_uid>`.
+
+Automations (Automation Execution `/public/irpa/runtime/v1` and Monitoring `/public/irpa/monitoring/v1`; environment API key required)
+
+- `bpa_list_automation_triggers` / `bpa_get_automation_trigger` — automation API triggers (`TRIGGER_READ`).
+- `bpa_list_automation_jobs` — jobs (runs) of a trigger, or one job by `job_uid` (`TRIGGER_READ`).
+- `bpa_start_automation` — start a job with `input` and optional `invocation_context` (`TRIGGER_EXECUTE`); confirmation `START BPA AUTOMATION <trigger_uid>`.
+- `bpa_export_automation_data` — BAM data (`bam`, `BAM_DOWNLOAD`) or archived jobs (`archived_jobs`, `JOB_DATA_DOWNLOAD`) as CSV, inline or to a new local `output_file`.
+
+Visibility scenarios (`/public/visibility/runtime/rest/v1`)
+
+- `bpa_list_visibility_scenarios` / `bpa_get_visibility_scenario` — deployed scenario definitions, optionally with model and the 20 most recent data-processing executions (`PVAdmin`).
+- `bpa_process_visibility_scenario` — trigger asynchronous processing of a scenario (`PVAdmin`); confirmation `PROCESS BPA VISIBILITY <scenario_id>`.
+- `bpa_clear_visibility_data` — clear processed data of scenario instances (`PVAdmin`); confirmation `CLEAR BPA VISIBILITY DATA <scenario_id>`.
+- `bpa_list_visibility_events` — acquired events (`kind: events`, max 5000; `PVAdmin` or `PVTenantOperator`) or data-acquisition errors (`kind: errors`; `PVAdmin`).
+- `bpa_push_visibility_events` — push up to 1000 process events (`PVEventSender`); confirmation `PUSH BPA VISIBILITY EVENTS <count>`.
+
+Visibility workspace (`/public/visibility/runtime/odata/v1`; `PVOperator` or `PVRestrictedOperator`)
+
+- `bpa_list_visibility_workspace_scenarios` — scenarios the user can access.
+- `bpa_list_visibility_instances` — scenario instances with OData `filter`, `select`, `orderby`, `expand`, `search`, paging and inline count.
+- `bpa_get_visibility_instance` — one scenario instance with optional phases, paths and steps.
+
+Business events
+
+- `bpa_send_business_event` — CloudEvents POST to `/internal/be/v1/events` for event-triggered processes; confirmation `SEND BPA EVENT <type>`.
+
+## Separate optional SAP BTP platform administration server
+
+The `sap-btp` companion starts `sap-ai-btp` as a separate stdio MCP server with 15 tools. It does not use the BAS proxy or a destination prefix. It runs the user's installed SAP BTP CLI (`BTP_CLI`, else the location saved by `sap-ai-dev --setup-btp` in `~/.config/sap-ai-dev-toolkit/btp.json`, else `btp` on PATH) with the user's own `btp login --sso` session (`BTP_CLIENTCONFIG` selects a non-default CLI config); the toolkit stores no credentials. CLI calls are serialized, never run `btp login` or `btp target`, and time out after 120 s. An expired session fails every tool with `btp login --sso` guidance. Results pass secret redaction; service-key credentials, instance parameters and destination secrets are always redacted.
+
+- `btp_connection_info` — CLI path, source and config file; `verify: true` runs `btp --version` and reads the global account.
+- `btp_get_account_hierarchy` — global account, directories (with `manages_entitlements`) and subaccounts; `name_contains`, `top`.
+- `btp_list_entitlements` — global account, `directory` or `subaccount` scope; subaccount scope lists that subaccount's assignments; other scopes list entitled plans with remaining amounts and, with `service`, every assignment of that service. Icons and data centers are dropped.
+- `btp_check_quota` — `available`, `not_entitled` (plan absent from the subaccount's Service Manager catalog in the default, Cloud Foundry and Kubernetes environments), `insufficient_quota` (category `SERVICE`: existing instances of the plan versus the assigned amount) or `assignment_not_ready`.
+- `btp_list_service_instances` / `btp_get_service_instance` — instances with offering/plan names, platform, CF org/space, last operation and service keys; `include_parameters` returns redacted parameters when the offering allows it.
+- `btp_list_service_keys` / `btp_get_service_key` — keys never include credentials in lists; the get tool redacts secrets, X.509 keys and URL passwords.
+- `btp_list_destinations` / `btp_get_destination` — subaccount or service-instance destinations; lists never project secret properties.
+- `btp_get_trust` — identity provider trusts and the active destination trust certificate with `days_left`.
+- `btp_list_cloud_connectors` — Cloud Connector Info API of a Connectivity `api_access` instance (client-secret service key read in-process; its credentials never appear in results).
+- `btp_check_destination` — pass/warn/fail/unknown checks: `type`, `url`, `authentication_properties`, `proxy_type`, `identity_provider_trust`, `cloud_connector_principal_propagation` (always unknown), `destination_trust`, `cloud_connector`, `exposed_system`.
+- `btp_create_service_instance` — Service Manager instance after `btp_check_quota`; parameters through a private 0600 temporary file; confirmation `CREATE BTP SERVICE INSTANCE <name>`.
+- `btp_create_service_key` — binding for an instance id or name; confirmation `CREATE BTP SERVICE KEY <name>`. A create that times out returns `created: "unknown"` instead of an error.
+
+## Separate optional SAP Cloud ALM server
+
+The `cloud-alm` companion starts `sap-ai-cloud-alm` as a separate stdio MCP server with 11 tools over the SAP Cloud ALM API. It does not use the BAS proxy or a destination prefix. Authentication is a service key of a "SAP Cloud ALM API" instance (plan `standard`) with XSUAA client credentials only (SAP documents no user grant); x509-only bindings are rejected. `sap-ai-dev --setup-cloud-alm` verifies the key against the Landscape and Analytics APIs and stores it user-only in `~/.config/sap-ai-dev-toolkit/cloud-alm.json`; `CLOUD_ALM_*` environment variables win. Scopes are instance authorities (`calm-api.landscape.read`, `calm-api.analytics.read`, `calm-api.logs.read`, `calm-api.exm.read`, `calm-api.integration-monitoring.read`, `calm-api.hm.read`, `calm-api.iep.read`, `calm-api.features.read`, `calm-api.event-situations.write`, …). Analytics and logs allow 100 requests per minute.
+
+- `calm_connection_info` — `api_host`, `token_host`, `auth`, `source`; `verify: true` checks Landscape and Analytics API access.
+- `calm_list_landscape` — landscape objects (`/calm-landscape/v1/landscapeObjects`) with `lmsId`, `role`, `serviceType`, `systemNumber`, `logicalSystems`; up to 500 per page, `next_offset`.
+- `calm_get_landscape_health` — for at most 30 services (by `roles`, object type, service type, name or `lms_ids`) over 1–744 hours: EXM exception counts per category, Health Monitoring metrics with critical/warning status, EVENTS events/alerts/event situations; services grouped into role tiers in the requested order; a failing source reports `ok: false` and its totals are `null`.
+- `calm_list_monitoring_records` — Raw Data Outbound Logs (`/calm-logs/v1/logs`, OTLP flattened) for `im` (category labels required), `exm.im`, `exm.jam`, `iep` (one service), `jam.run` (≤27 services), `bsm` (one service, up to 31 days); other providers are limited to 60-minute windows; `total_count` from `x-total-count`, `next_offset` paging.
+- `calm_triage_incident` — one service over 1–60 minutes: EVENTS counts, `iep` events, `exm.im` errors, optional `im` messages (each section fails independently), plus `handoff.cpi` (`cpi_list_message_logs` window) and `handoff.abap` (SID, system number, clients and `get_application_log` dates padded one day for server-local SLG1 dates).
+- `calm_list_analytics_providers` / `calm_describe_analytics_provider` — authorized analytics providers; fields with type, filterability and the first 100 attribute values.
+- `calm_query_analytics` — one analytics query (`format: table`, UTC) over 1–744 hours; `aggregate: sum` (counts), `max` (percentage measures) or `none`; up to 500 rows with `truncated`.
+- `calm_list_features` — Features OData v4 (`/calm-features/v1/Features`) filtered by project, release, status codes and change date, newest first, with transport ids and optional status catalog.
+- `calm_get_feature` — exactly one of `feature_uuid`, `display_id` (with task assignments and references) or `transport_id` (features linked through `Transports` / `TransportReferences`). Cloud ALM exposes no per-system import status.
+- `calm_close_event_situation` — `PUT /calm-event-situations/v1/event-situations/{id}` or `/externalid/{externalId}` with state `CLOSED` and `X-Calm-Notification`; confirmation `CLOSE CALM EVENT SITUATION <event_situation_id>` or `CLOSE CALM EVENT SITUATION BY EXTERNAL ID <external_id>`.

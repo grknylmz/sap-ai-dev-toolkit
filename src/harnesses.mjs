@@ -92,6 +92,36 @@ User request: $ARGUMENTS
 `);
 }
 
+const OMP_HOST_NOTE = '**OMP host note.** OMP starts the MCP servers configured in its `mcp.json` and exposes each tool in this session\'s tool inventory as `mcp__<server>_<tool>` (for example `mcp__<server>_get_source`); tools listed only as `xd://` tool devices are called by writing their JSON arguments to that path after reading its docs. Treat that inventory as the live `tools/list` referenced below. The other bundled SAP agents are installed as OMP task agents named after their kebab-case ids (for example `abap-developer`, `sap-integration-developer`); hand work to them with the `task` tool when a handoff is required.';
+
+export function ompAgentName(fileName) {
+  return String(fileName).replace(/\.agent\.md$/, '').replace(/\.md$/, '');
+}
+
+export function ompAgentDocument(source, { fileName } = {}) {
+  const frontmatter = splitFrontmatter(source);
+  if (!frontmatter) throw new Error('unsupported agent frontmatter');
+  const name = requiredField(frontmatter.fields, 'name');
+  const description = requiredField(frontmatter.fields, 'description');
+  if (!name || !description || !fileName) throw new Error('unsupported agent frontmatter');
+  const body = frontmatter.body
+    .replaceAll('The Copilot host initializes MCP and supplies its live `tools/list` and schemas in the Chat tools picker.', 'OMP initializes MCP and supplies the live tools and schemas in this session\'s tool inventory.')
+    .replaceAll('from the Chat tools picker', 'from this session\'s tool inventory')
+    .replaceAll('visible in the picker', 'listed in the session\'s tool inventory')
+    .replaceAll('If the Copilot client supports subagents/delegation', 'If the OMP `task` tool is available');
+  // JSON strings are valid YAML double-quoted scalars, so descriptions with
+  // `: ` or `#` cannot break OMP's frontmatter parser.
+  return renderDocument([
+    { key: 'name', value: ompAgentName(fileName) },
+    { key: 'description', value: JSON.stringify(`${name}: ${description}`) }
+  ], `You are the **${name}** SAP agent.
+
+${OMP_HOST_NOTE}
+
+${body.trim()}
+`);
+}
+
 export const HARNESSES = [
   { id: 'github-copilot', label: 'GitHub Copilot', directory: '.copilot', supportsAgents: true, legacyManifest: true },
   { id: 'claude-code', label: 'Claude Code', directory: '.claude', supportsAgents: true, agentFileName: agentMarkdownName, agentDocument: claudeCodeAgentDocument },
@@ -100,7 +130,7 @@ export const HARNESSES = [
   { id: 'gemini-cli', label: 'Gemini CLI', directory: '.gemini', supportsAgents: false },
   { id: 'opencode', label: 'opencode', directory: 'opencode', configHome: true, supportsAgents: true, agentFileName: agentMarkdownName, agentDocument: opencodeAgentDocument },
   { id: 'pi-coding-agent', label: 'Pi Coding Agent', directory: '.pi/agent', supportsAgents: true, agentTargetPrefix: 'prompts', agentFileName: agentMarkdownName, agentDocument: piCodingAgentPromptDocument, root: piCodingAgentRoot },
-  { id: 'omp', label: 'Oh My Pi (OMP)', directory: '.omp/agent', supportsAgents: false, root: ompAgentRoot },
+  { id: 'omp', label: 'Oh My Pi (OMP)', directory: '.omp/agent', supportsAgents: true, agentFileName: agentMarkdownName, agentDocument: ompAgentDocument, root: ompAgentRoot },
   { id: 'cline', label: 'Cline', directory: '.cline', supportsAgents: false },
   { id: 'roo-code', label: 'Roo Code', directory: '.roo', supportsAgents: false },
   { id: 'windsurf', label: 'Windsurf / Devin Desktop', directory: 'devin', supportsAgents: false, root: windsurfSkillsRoot }

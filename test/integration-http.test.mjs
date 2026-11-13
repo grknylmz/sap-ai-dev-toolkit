@@ -192,6 +192,23 @@ test('static Basic, Bearer, and custom private authorization use the real pinned
   assert.equal(tenant.tokenRequests().length, 0);
 });
 
+test('repeated query values and caller headers reach the tenant; transport-owned headers are refused before any call', async t => {
+  const tenant = await startFakeTenant(t, () => ({ status: 200, json: {} }));
+  const client = createStaticServiceClient({ label: 'BPA', url: tenant.url, authorization: () => 'Bearer private', env: {} });
+  await client.request('GET', '/items', { query: { status: ['RUNNING', 'ERRONEOUS'], $top: 5, skip: [] }, headers: { 'irpa-api-key': 'key-1' } });
+  const sent = tenant.apiRequests().at(-1);
+  assert.deepEqual(sent.query.getAll('status'), ['RUNNING', 'ERRONEOUS']);
+  assert.equal(sent.query.has('skip'), false);
+  assert.equal(sent.rawQuery.includes('$top=5'), true);
+  assert.equal(sent.headers['irpa-api-key'], 'key-1');
+  assert.equal(sent.headers.authorization, 'Bearer private');
+  const before = tenant.apiRequests().length;
+  for (const headers of [{ Authorization: 'Bearer stolen' }, { cookie: 'a=b' }, { 'proxy-authorization': 'x' }, { 'bad name': 'x' }, { 'api-key': 'line\r\nbreak' }]) {
+    await assert.rejects(client.request('GET', '/items', { headers }), /request header/);
+  }
+  assert.equal(tenant.apiRequests().length, before);
+});
+
 test('static authorization is private and failed closures cannot leak their input or errors', async () => {
   let requests = 0;
   assert.throws(() => createStaticServiceClient({ authorization: 'Bearer private-token' }), /private function/);

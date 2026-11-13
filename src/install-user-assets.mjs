@@ -83,7 +83,7 @@ async function planDestinations(harness, files) {
       join('agents', fileName)
     ];
     const aliases = [...new Set(aliasCandidates.filter(alias => alias !== target))];
-    const content = harness.agentDocument ? Buffer.from(harness.agentDocument(raw.toString('utf8')), 'utf8') : raw;
+    const content = harness.agentDocument ? Buffer.from(harness.agentDocument(raw.toString('utf8'), { fileName: sourceName }), 'utf8') : raw;
     destinations.push({ target, content, aliases });
   }
   return destinations;

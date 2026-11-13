@@ -16,6 +16,7 @@ import {
   harnessRoot,
   opencodeAgentDocument,
   parseHarnessSelection,
+  ompAgentDocument,
   piCodingAgentPromptDocument
 } from '../src/harnesses.mjs';
 import { MANIFEST_NAME, installUserAssets, installUserAssetsForHarnesses } from '../src/install-user-assets.mjs';
@@ -51,7 +52,7 @@ function sha256(content) {
 
 test('harness registry covers the eleven supported harnesses in canonical order', () => {
   assert.deepEqual(HARNESSES.map(harness => harness.id), ['github-copilot', 'claude-code', 'codex', 'cursor', 'gemini-cli', 'opencode', 'pi-coding-agent', 'omp', 'cline', 'roo-code', 'windsurf']);
-  assert.deepEqual(HARNESSES.filter(harness => harness.supportsAgents).map(harness => harness.id), ['github-copilot', 'claude-code', 'opencode', 'pi-coding-agent']);
+  assert.deepEqual(HARNESSES.filter(harness => harness.supportsAgents).map(harness => harness.id), ['github-copilot', 'claude-code', 'opencode', 'pi-coding-agent', 'omp']);
   assert.deepEqual(DEFAULT_HARNESS_IDS, ['github-copilot', 'claude-code']);
   assert.deepEqual(NON_INTERACTIVE_HARNESS_IDS, ['github-copilot']);
 });
@@ -124,8 +125,19 @@ test('piCodingAgentPromptDocument emits a prompt template for the agent persona'
   assert.equal(transformed, '---\ndescription: Use the Example Developer SAP agent persona. An example agent with a description that is long enough to look realistic.\nargument-hint: "[request]"\n---\nAct as **Example Developer** for the following request. Follow these agent instructions and use relevant installed SAP skills when helpful.\n\nExample agent body instructions.\n\nUser request: $ARGUMENTS\n');
 });
 
+test('ompAgentDocument emits an OMP task agent named after the file id with host-adapted wording', () => {
+  const source = agentSource.replace('An example agent', 'Example: an agent').replace('Example agent body instructions.', 'Use the live `tools/list` from the Chat tools picker once. If a tool is visible in the picker but not callable, stop. If the Copilot client supports subagents/delegation, hand off.');
+  const transformed = ompAgentDocument(source, { fileName: 'abap-developer.agent.md' });
+  const [, frontmatter, body] = transformed.split(/^---$/m);
+  assert.equal(frontmatter, '\nname: abap-developer\ndescription: "Example Developer: Example: an agent with a description that is long enough to look realistic."\n');
+  assert.match(body, /^\nYou are the \*\*Example Developer\*\* SAP agent\./);
+  assert.match(body, /mcp__<server>_<tool>/);
+  assert.match(body, /from this session's tool inventory once\. If a tool is listed in the session's tool inventory but not callable, stop\. If the OMP `task` tool is available, hand off\.\n$/);
+  assert.doesNotMatch(transformed, /picker|Copilot|target:|user-invocable:/);
+});
+
 test('agent document transforms reject malformed frontmatter', () => {
-  for (const transform of [claudeCodeAgentDocument, opencodeAgentDocument, piCodingAgentPromptDocument]) {
+  for (const transform of [claudeCodeAgentDocument, opencodeAgentDocument, piCodingAgentPromptDocument, source => ompAgentDocument(source, { fileName: 'x.agent.md' })]) {
     assert.throws(() => transform('no frontmatter here'), /unsupported agent frontmatter/);
     assert.throws(() => transform('---\nname: missing description\n---\nbody'), /unsupported agent frontmatter/);
   }
@@ -153,7 +165,7 @@ test('installUserAssets writes the expected tree for every harness', async t => 
   assert.deepEqual((await readdir(join(home, '.claude', 'agents'))).sort(), ['abap-developer.md', 'sap-solution-architect.md']);
   assert.equal((await stat(join(home, '.claude', 'skills', 'example', 'SKILL.md'))).isFile(), true);
 
-  for (const id of ['codex', 'cursor', 'gemini-cli', 'omp', 'cline', 'roo-code']) {
+  for (const id of ['codex', 'cursor', 'gemini-cli', 'cline', 'roo-code']) {
     const result = await installUserAssets({ harness: harnessById(id), home, root });
     assert.equal(result.installed, 1, id);
     assert.deepEqual((await readdir(result.root)).sort(), [MANIFEST_NAME, 'skills'], id);
@@ -173,6 +185,13 @@ test('installUserAssets writes the expected tree for every harness', async t => 
   assert.equal(pi.root, join(home, '.pi', 'agent'));
   assert.equal((await readFile(join(home, '.pi', 'agent', 'prompts', 'abap-developer.md'), 'utf8')), piCodingAgentPromptDocument(agentSource));
   assert.equal((await stat(join(home, '.pi', 'agent', 'skills', 'example', 'SKILL.md'))).isFile(), true);
+
+  const omp = await installUserAssets({ harness: harnessById('omp'), home, root });
+  assert.equal(omp.installed, 3);
+  assert.equal(omp.root, join(home, '.omp', 'agent'));
+  assert.deepEqual((await readdir(join(home, '.omp', 'agent', 'agents'))).sort(), ['abap-developer.md', 'sap-solution-architect.md']);
+  assert.match(await readFile(join(home, '.omp', 'agent', 'agents', 'sap-solution-architect.md'), 'utf8'), /^---\nname: sap-solution-architect\n/);
+  assert.equal((await stat(join(home, '.omp', 'agent', 'skills', 'example', 'SKILL.md'))).isFile(), true);
 
   for (const harness of HARNESSES) {
     const targetRoot = harnessRoot(harness, { home, env: { XDG_CONFIG_HOME: xdg } });

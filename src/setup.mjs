@@ -15,6 +15,19 @@ import { createIntegrationClients, verificationLines, verifyIntegrationClients }
 import { OPTIONAL_COMPONENT_KEYS, OPTIONAL_INPUTS, parseOptionalConfig, resolveOptionalConfig } from './integration-optional-config.mjs';
 import { discoverCertificateDnsNames } from './tls-adt-proxy.mjs';
 import { findRemoteControllableSsoBrowsers } from './sso-browsers.mjs';
+import { parseDatasphereCredentials, resolveDatasphereConfig } from './datasphere-config.mjs';
+import { datasphereCredentialsPath, readStoredDatasphereCredentials, storeDatasphereCredentials } from './datasphere-credentials.mjs';
+import { authorizationCodeLogin, createDatasphereTokenProvider, openInBrowser } from './datasphere-auth.mjs';
+import { PROCESS_AUTOMATION_OAUTH, parseProcessAutomationCredentials, parseProcessAutomationServiceKey, resolveProcessAutomationConfig } from './process-automation-config.mjs';
+import { readStoredProcessAutomationCredentials, storeProcessAutomationCredentials } from './process-automation-credentials.mjs';
+import { createProcessAutomationRestClient } from './process-automation-client.mjs';
+import { createBtpCli, locateBtpCli, loginBtpCli, readBtpSettings, storeBtpSettings } from './btp-cli.mjs';
+import { parseCloudAlmCredentials, parseCloudAlmServiceKey, resolveCloudAlmConfig } from './cloud-alm-config.mjs';
+import { readStoredCloudAlmCredentials, storeCloudAlmCredentials } from './cloud-alm-credentials.mjs';
+import { createCloudAlmRestClient, verifyCloudAlmAccess } from './cloud-alm-client.mjs';
+import { createStaticServiceClient } from './integration-http.mjs';
+import { connectHana } from './hana-database.mjs';
+import { diagnosticText } from './redact.mjs';
 
 const SETUP_COMMAND = 'sap-ai-dev --setup';
 
@@ -314,18 +327,21 @@ function defaultVerifyIntegration(config, { env }) {
   return verifyIntegrationClients(createIntegrationClients(config, { env }));
 }
 
-/** Read a pasted service key: JSON text (line breaks from a multi-line paste are dropped) or a path to a .json file. */
-function pastedServiceKey(side, value, env) {
+/** Read pasted JSON text (line breaks from a multi-line paste are dropped) or the contents of a .json file path. */
+function readPastedJson(value, env) {
   const trimmed = String(value || '').trim();
-  let text = trimmed;
-  if (!trimmed.startsWith('{')) {
-    const path = trimmed.replace(/^~(?=$|[\\/])/, env.HOME || env.USERPROFILE || '~');
-    try {
-      text = readFileSync(path, 'utf8');
-    } catch {
-      throw new Error('Paste the service key JSON (starting with {) or the path to a readable .json file.');
-    }
+  if (trimmed.startsWith('{')) return trimmed;
+  const path = trimmed.replace(/^~(?=$|[\\/])/, env.HOME || env.USERPROFILE || '~');
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    throw new Error('Paste the service key JSON (starting with {) or the path to a readable .json file.');
   }
+}
+
+/** Read a pasted service key: JSON text or a path to a .json file. */
+function pastedServiceKey(side, value, env) {
+  const text = readPastedJson(value, env);
   return OPTIONAL_COMPONENT_KEYS.includes(side.toLowerCase())
     ? parseOptionalConfig(side.toLowerCase(), text, { source: 'setup', allowRawCtms: true })
     : parseIntegrationServiceKey(side, text);
@@ -604,6 +620,586 @@ export async function runIntegrationSuiteSetup({
   const result = await install([], { env, sapDevelopmentServers: ['integration-suite'], additive: true });
   print(output, '');
   print(output, formatStatus(`Configured the Integration Suite MCP server${result?.path ? ` in ${result.path}` : ''}.`, 'success', output, 'Integration Suite'));
+  for (const message of Array.isArray(result?.warnings) ? result.warnings : []) print(output, formatStatus(message, 'warning', output, 'Warning'));
+  return { selected: [], ...(result || {}) };
+}
+
+export function datasphereCredentialStatus(env = process.env) {
+  try {
+    const config = resolveDatasphereConfig(env, { stored: readStoredDatasphereCredentials(env) });
+    const lines = [`Datasphere tenant ${new URL(config.url).host} (${config.auth}, source: ${config.source})`];
+    if (config.sql) lines.push(`SQL user ${config.sql.user}@${config.sql.host}`);
+    return { found: true, source: config.source, auth: config.auth, config, lines };
+  } catch (error) {
+    return { found: false, source: null, auth: null, config: null, lines: [String(error?.message || '')] };
+  }
+}
+
+function datasphereRestClient(config, { env, accessToken } = {}) {
+  const shared = {
+    label: 'DATASPHERE',
+    url: config.url,
+    csrfPath: '/api/v1/datasphere/consumption/catalog/spaces',
+    env
+  };
+  if (accessToken) {
+    return createStaticServiceClient({ ...shared, authorization: async () => `Bearer ${accessToken}` });
+  }
+  const provider = createDatasphereTokenProvider({ config, env });
+  return createStaticServiceClient({ ...shared, authorization: async () => `Bearer ${(await provider.token()).accessToken}` });
+}
+
+async function defaultVerifyDatasphere(config, { env, accessToken } = {}) {
+  try {
+    const payload = await datasphereRestClient(config, { env, accessToken }).request('GET', '/api/v1/datasphere/consumption/catalog/spaces');
+    return { ok: true, message: `signed in; ${(payload?.value ?? []).length} spaces visible` };
+  } catch (error) {
+    return { ok: false, message: diagnosticText(error) };
+  }
+}
+
+/** Prompt for a Datasphere OAuth client, verify it online, optionally add SQL access, and store it. */
+export async function promptDatasphere({
+  env = process.env,
+  input = stdin,
+  output = stdout,
+  verifyDatasphere = defaultVerifyDatasphere,
+  login = authorizationCodeLogin
+} = {}) {
+  print(output, '');
+  print(output, formatStatus('SAP Datasphere tools', 'step', output, 'Datasphere'));
+  print(output, '  Connects your AI agent to SAP Datasphere through an OAuth client from System > App Integration. Credentials are checked online and stored only for you, never in mcp.json.');
+  const status = datasphereCredentialStatus(env);
+  for (const line of status.lines) print(output, `  ${line}`);
+  if (status.found) {
+    if (status.source === 'environment') return true;
+    if (!await confirmPrompt('Replace the stored Datasphere sign-in? (y/n, Enter=no)', { input, output, defaultYes: false })) return true;
+  }
+
+  const auth = await selectPrompt({
+    message: 'How should the toolkit sign in to SAP Datasphere?',
+    defaultValue: 'technical',
+    choices: [
+      { name: 'Technical user (Technical User OAuth client): objects, tasks, Data Marketplace, connections, certificates, consumption data', value: 'technical', shortcut: 't' },
+      { name: 'Your user (Interactive Usage OAuth client, redirect URI http://localhost:8080): everything, including spaces, users, roles, database users and workload', value: 'interactive', shortcut: 'y' }
+    ]
+  }, { input, output });
+
+  const FIELD_LABELS = { url: 'DATASPHERE_URL', tokenUrl: 'DATASPHERE_TOKEN_URL', authorizationUrl: 'DATASPHERE_AUTHORIZATION_URL' };
+  const validateUrl = field => value => {
+    try {
+      parseDatasphereCredentials({
+        auth,
+        url: field === 'url' ? value : 'https://placeholder.invalid',
+        tokenUrl: field === 'tokenUrl' ? value : 'https://placeholder.invalid/oauth/token',
+        clientId: 'placeholder',
+        clientSecret: 'placeholder',
+        ...(auth === 'interactive'
+          ? { authorizationUrl: field === 'authorizationUrl' ? value : 'https://placeholder.invalid', refreshToken: 'placeholder' }
+          : {})
+      }, 'environment');
+      return true;
+    } catch (error) {
+      return String(error?.message || '').startsWith(FIELD_LABELS[field]) ? error.message : true;
+    }
+  };
+  const tenantUrl = await textPrompt({
+    message: 'Datasphere tenant URL (for example https://<tenant>.eu10.hcs.cloud.sap)',
+    validate: validateUrl('url')
+  }, { input, output });
+  const tokenUrl = await textPrompt({
+    message: 'Token URL',
+    validate: validateUrl('tokenUrl')
+  }, { input, output });
+  const clientId = await textPrompt({ message: 'OAuth client ID', secret: true }, { input, output });
+  const clientSecret = await textPrompt({ message: 'OAuth client secret', secret: true }, { input, output });
+  let authorizationUrl = '';
+  if (auth === 'interactive') {
+    authorizationUrl = await textPrompt({
+      message: 'Authorization URL',
+      validate: validateUrl('authorizationUrl')
+    }, { input, output });
+  }
+
+  let parsed;
+  try {
+    parsed = resolveDatasphereConfig({
+      ...env,
+      DATASPHERE_URL: tenantUrl,
+      DATASPHERE_TOKEN_URL: tokenUrl,
+      DATASPHERE_CLIENT_ID: clientId,
+      DATASPHERE_CLIENT_SECRET: clientSecret,
+      DATASPHERE_AUTH: auth,
+      // The refresh token only exists after the sign-in below; a placeholder
+      // satisfies the interactive validation and is replaced by the login result.
+      ...(auth === 'interactive' ? { DATASPHERE_AUTHORIZATION_URL: authorizationUrl, DATASPHERE_REFRESH_TOKEN: 'pending-sign-in' } : {})
+    });
+  } catch (error) {
+    print(output, formatStatus(error.message, 'warning', output, 'Datasphere'));
+    return false;
+  }
+
+  let refreshToken = null;
+  let accessToken = null;
+  if (auth === 'interactive') {
+    const mode = await selectPrompt({
+      message: 'How should the sign-in finish?',
+      defaultValue: 'browser',
+      choices: [
+        { name: 'Open the browser here (local machine)', value: 'browser', shortcut: 'b' },
+        { name: 'Paste the redirected URL (BAS or remote machine)', value: 'paste', shortcut: 'p' }
+      ]
+    }, { input, output });
+    try {
+      const session = await login({
+        config: parsed,
+        mode,
+        openUrl: url => {
+          print(output, formatStatus(`Sign in with this URL (it also opened in your browser): ${url}`, 'info', output, 'Datasphere'));
+          openInBrowser(url);
+        },
+        promptPaste: () => textPrompt({
+          message: 'Paste the full URL the browser was redirected to (or just the code)',
+          secret: true
+        }, { input, output })
+      });
+      refreshToken = session.refreshToken || null;
+      accessToken = session.accessToken || null;
+    } catch (error) {
+      print(output, formatStatus(`Datasphere sign-in failed: ${diagnosticText(error)}`, 'warning', output, 'Datasphere'));
+      return false;
+    }
+  }
+
+  const verification = await verifyDatasphere(parsed, { env, ...(accessToken ? { accessToken } : {}) });
+  if (!verification.ok) {
+    print(output, formatStatus(`Verification failed: ${verification.message}`, 'warning', output, 'Datasphere'));
+    if (!await confirmPrompt('Save these credentials anyway? (y/n, Enter=no)', { input, output, defaultYes: false })) return false;
+  } else {
+    print(output, formatStatus(`Datasphere ${verification.message}.`, 'success', output, 'Datasphere'));
+  }
+
+  let sql = null;
+  if (await confirmPrompt('Add SQL access with a Datasphere database user (Open SQL schema)? (y/n, Enter=no)', { input, output, defaultYes: false })) {
+    const sqlHost = await textPrompt({ message: 'Database user host name' }, { input, output });
+    const sqlPort = await textPrompt({ message: 'Port (Enter=443)', placeholder: '443', required: false }, { input, output });
+    const sqlUser = await textPrompt({ message: 'Database user name' }, { input, output });
+    const sqlPassword = await textPrompt({ message: 'Database user password', secret: true }, { input, output });
+    const sqlSchema = await textPrompt({
+      message: `Schema (Enter=${sqlUser})`,
+      placeholder: sqlUser,
+      required: false
+    }, { input, output });
+    const port = Number(sqlPort || 443);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      print(output, formatStatus('DATASPHERE_SQL_PORT must be an integer between 1 and 65535', 'warning', output, 'Datasphere'));
+      return false;
+    }
+    sql = { host: sqlHost, port, user: sqlUser, password: sqlPassword, schema: sqlSchema || sqlUser };
+    try {
+      const database = await connectHana(sql, { queryTimeoutMs: 15_000 });
+      try {
+        await database.query('SELECT CURRENT_USER FROM DUMMY');
+      } finally {
+        await database.close();
+      }
+      print(output, formatStatus(`SQL access verified (${sqlUser}@${sqlHost}).`, 'success', output, 'Datasphere'));
+    } catch (error) {
+      print(output, formatStatus(`SQL verification failed: ${diagnosticText(error)}`, 'warning', output, 'Datasphere'));
+      if (!await confirmPrompt('Save these credentials anyway? (y/n, Enter=no)', { input, output, defaultYes: false })) return false;
+    }
+  }
+
+  const record = {
+    auth: parsed.auth,
+    url: parsed.url,
+    tokenurl: parsed.tokenUrl,
+    clientid: parsed.clientId,
+    clientsecret: parsed.clientSecret,
+    ...(parsed.auth === 'interactive' ? { authorizationurl: parsed.authorizationUrl, ...(refreshToken ? { refreshtoken: refreshToken } : {}) } : {}),
+    ...(sql ? { sql } : {})
+  };
+  const path = await storeDatasphereCredentials(record, env);
+  print(output, formatStatus(`Saved to ${path}`, 'success', output, 'Datasphere'));
+  return true;
+}
+
+/** `sap-ai-dev --setup-datasphere`: only the Datasphere step (sign in, verify, add the server). */
+export async function runDatasphereSetup({
+  env = process.env,
+  input = stdin,
+  output = stdout,
+  install = installMcpConfig,
+  verifyDatasphere = defaultVerifyDatasphere,
+  login = authorizationCodeLogin
+} = {}) {
+  if (!input.isTTY || !output.isTTY) {
+    print(output, formatStatus('Interactive setup needs a terminal. Rerun sap-ai-dev --setup-datasphere from a terminal.', 'warning', output, 'SAP AI Dev Toolkit'));
+    return { skipped: true, reason: 'non-tty' };
+  }
+  const ok = await promptDatasphere({ env, input, output, verifyDatasphere, login });
+  if (!ok) {
+    print(output, formatStatus('Datasphere setup cancelled; no MCP entry was added.', 'warning', output, 'SAP AI Dev Toolkit'));
+    return { skipped: true, reason: 'no-credentials' };
+  }
+  const result = await install([], { env, sapDevelopmentServers: ['datasphere'], additive: true });
+  print(output, '');
+  print(output, formatStatus(`Configured the SAP Datasphere MCP server${result?.path ? ` in ${result.path}` : ''}.`, 'success', output, 'SAP AI Dev Toolkit'));
+  for (const message of Array.isArray(result?.warnings) ? result.warnings : []) print(output, formatStatus(message, 'warning', output, 'Warning'));
+  return { selected: [], ...(result || {}) };
+}
+
+export function processAutomationCredentialStatus(env = process.env) {
+  try {
+    const config = resolveProcessAutomationConfig(env, { stored: readStoredProcessAutomationCredentials(env) });
+    const lines = [`SAP Build Process Automation API ${new URL(config.url).host} (${config.auth}, source: ${config.source})`];
+    return { found: true, source: config.source, auth: config.auth, config, lines };
+  } catch (error) {
+    return { found: false, source: null, auth: null, config: null, lines: [String(error?.message || '')] };
+  }
+}
+
+async function defaultVerifyProcessAutomation(config, { env, accessToken } = {}) {
+  try {
+    await createProcessAutomationRestClient(config, { env, ...(accessToken ? { accessToken } : {}) })
+      .request('GET', '/public/workflow/rest/v1/workflow-definitions', { query: { $top: 1 } });
+    return { ok: true, message: 'signed in; Workflow API reachable' };
+  } catch (error) {
+    return { ok: false, message: diagnosticText(error) };
+  }
+}
+
+/** Prompt for a Process Automation service key, optionally sign in as the user, verify it online, and store it. */
+export async function promptProcessAutomation({
+  env = process.env,
+  input = stdin,
+  output = stdout,
+  verifyProcessAutomation = defaultVerifyProcessAutomation,
+  login = authorizationCodeLogin
+} = {}) {
+  const label = 'Process Automation';
+  print(output, '');
+  print(output, formatStatus('SAP Build Process Automation tools', 'step', output, label));
+  print(output, '  Connects your AI agent to SAP Build Process Automation through a service key of a process-automation-service instance. Credentials are checked online and stored only for you, never in mcp.json.');
+  const status = processAutomationCredentialStatus(env);
+  for (const line of status.lines) print(output, `  ${line}`);
+  if (status.found) {
+    if (status.source === 'environment') return true;
+    if (!await confirmPrompt('Replace the stored SAP Build Process Automation sign-in? (y/n, Enter=no)', { input, output, defaultYes: false })) return true;
+  }
+
+  const auth = await selectPrompt({
+    message: 'How should the toolkit sign in to SAP Build Process Automation?',
+    defaultValue: 'technical',
+    choices: [
+      { name: 'Technical client (service key client credentials): processes and task decisions run as the service key\'s technical user', value: 'technical', shortcut: 't' },
+      { name: 'Your user (sign in with the service key client): actions are attributed to you; needs ProcessAutomationAdmin or ProcessAutomationParticipant', value: 'interactive', shortcut: 'y' }
+    ]
+  }, { input, output });
+
+  const pasted = await textPrompt({
+    message: 'Paste the Process Automation service key JSON or the path to its .json file',
+    secret: true,
+    validate: value => {
+      try {
+        parseProcessAutomationServiceKey(readPastedJson(value, env));
+        return true;
+      } catch (error) {
+        return String(error?.message || 'invalid service key');
+      }
+    }
+  }, { input, output });
+
+  const interactive = auth === 'interactive';
+  let parsed;
+  try {
+    parsed = parseProcessAutomationCredentials({
+      auth,
+      ...parseProcessAutomationServiceKey(readPastedJson(pasted, env)),
+      // The refresh token only exists after the sign-in below; a placeholder
+      // satisfies the interactive validation and is replaced by the login result.
+      ...(interactive ? { refreshToken: 'pending-sign-in' } : {})
+    }, 'stored-key');
+  } catch (error) {
+    print(output, formatStatus(error.message, 'warning', output, label));
+    return false;
+  }
+
+  let refreshToken = null;
+  let accessToken = null;
+  if (interactive) {
+    const mode = await selectPrompt({
+      message: 'How should the sign-in finish?',
+      defaultValue: 'paste',
+      choices: [
+        { name: 'Paste the redirected URL (works with the service key\'s registered redirect)', value: 'paste', shortcut: 'p' },
+        { name: 'Open the browser here with redirect to http://localhost:8080', value: 'browser', shortcut: 'b' }
+      ]
+    }, { input, output });
+    try {
+      const session = await login({
+        config: parsed,
+        mode,
+        profile: PROCESS_AUTOMATION_OAUTH,
+        openUrl: url => {
+          print(output, formatStatus(`Sign in with this URL (it also opened in your browser): ${url}`, 'info', output, label));
+          openInBrowser(url);
+        },
+        promptPaste: () => textPrompt({
+          message: 'Paste the full URL the browser was redirected to (or just the code)',
+          secret: true
+        }, { input, output })
+      });
+      refreshToken = session.refreshToken || null;
+      accessToken = session.accessToken || null;
+    } catch (error) {
+      print(output, formatStatus(`SAP Build Process Automation sign-in failed: ${diagnosticText(error)}. Choose the technical client if the service key does not allow user sign-in.`, 'warning', output, label));
+      return false;
+    }
+  }
+
+  const verification = await verifyProcessAutomation(parsed, { env, ...(accessToken ? { accessToken } : {}) });
+  if (!verification.ok) {
+    print(output, formatStatus(`Verification failed: ${verification.message}`, 'warning', output, label));
+    if (!await confirmPrompt('Save these credentials anyway? (y/n, Enter=no)', { input, output, defaultYes: false })) return false;
+  } else {
+    print(output, formatStatus(`SAP Build Process Automation ${verification.message}.`, 'success', output, label));
+  }
+
+  print(output, '  Automation triggers, automation jobs and BAM/job exports need an environment API key (Control Tower > Environments > API Keys, scopes such as TRIGGER_READ/TRIGGER_EXECUTE). Workflow, inbox, decision and visibility tools work without one.');
+  const apiKey = await textPrompt({
+    message: 'Environment API key (Enter=skip)',
+    secret: true,
+    required: false,
+    validate: value => (!value || (value.length <= 512 && !/[^\x21-\x7e]/.test(value)) ? true : 'The API key must be a single printable token')
+  }, { input, output });
+  const environmentId = await textPrompt({
+    message: 'Default environment id for API triggers and process starts (Enter=skip)',
+    required: false,
+    validate: value => (!value || /^[A-Za-z0-9_.-]{1,128}$/.test(value) ? true : 'Use 1-128 letters, digits, dots, dashes or underscores')
+  }, { input, output });
+
+  const record = {
+    auth: parsed.auth,
+    url: parsed.url,
+    tokenurl: parsed.tokenUrl,
+    clientid: parsed.clientId,
+    clientsecret: parsed.clientSecret,
+    ...(interactive && refreshToken ? { refreshtoken: refreshToken } : {}),
+    ...(apiKey?.trim() ? { apikey: apiKey.trim() } : {}),
+    ...(environmentId?.trim() ? { environmentid: environmentId.trim() } : {})
+  };
+  const path = await storeProcessAutomationCredentials(record, env);
+  print(output, formatStatus(`Saved to ${path}`, 'success', output, label));
+  return true;
+}
+
+/** `sap-ai-dev --setup-process-automation`: only the Process Automation step (service key, sign in, verify, add the server). */
+export async function runProcessAutomationSetup({
+  env = process.env,
+  input = stdin,
+  output = stdout,
+  install = installMcpConfig,
+  verifyProcessAutomation = defaultVerifyProcessAutomation,
+  login = authorizationCodeLogin
+} = {}) {
+  if (!input.isTTY || !output.isTTY) {
+    print(output, formatStatus('Interactive setup needs a terminal. Rerun sap-ai-dev --setup-process-automation from a terminal.', 'warning', output, 'SAP AI Dev Toolkit'));
+    return { skipped: true, reason: 'non-tty' };
+  }
+  const ok = await promptProcessAutomation({ env, input, output, verifyProcessAutomation, login });
+  if (!ok) {
+    print(output, formatStatus('SAP Build Process Automation setup cancelled; no MCP entry was added.', 'warning', output, 'SAP AI Dev Toolkit'));
+    return { skipped: true, reason: 'no-credentials' };
+  }
+  const result = await install([], { env, sapDevelopmentServers: ['process-automation'], additive: true });
+  print(output, '');
+  print(output, formatStatus(`Configured the SAP Build Process Automation MCP server${result?.path ? ` in ${result.path}` : ''}.`, 'success', output, 'SAP AI Dev Toolkit'));
+  for (const message of Array.isArray(result?.warnings) ? result.warnings : []) print(output, formatStatus(message, 'warning', output, 'Warning'));
+  return { selected: [], ...(result || {}) };
+}
+
+async function defaultVerifyBtp({ cli, config, env }) {
+  try {
+    const runtime = createBtpCli({ cli, config, env });
+    const version = await runtime.version();
+    const account = await runtime.json(['get', 'accounts/global-account']);
+    return { ok: true, message: `btp CLI${version ? ` ${version}` : ''} signed in to global account ${account?.displayName} (${account?.subdomain})` };
+  } catch (error) {
+    return { ok: false, loginRequired: error?.code === 'BTP_LOGIN_REQUIRED', message: diagnosticText(error) };
+  }
+}
+
+/** Locate the btp CLI, check (or start) its btp login --sso session, and remember the CLI location. */
+export async function promptBtp({
+  env = process.env,
+  input = stdin,
+  output = stdout,
+  verifyBtp = defaultVerifyBtp,
+  loginBtp = loginBtpCli,
+  locateBtp = locateBtpCli
+} = {}) {
+  const label = 'SAP BTP';
+  print(output, '');
+  print(output, formatStatus('SAP BTP platform administration tools', 'step', output, label));
+  print(output, '  Connects your AI agent to SAP BTP through your own btp CLI login (btp login --sso). The toolkit stores no credentials; it only remembers where the btp CLI is installed.');
+  let saved;
+  try {
+    saved = readBtpSettings(env).cli;
+  } catch {
+    saved = undefined;
+  }
+  const cli = String(env.BTP_CLI || '').trim() || await locateBtp(env) || (typeof saved === 'string' ? saved.trim() : '');
+  if (!cli) {
+    print(output, formatStatus('The btp CLI was not found on PATH. Install the SAP BTP command line interface from https://tools.hana.ondemand.com/#cloud (or set BTP_CLI to its path), then rerun sap-ai-dev --setup-btp.', 'warning', output, label));
+    return false;
+  }
+  const config = String(env.BTP_CLIENTCONFIG || '').trim() || null;
+  print(output, `  btp CLI: ${cli}${config ? ` (config ${config})` : ''}`);
+
+  let verification = await verifyBtp({ cli, config, env });
+  if (!verification.ok && verification.loginRequired
+    && await confirmPrompt('Sign in now with btp login --sso? (y/n, Enter=yes)', { input, output, defaultYes: true })) {
+    try {
+      await loginBtp({ cli, config, env });
+    } catch (error) {
+      print(output, formatStatus(`btp login failed: ${diagnosticText(error)}`, 'warning', output, label));
+    }
+    verification = await verifyBtp({ cli, config, env });
+  }
+  if (!verification.ok) {
+    print(output, formatStatus(`Verification failed: ${verification.message}`, 'warning', output, label));
+    if (!await confirmPrompt('Add the SAP BTP MCP server anyway? (y/n, Enter=no)', { input, output, defaultYes: false })) return false;
+  } else {
+    print(output, formatStatus(`SAP BTP ${verification.message}.`, 'success', output, label));
+  }
+
+  const path = await storeBtpSettings({ cli, ...(config ? { config } : {}) }, env);
+  print(output, formatStatus(`Saved the btp CLI location to ${path}`, 'success', output, label));
+  return true;
+}
+
+/** `sap-ai-dev --setup-btp`: only the SAP BTP step (locate the btp CLI, check the session, add the server). */
+export async function runBtpSetup({
+  env = process.env,
+  input = stdin,
+  output = stdout,
+  install = installMcpConfig,
+  verifyBtp = defaultVerifyBtp,
+  loginBtp = loginBtpCli,
+  locateBtp = locateBtpCli
+} = {}) {
+  if (!input.isTTY || !output.isTTY) {
+    print(output, formatStatus('Interactive setup needs a terminal. Rerun sap-ai-dev --setup-btp from a terminal.', 'warning', output, 'SAP AI Dev Toolkit'));
+    return { skipped: true, reason: 'non-tty' };
+  }
+  const ok = await promptBtp({ env, input, output, verifyBtp, loginBtp, locateBtp });
+  if (!ok) {
+    print(output, formatStatus('SAP BTP setup cancelled; no MCP entry was added.', 'warning', output, 'SAP AI Dev Toolkit'));
+    return { skipped: true, reason: 'not-configured' };
+  }
+  const result = await install([], { env, sapDevelopmentServers: ['sap-btp'], additive: true });
+  print(output, '');
+  print(output, formatStatus(`Configured the SAP BTP MCP server${result?.path ? ` in ${result.path}` : ''}.`, 'success', output, 'SAP AI Dev Toolkit'));
+  for (const message of Array.isArray(result?.warnings) ? result.warnings : []) print(output, formatStatus(message, 'warning', output, 'Warning'));
+  return { selected: [], ...(result || {}) };
+}
+
+export function cloudAlmCredentialStatus(env = process.env) {
+  try {
+    const config = resolveCloudAlmConfig(env, { stored: readStoredCloudAlmCredentials(env) });
+    const lines = [`SAP Cloud ALM API ${new URL(config.url).host} (source: ${config.source})`];
+    return { found: true, source: config.source, config, lines };
+  } catch (error) {
+    return { found: false, source: null, config: null, lines: [String(error?.message || '')] };
+  }
+}
+
+async function defaultVerifyCloudAlm(config, { env } = {}) {
+  const report = await verifyCloudAlmAccess(createCloudAlmRestClient(config, { env }));
+  const failed = Object.entries(report).filter(([, result]) => String(result).startsWith('failed'));
+  if (failed.length) return { ok: false, message: diagnosticText(failed.map(([name, result]) => `${name} ${result}`).join('; ')) };
+  return { ok: true, message: 'Landscape and Analytics APIs reachable' };
+}
+
+/** Prompt for a Cloud ALM API service key, verify it online, and store it. */
+export async function promptCloudAlm({
+  env = process.env,
+  input = stdin,
+  output = stdout,
+  verifyCloudAlm = defaultVerifyCloudAlm
+} = {}) {
+  const label = 'Cloud ALM';
+  print(output, '');
+  print(output, formatStatus('SAP Cloud ALM tools', 'step', output, label));
+  print(output, '  Connects your AI agent to SAP Cloud ALM for operations through a service key of the "SAP Cloud ALM API" instance (plan standard) in your Cloud ALM subaccount. Credentials are checked online and stored only for you, never in mcp.json.');
+  print(output, '  Grant the instance read scopes such as calm-api.landscape.read, calm-api.analytics.read, calm-api.logs.read, calm-api.exm.read, calm-api.integration-monitoring.read, calm-api.hm.read, calm-api.iep.read and calm-api.features.read; closing alerts also needs calm-api.event-situations.write.');
+  const status = cloudAlmCredentialStatus(env);
+  for (const line of status.lines) print(output, `  ${line}`);
+  if (status.found) {
+    if (status.source === 'environment') return true;
+    if (!await confirmPrompt('Replace the stored SAP Cloud ALM service key? (y/n, Enter=no)', { input, output, defaultYes: false })) return true;
+  }
+
+  const pasted = await textPrompt({
+    message: 'Paste the SAP Cloud ALM API service key JSON or the path to its .json file',
+    secret: true,
+    validate: value => {
+      try {
+        parseCloudAlmServiceKey(readPastedJson(value, env));
+        return true;
+      } catch (error) {
+        return String(error?.message || 'invalid service key');
+      }
+    }
+  }, { input, output });
+
+  let parsed;
+  try {
+    parsed = parseCloudAlmCredentials(parseCloudAlmServiceKey(readPastedJson(pasted, env)), 'stored-key');
+  } catch (error) {
+    print(output, formatStatus(error.message, 'warning', output, label));
+    return false;
+  }
+
+  const verification = await verifyCloudAlm(parsed, { env });
+  if (!verification.ok) {
+    print(output, formatStatus(`Verification failed: ${verification.message}`, 'warning', output, label));
+    if (!await confirmPrompt('Save these credentials anyway? (y/n, Enter=no)', { input, output, defaultYes: false })) return false;
+  } else {
+    print(output, formatStatus(`SAP Cloud ALM ${verification.message}.`, 'success', output, label));
+  }
+
+  const path = await storeCloudAlmCredentials({
+    url: parsed.url,
+    tokenurl: parsed.tokenUrl,
+    clientid: parsed.clientId,
+    clientsecret: parsed.clientSecret
+  }, env);
+  print(output, formatStatus(`Saved to ${path}`, 'success', output, label));
+  return true;
+}
+
+/** `sap-ai-dev --setup-cloud-alm`: only the Cloud ALM step (service key, verify, add the server). */
+export async function runCloudAlmSetup({
+  env = process.env,
+  input = stdin,
+  output = stdout,
+  install = installMcpConfig,
+  verifyCloudAlm = defaultVerifyCloudAlm
+} = {}) {
+  if (!input.isTTY || !output.isTTY) {
+    print(output, formatStatus('Interactive setup needs a terminal. Rerun sap-ai-dev --setup-cloud-alm from a terminal.', 'warning', output, 'SAP AI Dev Toolkit'));
+    return { skipped: true, reason: 'non-tty' };
+  }
+  const ok = await promptCloudAlm({ env, input, output, verifyCloudAlm });
+  if (!ok) {
+    print(output, formatStatus('SAP Cloud ALM setup cancelled; no MCP entry was added.', 'warning', output, 'SAP AI Dev Toolkit'));
+    return { skipped: true, reason: 'no-credentials' };
+  }
+  const result = await install([], { env, sapDevelopmentServers: ['cloud-alm'], additive: true });
+  print(output, '');
+  print(output, formatStatus(`Configured the SAP Cloud ALM MCP server${result?.path ? ` in ${result.path}` : ''}.`, 'success', output, 'SAP AI Dev Toolkit'));
   for (const message of Array.isArray(result?.warnings) ? result.warnings : []) print(output, formatStatus(message, 'warning', output, 'Warning'));
   return { selected: [], ...(result || {}) };
 }
@@ -1121,9 +1717,13 @@ export async function runSetup({
     sapDevelopmentServers = ['integration-suite'];
   } else if (includeSapDevelopmentToolsPrompt) {
     print(output, '');
-    print(output, formatStatus('Optionally add companion MCP servers for full-stack SAP development, HANA inspection, and Integration Suite (CPI/API Management/Developer Hub).', 'step', output, 'Tools'));
+    print(output, formatStatus('Optionally add companion MCP servers for full-stack SAP development, HANA inspection, Integration Suite (CPI/API Management/Developer Hub), SAP Datasphere, SAP Build Process Automation, SAP BTP platform administration, and SAP Cloud ALM.', 'step', output, 'Tools'));
     print(output, '  HANA Cloud inspector is read-only and uses HANA_RO_* or VCAP_SERVICES already present in the MCP host environment; credentials are not written to mcp.json.');
     print(output, '  Integration Suite uses CPI/APIM/DEVHUB service keys from the MCP host environment or keys you paste next (verified online, saved for your user only); credentials are not written to mcp.json.');
+    print(output, '  SAP Datasphere uses a Datasphere OAuth client from DATASPHERE_* in the MCP host environment or entered next (verified online, saved for your user only); credentials are not written to mcp.json.');
+    print(output, '  SAP Build Process Automation uses a service key from PROCESS_AUTOMATION_* in the MCP host environment or pasted next (verified online, saved for your user only); credentials are not written to mcp.json.');
+    print(output, '  SAP BTP platform administration uses your own btp CLI login (btp login --sso), checked next; the toolkit stores no credentials and writes none to mcp.json.');
+    print(output, '  SAP Cloud ALM uses a service key from CLOUD_ALM_* in the MCP host environment or pasted next (verified online, saved for your user only); credentials are not written to mcp.json.');
     print(output, '  Leave empty to only configure ABAP/ADT destination servers.');
     print(output, '');
     sapDevelopmentServers = await checkboxPrompt({
@@ -1138,6 +1738,18 @@ export async function runSetup({
     }, { input, output });
     if (sapDevelopmentServers.includes('integration-suite')) {
       await promptIntegrationSuite({ env, alreadyConfigured: integrationSuiteConfigured, input, output, verifyIntegration, integrationCloudFoundry, ask: false });
+    }
+    if (sapDevelopmentServers.includes('datasphere') && !await promptDatasphere({ env, input, output })) {
+      sapDevelopmentServers = sapDevelopmentServers.filter(id => id !== 'datasphere');
+    }
+    if (sapDevelopmentServers.includes('process-automation') && !await promptProcessAutomation({ env, input, output })) {
+      sapDevelopmentServers = sapDevelopmentServers.filter(id => id !== 'process-automation');
+    }
+    if (sapDevelopmentServers.includes('sap-btp') && !await promptBtp({ env, input, output })) {
+      sapDevelopmentServers = sapDevelopmentServers.filter(id => id !== 'sap-btp');
+    }
+    if (sapDevelopmentServers.includes('cloud-alm') && !await promptCloudAlm({ env, input, output })) {
+      sapDevelopmentServers = sapDevelopmentServers.filter(id => id !== 'cloud-alm');
     }
   } else if (await promptIntegrationSuite({ env, alreadyConfigured: integrationSuiteConfigured, input, output, verifyIntegration, integrationCloudFoundry })) {
     // Without --tools, Integration Suite still gets its own yes/no step instead of being hidden.

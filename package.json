@@ -1,6 +1,6 @@
 {
   "name": "sap-ai-dev-toolkit",
-  "version": "0.9.9922",
+  "version": "0.9.9923",
   "description": "SAP AI development toolkit for BAS, ABAP, RAP, CAP, HANA Cloud, Fiori, UI5, and MCP",
   "author": "Gurkan Yilmaz",
   "type": "module",
@@ -10,6 +10,7 @@
   "dependencies": {
     "@abaplint/core": "2.119.0",
     "@modelcontextprotocol/sdk": "1.32.1",
+    "@sap/datasphere-cli": "2026.22.0",
     "@sap/hana-client": "2.30.27",
     "fflate": "0.8.3",
     "terminal-kit": "^3.1.4",
@@ -20,12 +21,17 @@
     "sap-ai-dev": "src/launcher.mjs",
     "sap-ai-dev-toolkit": "src/launcher.mjs",
     "sap-ai-hana": "src/hana-inspector.mjs",
-    "sap-ai-integration": "src/integration-server.mjs"
+    "sap-ai-integration": "src/integration-server.mjs",
+    "sap-ai-datasphere": "src/datasphere-server.mjs",
+    "sap-ai-process-automation": "src/process-automation-server.mjs",
+    "sap-ai-btp": "src/btp-server.mjs",
+    "sap-ai-cloud-alm": "src/cloud-alm-server.mjs"
   },
   "scripts": {
     "postinstall": "node scripts/postinstall.mjs",
     "install:local": "node scripts/install-local.mjs",
     "test": "node --test --test-force-exit test/*.test.mjs",
+    "datasphere": "node src/launcher.mjs --datasphere",
     "test:live:s4h": "node scripts/run-live-s4h.mjs",
     "test:live:integration": "node scripts/run-live-integration.mjs",
     "test:visibility": "node --test test/setup.test.mjs test/terminal-ui.test.mjs",

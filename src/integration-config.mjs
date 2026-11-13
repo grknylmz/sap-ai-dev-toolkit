@@ -53,6 +53,11 @@ function finalize(prefix, source, bindingName, raw) {
   });
 }
 
+/** Validate and freeze raw OAuth client credentials (client-credentials style products). */
+export function finalizeClientCredentials(prefix, source, raw) {
+  return finalize(prefix, source, null, raw);
+}
+
 function explicitConfig(env, prefix) {
   const keys = [`${prefix}_URL`, `${prefix}_TOKEN_URL`, `${prefix}_CLIENT_ID`, `${prefix}_CLIENT_SECRET`];
   if (!keys.some(key => env[key] !== undefined && env[key] !== '')) return null;

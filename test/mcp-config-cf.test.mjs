@@ -487,6 +487,14 @@ test('configures the Integration Suite companion without persisting credentials'
   assert.doesNotMatch(JSON.stringify(entry), /CPI_SERVICE_KEY|APIM_SERVICE_KEY|clientsecret/i);
 });
 
+test('configures the Datasphere companion without persisting credentials', () => {
+  const entry = buildSapDevelopmentMcpEntries(['datasphere'])['datasphere'];
+  assert.deepEqual(entry.args, ['--yes', '--ignore-scripts', '--package=sap-ai-dev-toolkit', 'sap-ai-datasphere']);
+  assert.equal(entry.BAS_EXT_KIND, 'sap-development-companion');
+  assert.equal(entry.env, undefined);
+  assert.doesNotMatch(JSON.stringify(entry), /clientsecret|password|DATASPHERE_(?:URL|TOKEN_URL|CLIENT_ID|CLIENT_SECRET|SQL_|AUTHORIZATION|REFRESH)/i);
+});
+
 test('installs and removes SAP development companion entries', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'bas-mcp-tools-config-'));
   const path = join(directory, 'mcp.json');

@@ -10,7 +10,7 @@ import { adtBaseUrl, adtPort, detectAdtUrl, discoverSapGuiSystems, hasExplicitPo
 import { binaryTarget, cacheDirectory, downloadBinary, findBinary } from './binary.mjs';
 import { MCPProxy } from './mcp-proxy.mjs';
 import { configuredVersionHandoff, installMcpConfig, npxPackageLauncher, repairManagedMcpConfig } from './mcp-config.mjs';
-import { runIntegrationSuiteSetup, runSetup } from './setup.mjs';
+import { runBtpSetup, runCloudAlmSetup, runDatasphereSetup, runIntegrationSuiteSetup, runProcessAutomationSetup, runSetup } from './setup.mjs';
 import { runHarnessSetup } from './harness-setup.mjs';
 import { resolveConfiguredCloudFoundryDestination } from './cf-destination.mjs';
 import { createTlsServerNameAdtProxy } from './tls-adt-proxy.mjs';
@@ -38,7 +38,11 @@ function usage() {
     '  --setup                  Configure generated BAS MCP servers',
     '  --tools                  Also offer full-stack SAP companion MCP servers (use with --setup)',
     '  --setup-integration      Only set up the Integration Suite MCP server: paste CPI/APIM service keys and verify them online',
-    '  --npx                    Launch configured MCP servers through the pinned npm package (use with --setup)',
+    '  --setup-datasphere       Only set up the SAP Datasphere MCP server: sign in with a Datasphere OAuth client and verify it online',
+    '  --setup-process-automation  Only set up the SAP Build Process Automation MCP server: paste a service key, choose technical or user sign-in, verify online',
+    '  --setup-btp              Only set up the SAP BTP platform administration MCP server: locate the btp CLI and check your btp login --sso session',
+    '  --setup-cloud-alm        Only set up the SAP Cloud ALM MCP server: paste the Cloud ALM API service key, verify online',
+    '  --datasphere <command>   Run the bundled SAP Datasphere CLI with a tenant URL and browser temporary code',
     '  --list-destinations      List discovered BAS destinations',
     '  --list-destinations --json  Print redacted JSON status',
     '  --check                  Probe destination availability',
@@ -370,7 +374,16 @@ async function configuredLocalSapGuiDestination(env) {
 }
 
 async function main() {
+  if (args()[0] === '--datasphere') {
+    const { runDatasphereCommand } = await import('./datasphere-command.mjs');
+    process.exitCode = await runDatasphereCommand(args().slice(1), { env: runtimeEnv });
+    return;
+  }
   const setupIntegration = hasFlag('--setup-integration');
+  const setupDatasphere = hasFlag('--setup-datasphere');
+  const setupProcessAutomation = hasFlag('--setup-process-automation');
+  const setupBtp = hasFlag('--setup-btp');
+  const setupCloudAlm = hasFlag('--setup-cloud-alm');
   const setup = hasFlag('--setup');
   const check = hasFlag('--check');
   const list = hasFlag('--list-destinations');
@@ -380,8 +393,7 @@ async function main() {
     process.stdout.write(usage());
     return;
   }
-  if (!setup && !setupIntegration && !check && !list && !doctor && !demo && await handOffToConfiguredVersion()) return;
-  if (doctor && demo) throw new Error('Use either --doctor or --demo, not both.');
+  if (!setup && !setupIntegration && !setupDatasphere && !setupProcessAutomation && !setupBtp && !setupCloudAlm && !check && !list && !doctor && !demo && await handOffToConfiguredVersion()) return;
   if (demo) {
     await runOfflineDemo();
     return;
@@ -416,6 +428,46 @@ async function main() {
       options.install = (selected, installOptions) => installMcpConfig(selected, { ...installOptions, ...launcher });
     }
     const result = await runIntegrationSuiteSetup(options);
+    if (!result?.skipped) await runHarnessSetup(result?.servers, { env: runtimeEnv, root });
+    return;
+  }
+  if (setupDatasphere) {
+    const options = {};
+    if (hasFlag('--npx')) {
+      const launcher = npxPackageLauncher(pkg.version);
+      options.install = (selected, installOptions) => installMcpConfig(selected, { ...installOptions, ...launcher });
+    }
+    const result = await runDatasphereSetup(options);
+    if (!result?.skipped) await runHarnessSetup(result?.servers, { env: runtimeEnv, root });
+    return;
+  }
+  if (setupProcessAutomation) {
+    const options = {};
+    if (hasFlag('--npx')) {
+      const launcher = npxPackageLauncher(pkg.version);
+      options.install = (selected, installOptions) => installMcpConfig(selected, { ...installOptions, ...launcher });
+    }
+    const result = await runProcessAutomationSetup(options);
+    if (!result?.skipped) await runHarnessSetup(result?.servers, { env: runtimeEnv, root });
+    return;
+  }
+  if (setupBtp) {
+    const options = {};
+    if (hasFlag('--npx')) {
+      const launcher = npxPackageLauncher(pkg.version);
+      options.install = (selected, installOptions) => installMcpConfig(selected, { ...installOptions, ...launcher });
+    }
+    const result = await runBtpSetup(options);
+    if (!result?.skipped) await runHarnessSetup(result?.servers, { env: runtimeEnv, root });
+    return;
+  }
+  if (setupCloudAlm) {
+    const options = {};
+    if (hasFlag('--npx')) {
+      const launcher = npxPackageLauncher(pkg.version);
+      options.install = (selected, installOptions) => installMcpConfig(selected, { ...installOptions, ...launcher });
+    }
+    const result = await runCloudAlmSetup(options);
     if (!result?.skipped) await runHarnessSetup(result?.servers, { env: runtimeEnv, root });
     return;
   }

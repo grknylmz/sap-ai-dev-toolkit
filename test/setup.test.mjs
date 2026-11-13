@@ -9,11 +9,12 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { installMcpConfig, npxMcpLauncher } from '../src/mcp-config.mjs';
-import { adtCandidate, parseSapClientList, runSetup } from '../src/setup.mjs';
+import { adtCandidate, parseSapClientList, runBtpSetup, runCloudAlmSetup, runDatasphereSetup, runProcessAutomationSetup, runSetup } from '../src/setup.mjs';
 import { parseIntegrationServiceKey } from '../src/integration-config.mjs';
 import { storeIntegrationKey } from '../src/integration-credentials.mjs';
 import { OPTIONAL_COMPONENT_KEYS } from '../src/integration-optional-config.mjs';
 import { spawnWithPty } from './pty.mjs';
+import { startFakeTenant } from './fake-integration-tenant.mjs';
 import { isolatedWindowsEnv, isWindows, pathEntry, withoutIntegrationCredentials, writeFakeCli } from './fake-bin.mjs';
 
 const destinations = [
@@ -141,12 +142,18 @@ async function assertUserCopilotAssets(home) {
     'abap-development',
     'abap-runtime-analysis',
     'abap-testing-quality',
+    'btp-platform-administration',
+    'bw-datasphere-migration',
     'cds-development',
     'clean-core-extensibility',
+    'cloud-alm-operations',
+    'datasphere-administration',
+    'datasphere-development',
     'hana-cloud-inspection',
     'hana-cloud-native-development',
     'hana-cloud-validation',
     'integration-suite-delivery',
+    'process-automation-development',
     'rap-development',
     'rap-service-delivery',
     'sap-integration-architect',
@@ -167,15 +174,20 @@ async function assertUserClaudeAssets(home) {
     'abap-runtime-debugger.md',
     'hana-cloud-hdi-specialist.md',
     'rap-service-developer.md',
+    'sap-btp-infrastructure-admin.md',
+    'sap-bw-datasphere-migration-specialist.md',
+    'sap-datasphere-developer.md',
+    'sap-devops-observability-specialist.md',
     'sap-integration-architect.md',
     'sap-integration-developer.md',
+    'sap-process-automation-developer.md',
     'sap-solution-architect.md'
   ]);
   const architect = await readFile(join(claudeRoot, 'agents', 'sap-solution-architect.md'), 'utf8');
   assert.match(architect, /^---\nname: [^\n]+\ndescription: [^\n]+\n---\n/s);
   assert.doesNotMatch(architect, /(^|\n)(target|user-invocable):/);
   const skillNames = (await readdir(join(claudeRoot, 'skills'))).sort();
-  assert.equal(skillNames.length, 16);
+  assert.equal(skillNames.length, 22);
   for (const skillName of skillNames) {
     assert.equal((await stat(join(claudeRoot, 'skills', skillName, 'SKILL.md'))).isFile(), true);
   }
@@ -880,10 +892,10 @@ test('global postinstall completes BAS selection before default Copilot asset in
   assert.equal(accepted.assetsAnswerSent, true, accepted.stdout);
   const acceptLogs = `${accepted.stdout}\n${accepted.stderr}`;
   assert.ok(acceptLogs.indexOf('Install bundled agents and skills for') > acceptLogs.indexOf('Configured 1 MCP server'), acceptLogs);
-  assert.match(acceptLogs, /GitHub Copilot: 23 files installed or updated in [^\n]*\.copilot; 0 already current/);
-  assert.match(acceptLogs, /Claude Code: 23 files installed or updated in [^\n]*\.claude; 0 already current/);
-  assert.match(acceptLogs, /Installed 46 files across 2 harnesses/);
-  assert.ok(acceptLogs.indexOf('Installation configuration summary') > acceptLogs.indexOf('Installed 46 files across 2 harnesses'), acceptLogs);
+  assert.match(acceptLogs, /GitHub Copilot: 34 files installed or updated in [^\n]*\.copilot; 0 already current/);
+  assert.match(acceptLogs, /Claude Code: 34 files installed or updated in [^\n]*\.claude; 0 already current/);
+  assert.match(acceptLogs, /Installed 68 files across 2 harnesses/);
+  assert.ok(acceptLogs.indexOf('Installation configuration summary') > acceptLogs.indexOf('Installed 68 files across 2 harnesses'), acceptLogs);
   assert.ok(acceptLogs.includes(`MCP config file: ${config}`), acceptLogs);
   assert.ok(acceptLogs.includes('Destination: BAS · alpha-system · client 100 · Basic'), acceptLogs);
   assert.ok(acceptLogs.split(/\r?\n/).some(line => line.trim() === `Launch: stdio · ${globalLauncher}`), acceptLogs);
@@ -901,12 +913,12 @@ test('global postinstall completes BAS selection before default Copilot asset in
   assert.equal(extended.code, 0, `${extended.stdout}\n${extended.stderr}`);
   assert.equal(extended.assetsAnswerSent, true, extended.stdout);
   const extendedLogs = `${extended.stdout}\n${extended.stderr}`;
-  assert.match(extendedLogs, /Cursor: 16 files installed or updated in [^\n]*\.cursor; 0 already current/);
-  assert.match(extendedLogs, /Installed 62 files across 3 harnesses/);
+  assert.match(extendedLogs, /Cursor: 22 files installed or updated in [^\n]*\.cursor; 0 already current/);
+  assert.match(extendedLogs, /Installed 90 files across 3 harnesses/);
   await assertUserCopilotAssets(extendedHome);
   await assertUserClaudeAssets(extendedHome);
   const cursorSkills = (await readdir(join(extendedHome, '.cursor', 'skills'))).sort();
-  assert.equal(cursorSkills.length, 16);
+  assert.equal(cursorSkills.length, 22);
   await assert.rejects(stat(join(extendedHome, '.cursor', 'agents')), { code: 'ENOENT' });
 
 });
@@ -1009,9 +1021,9 @@ test('non-TTY postinstall honors the harness environment override', async () => 
     assert.match(logs, /Installing bundled agents and skills for Claude Code, Gemini CLI, Oh My Pi \(OMP\), Cline, Roo Code, Windsurf \/ Devin Desktop by default because no interactive terminal is available/);
     await assertUserClaudeAssets(directory);
     const geminiSkills = (await readdir(join(directory, '.gemini', 'skills'))).sort();
-    assert.equal(geminiSkills.length, 16);
+    assert.equal(geminiSkills.length, 22);
     for (const root of [join(directory, '.omp', 'agent'), join(directory, '.cline'), join(directory, '.roo'), join(directory, 'xdg-config', 'devin')]) {
-      assert.equal((await readdir(join(root, 'skills'))).length, 16, root);
+      assert.equal((await readdir(join(root, 'skills'))).length, 22, root);
       assert.equal((await stat(join(root, 'skills', 'abap-development', 'SKILL.md'))).isFile(), true, root);
     }
     await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
@@ -1068,10 +1080,10 @@ test('postinstall harness selection honors the environment override in a live TT
   const logs = `${result.stdout}\n${result.stderr}`;
   assert.equal(result.code, 0, logs);
   assert.equal(result.assetsAnswerSent, true, logs);
-  assert.match(logs, /Gemini CLI: 16 files installed or updated in [^\n]*\.gemini; 0 already current/);
-  assert.match(logs, /Installed 16 files across 1 harness/);
+  assert.match(logs, /Gemini CLI: 22 files installed or updated in [^\n]*\.gemini; 0 already current/);
+  assert.match(logs, /Installed 22 files across 1 harness/);
   const geminiSkills = (await readdir(join(directory, '.gemini', 'skills'))).sort();
-  assert.equal(geminiSkills.length, 16);
+  assert.equal(geminiSkills.length, 22);
   await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
   await assert.rejects(stat(join(directory, '.claude')), { code: 'ENOENT' });
 });
@@ -1352,4 +1364,252 @@ test('optional hidden setup stores typed existing ANS credentials without CF dis
   assert.deepEqual(JSON.parse(await readFile(path, 'utf8')).ans, value);
   assert.equal((await stat(path)).mode & 0o777, 0o600);
   assert.doesNotMatch(text, /hidden-optional-password/);
+});
+
+test('runDatasphereSetup stores verified technical credentials and adds the MCP entry', async t => {
+  const tenant = await startFakeTenant(t, request => request.path === '/api/v1/datasphere/consumption/catalog/spaces'
+    ? { status: 200, json: { value: [{ name: 'A' }, { name: 'B' }, { name: 'C' }] } }
+    : { status: 404 });
+  const home = await mkdtemp(join(tmpdir(), 'datasphere-setup-tech-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = outputStream();
+  const installs = [];
+  const pending = runDatasphereSetup({
+    env: { HOME: home, XDG_CONFIG_HOME: join(home, '.config') },
+    input,
+    output,
+    install: async (selected, options) => {
+      installs.push([selected, options.sapDevelopmentServers]);
+      return { path: join(home, 'mcp.json'), servers: {} };
+    }
+  });
+  const answers = [
+    '\r',
+    `${tenant.url}\r`,
+    `${tenant.url}\r`,
+    'sb-tech-client!t1\r',
+    'datasphere-client-secret-value\r',
+    'n\r'
+  ];
+  for (const answer of answers) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    input.write(answer);
+  }
+  const result = await pending;
+  assert.equal(result.skipped, undefined);
+  assert.deepEqual(installs, [[[], ['datasphere']]]);
+  const stored = JSON.parse(await readFile(join(home, '.config', 'sap-ai-dev-toolkit', 'datasphere.json'), 'utf8'));
+  assert.equal(stored.auth, 'technical');
+  assert.equal(stored.clientsecret, 'datasphere-client-secret-value');
+  assert.equal(stored.url, tenant.url);
+  assert.equal(stored.sql, undefined);
+  assert.doesNotMatch(output.text(), /datasphere-client-secret-value/);
+  assert.match(output.text(), /Configured the SAP Datasphere MCP server/);
+  const tokenRequest = tenant.tokenRequests()[0];
+  assert.equal(tokenRequest.headers['x-sap-sac-custom-auth'], 'true');
+  assert.deepEqual(Object.fromEntries(new URLSearchParams(tokenRequest.body)), { grant_type: 'client_credentials', response_type: 'token' });
+});
+
+test('runProcessAutomationSetup stores a verified technical key and adds the MCP entry', async t => {
+  const tenant = await startFakeTenant(t, request => request.path === '/public/workflow/rest/v1/workflow-definitions'
+    ? { status: 200, json: [{ id: 'orderapproval', name: 'Order approval', version: '3' }] }
+    : { status: 404 });
+  const home = await mkdtemp(join(tmpdir(), 'bpa-setup-tech-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = outputStream();
+  const installs = [];
+  const pending = runProcessAutomationSetup({
+    env: { HOME: home, XDG_CONFIG_HOME: join(home, '.config') },
+    input,
+    output,
+    install: async (selected, options) => {
+      installs.push([selected, options.sapDevelopmentServers]);
+      return { path: join(home, 'mcp.json'), servers: {} };
+    }
+  });
+  const key = {
+    endpoints: { api: tenant.url },
+    uaa: { url: tenant.url, clientid: 'sb-bpa-setup!b1', clientsecret: 'bpa-setup-secret-value' }
+  };
+  for (const answer of ['\r', `${JSON.stringify(key)}\r`, 'bpa-env-api-key\r', 'prod-env\r']) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    input.write(answer);
+  }
+  const result = await pending;
+  assert.equal(result.skipped, undefined);
+  assert.deepEqual(installs, [[[], ['process-automation']]]);
+  const path = join(home, '.config', 'sap-ai-dev-toolkit', 'process-automation.json');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), {
+    auth: 'technical',
+    url: tenant.url,
+    tokenurl: `${tenant.url}/oauth/token`,
+    clientid: 'sb-bpa-setup!b1',
+    clientsecret: 'bpa-setup-secret-value',
+    apikey: 'bpa-env-api-key',
+    environmentid: 'prod-env'
+  });
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  assert.doesNotMatch(output.text(), /bpa-setup-secret-value|bpa-env-api-key/);
+  assert.match(output.text(), /Configured the SAP Build Process Automation MCP server/);
+});
+
+test('runBtpSetup signs in when the session expired, saves the CLI location and adds the MCP entry', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'btp-setup-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = outputStream();
+  const installs = [];
+  const logins = [];
+  const verifications = [
+    { ok: false, loginRequired: true, message: 'session expired' },
+    { ok: true, message: 'btp CLI 2.116.3 signed in to global account Fake GA (fake-ga)' }
+  ];
+  const pending = runBtpSetup({
+    env: { HOME: home, XDG_CONFIG_HOME: join(home, '.config') },
+    input,
+    output,
+    locateBtp: async () => '/opt/fake/bin/btp',
+    verifyBtp: async () => verifications.shift(),
+    loginBtp: async options => { logins.push(options); },
+    install: async (selected, options) => {
+      installs.push([selected, options.sapDevelopmentServers]);
+      return { path: join(home, 'mcp.json'), servers: {} };
+    }
+  });
+  await new Promise(resolve => setTimeout(resolve, 20));
+  input.write('\r');
+  const result = await pending;
+  assert.equal(result.skipped, undefined);
+  assert.equal(logins.length, 1);
+  assert.equal(logins[0].cli, '/opt/fake/bin/btp');
+  assert.deepEqual(installs, [[[], ['sap-btp']]]);
+  const path = join(home, '.config', 'sap-ai-dev-toolkit', 'btp.json');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), { cli: '/opt/fake/bin/btp' });
+  if (process.platform !== 'win32') assert.equal((await stat(path)).mode & 0o777, 0o600);
+  assert.match(output.text(), /Configured the SAP BTP MCP server/);
+});
+
+test('runBtpSetup without a btp CLI adds nothing', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'btp-setup-missing-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = outputStream();
+  const installs = [];
+  const result = await runBtpSetup({
+    env: { HOME: home, XDG_CONFIG_HOME: join(home, '.config') },
+    input,
+    output,
+    locateBtp: async () => null,
+    verifyBtp: async () => assert.fail('verification must not run without a CLI'),
+    install: async (...args) => { installs.push(args); }
+  });
+  assert.equal(result.skipped, true);
+  assert.equal(installs.length, 0);
+  assert.match(output.text(), /btp CLI was not found/);
+});
+
+test('runCloudAlmSetup stores a verified service key and adds the MCP entry', async t => {
+  const tenant = await startFakeTenant(t, request => (request.method === 'GET'
+    && (request.path === '/calm-landscape/v1/landscapeObjects' || request.path === '/calm-analytics/v1/analytics/providers')
+    ? { status: 200, json: [] }
+    : { status: 404 }));
+  const home = await mkdtemp(join(tmpdir(), 'calm-setup-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = outputStream();
+  const installs = [];
+  const pending = runCloudAlmSetup({
+    env: { HOME: home, XDG_CONFIG_HOME: join(home, '.config') },
+    input,
+    output,
+    install: async (selected, options) => {
+      installs.push([selected, options.sapDevelopmentServers]);
+      return { path: join(home, 'mcp.json'), servers: {} };
+    }
+  });
+  const key = {
+    endpoints: { Api: tenant.url },
+    uaa: { url: tenant.url, clientid: 'sb-calm-setup!b1', clientsecret: 'calm-setup-secret-value' }
+  };
+  await new Promise(resolve => setTimeout(resolve, 20));
+  input.write(`${JSON.stringify(key)}\r`);
+  const result = await pending;
+  assert.equal(result.skipped, undefined);
+  assert.deepEqual(installs, [[[], ['cloud-alm']]]);
+  const path = join(home, '.config', 'sap-ai-dev-toolkit', 'cloud-alm.json');
+  assert.deepEqual(JSON.parse(await readFile(path, 'utf8')), {
+    url: tenant.url,
+    tokenurl: `${tenant.url}/oauth/token`,
+    clientid: 'sb-calm-setup!b1',
+    clientsecret: 'calm-setup-secret-value'
+  });
+  assert.equal((await stat(path)).mode & 0o777, 0o600);
+  assert.doesNotMatch(output.text(), /calm-setup-secret-value/);
+  assert.match(output.text(), /Configured the SAP Cloud ALM MCP server/);
+});
+
+test('runDatasphereSetup interactive path stores the rotated refresh token', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'datasphere-setup-inter-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const input = new PassThrough();
+  input.isTTY = true;
+  input.setRawMode = () => {};
+  const output = outputStream();
+  const installs = [];
+  const pending = runDatasphereSetup({
+    env: { HOME: home, XDG_CONFIG_HOME: join(home, '.config') },
+    input,
+    output,
+    verifyDatasphere: async () => ({ ok: true, message: 'signed in; 1 spaces visible' }),
+    login: async ({ config, mode }) => {
+      assert.equal(mode, 'browser');
+      assert.equal(config.authorizationUrl, 'https://tenant.authentication.eu10.hana.ondemand.com/oauth/authorize');
+      return { accessToken: 'at', refreshToken: 'rotated-refresh-token', expiresAt: Date.now() + 3600_000 };
+    },
+    install: async (selected, options) => {
+      installs.push(options.sapDevelopmentServers);
+      return { path: join(home, 'mcp.json'), servers: {} };
+    }
+  });
+  const answers = [
+    '\x1b[B\r', // your user (interactive): down arrow, Enter
+    'https://tenant.eu10.hcs.cloud.sap\r',
+    'https://tenant.authentication.eu10.hana.ondemand.com\r',
+    'sb-inter-client!t1\r',
+    'inter-client-secret-value\r',
+    'https://tenant.authentication.eu10.hana.ondemand.com/oauth/authorize\r',
+    '\r',
+    'n\r'
+  ];
+  for (const answer of answers) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    input.write(answer);
+  }
+  const result = await pending;
+  assert.equal(result.skipped, undefined);
+  assert.deepEqual(installs, [['datasphere']]);
+  const stored = JSON.parse(await readFile(join(home, '.config', 'sap-ai-dev-toolkit', 'datasphere.json'), 'utf8'));
+  assert.equal(stored.auth, 'interactive');
+  assert.equal(stored.refreshtoken, 'rotated-refresh-token');
+  assert.equal(stored.authorizationurl, 'https://tenant.authentication.eu10.hana.ondemand.com/oauth/authorize');
+  assert.doesNotMatch(output.text(), /inter-client-secret-value|rotated-refresh-token/);
+});
+
+test('runDatasphereSetup without a terminal reports the non-tty skip', async () => {
+  const output = new PassThrough();
+  const result = await runDatasphereSetup({ env: { HOME: '/tmp/datasphere-non-tty' }, input: new PassThrough(), output });
+  assert.deepEqual(result, { skipped: true, reason: 'non-tty' });
+  assert.match(output.read()?.toString() || '', /Interactive setup needs a terminal\. Rerun sap-ai-dev --setup-datasphere from a terminal\./);
 });

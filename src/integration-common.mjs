@@ -34,27 +34,27 @@ function jsonSafe(value, seen = new WeakSet()) {
   return value;
 }
 
-function jsonText(value) {
+function jsonText(value, { product = 'Integration Suite' } = {}) {
   const text = JSON.stringify(jsonSafe(value), null, 2);
   if (Buffer.byteLength(text, 'utf8') > INTEGRATION_MAX_OUTPUT_BYTES) {
-    throw new IntegrationError('Integration Suite result is too large to return safely; narrow the request (for example file_path, $select or a smaller top).');
+    throw new IntegrationError(`${product} result is too large to return safely; narrow the request (for example file_path, $select or a smaller top).`);
   }
   return text;
 }
 
-export function toolError(error) {
-  let message = 'Integration Suite request failed. Check service-key roles and tenant reachability.';
+export function toolError(error, { fallback = 'Integration Suite request failed. Check service-key roles and tenant reachability.' } = {}) {
+  let message = fallback;
   if (error?.name === 'IntegrationError' || (typeof error?.message === 'string' && INTEGRATION_CONFIG_ERROR.test(error.message))) {
     message = error.message;
   }
   return { isError: true, content: [{ type: 'text', text: message }] };
 }
 
-export async function resultOf(operation) {
+export async function resultOf(operation, options) {
   try {
-    return { content: [{ type: 'text', text: jsonText(await operation()) }] };
+    return { content: [{ type: 'text', text: jsonText(await operation(), options) }] };
   } catch (error) {
-    return toolError(error);
+    return toolError(error, options);
   }
 }
 

@@ -12,7 +12,11 @@ const SERVER_RETRIES = 2;
 const RETRYABLE_STATUS = new Set([500, 502, 503, 504]);
 // Only idempotent methods are retried; POST (create/deploy/import) is never re-sent.
 const RETRYABLE_METHODS = new Set(['GET', 'PUT']);
-const PAGINATION_HEADERS = new Set(['elements-next-page-token', 'nextpage']);
+// Readable response headers: pagination tokens and counts, and async job locations (never credentials or cookies).
+const READABLE_RESPONSE_HEADERS = new Set(['elements-next-page-token', 'nextpage', 'location', 'x-total-count']);
+// Transport-owned headers a caller can never set or override.
+const RESERVED_REQUEST_HEADERS = new Set(['authorization', 'cookie', 'host', 'content-length', 'content-type', 'accept', 'accept-encoding', 'x-csrf-token', 'connection', 'transfer-encoding']);
+const HEADER_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 export class IntegrationError extends Error {
   constructor(message, evidence = {}) {
@@ -39,7 +43,7 @@ function discard(response) {
   void response.body?.cancel().catch(() => {});
 }
 
-async function readCapped(response, limit, label, signal) {
+export async function readCapped(response, limit, label, signal) {
   const declared = Number(response.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > limit) {
     discard(response);
@@ -340,24 +344,37 @@ function createTransportClient({
     withStatus = false,
     unwrap = true,
     deadline,
-    responseHeaders
+    responseHeaders,
+    headers: extraHeaders
   } = {}) {
     if (deadline !== undefined && !Number.isFinite(deadline)) throw new IntegrationError(`${label} request deadline must be an absolute finite timestamp`);
     if (deadline !== undefined && now() >= deadline) throw timeoutError('request', deadline);
     if (responseHeaders !== undefined && (!Array.isArray(responseHeaders)
-      || responseHeaders.some(name => typeof name !== 'string' || !PAGINATION_HEADERS.has(name.toLowerCase())))) {
-      throw new IntegrationError(`${label} response headers are limited to documented pagination tokens`);
+      || responseHeaders.some(name => typeof name !== 'string' || !READABLE_RESPONSE_HEADERS.has(name.toLowerCase())))) {
+      throw new IntegrationError(`${label} response headers are limited to documented pagination tokens and job locations`);
+    }
+    const callerHeaders = {};
+    for (const [name, value] of Object.entries(extraHeaders || {})) {
+      const normalized = name.toLowerCase();
+      if (!HEADER_NAME.test(normalized) || RESERVED_REQUEST_HEADERS.has(normalized) || normalized.startsWith('proxy-')) {
+        throw new IntegrationError(`${label} request header ${name} is not allowed`);
+      }
+      if (typeof value !== 'string' || /[^\x20-\x7e]/.test(value)) throw new IntegrationError(`${label} request header ${name} has an invalid value`);
+      callerHeaders[normalized] = value;
     }
     const target = new URL(`${url}${path}`);
     for (const [key, value] of Object.entries(query || {})) {
-      if (value !== undefined && value !== null) target.searchParams.set(key, String(value));
+      if (Array.isArray(value)) {
+        // Repeated parameters (`status=A&status=B`) carry OR semantics in SAP REST APIs.
+        for (const item of value) if (item !== undefined && item !== null) target.searchParams.append(key, String(item));
+      } else if (value !== undefined && value !== null) target.searchParams.set(key, String(value));
     }
     // SAP management endpoints require literal OData '$' option names and '%20' spaces.
     // Decode only a leading '$' in parameter names; values stay encoded (including '+' and '&').
     target.search = target.search.replaceAll('+', '%20').replace(/([?&])%24(?=[A-Za-z_])/gi, (_, separator) => `${separator}$`);
     if (target.origin !== origin || target.username || target.password || target.hash) throw new IntegrationError(`${label} request escaped the configured tenant`);
 
-    const baseHeaders = { accept };
+    const baseHeaders = { ...callerHeaders, accept };
     let payload;
     if (json !== undefined) {
       baseHeaders['content-type'] = 'application/json';

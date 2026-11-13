@@ -67,7 +67,7 @@ After setup, connect a selected BAS destination or local SAP GUI system from you
 1. Open the Command Palette.
 2. Run **MCP: List Servers**.
 3. Start the server named after your selected destination (the lowercase slug, for example `demo-abap` for destination `DEMO_ABAP`).
-4. In your AI assistant's chat, choose the best-fit bundled agent from the agent picker (GitHub Copilot, Claude Code, and opencode install the agents) or invoke the matching Pi prompt template (`/sap-solution-architect`, `/abap-developer`, `/abap-runtime-debugger`, `/rap-service-developer`, `/hana-cloud-hdi-specialist`, `/sap-integration-architect`, or `/sap-integration-developer`): **SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, **HANA Cloud/HDI Specialist**, **SAP Integration Architect**, or **SAP Integration Developer**.
+4. In your AI assistant's chat, choose the best-fit bundled agent from the agent picker (GitHub Copilot, Claude Code, and opencode install the agents), ask OMP to delegate to the matching task agent (for example "use the `abap-developer` agent"), or invoke the matching Pi prompt template (`/sap-solution-architect`, `/abap-developer`, `/abap-runtime-debugger`, `/rap-service-developer`, `/hana-cloud-hdi-specialist`, `/sap-integration-architect`, or `/sap-integration-developer`): **SAP Solution Architect**, **ABAP Developer**, **ABAP Runtime Debugger**, **RAP Service Developer**, **HANA Cloud/HDI Specialist**, **SAP Integration Architect**, or **SAP Integration Developer**.
 5. In the Chat tools picker, enable the server for that destination.
 6. Ask the agent to inspect, build, test, or verify something in your SAP landscape.
 
@@ -77,7 +77,7 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 
 ## 🤖 Available agents and skills
 
-**Agents:** Seven user-invocable custom agents are included. Select the best fit from the agent picker in your harness's chat (GitHub Copilot, Claude Code, or opencode), or use the matching Pi prompt command, as shown in Quick start. Harnesses without custom agents (OpenAI Codex, Cursor, Gemini CLI, OMP, Cline, Roo Code, Windsurf / Devin Desktop) get the same workflows as skills, for example `sap-integration-architect` and `integration-suite-delivery`.
+**Agents:** Twelve user-invocable custom agents are included. Select the best fit from the agent picker in your harness's chat (GitHub Copilot, Claude Code, or opencode), dispatch the matching OMP task agent by its kebab-case id, or use the matching Pi prompt command, as shown in Quick start. Harnesses without custom agents (OpenAI Codex, Cursor, Gemini CLI, Cline, Roo Code, Windsurf / Devin Desktop) get the same workflows as skills, for example `sap-integration-architect` and `integration-suite-delivery`.
 
 | | Agent | Best for |
 | --- | --- | --- |
@@ -88,8 +88,13 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 | 🗃️ | **HANA Cloud/HDI Specialist** | Read-only HANA Cloud container inspection, CAP/HDI artifact generation, local validation, and user-run deployment handoffs |
 | 🏗️ | **SAP Integration Architect** | SAP Integration Suite design: API Management vs Cloud Integration vs both, connectivity, per-hop security, error handling, and an approved build plan |
 | 🔌 | **SAP Integration Developer** | Building that plan with the Integration Suite companion: iFlows, value mappings, security material, deployment and monitoring in CPI; API providers, proxies, policies, products and key value maps in APIM |
+| 🗄️ | **SAP Datasphere Developer** | Modeling, deploying, loading, and administering Datasphere content end to end with the Datasphere companion: CSN objects, packages, task chains, replication flows, data products, consumption queries and Open SQL |
+| 🚚 | **SAP BW Datasphere Migration Specialist** | Migrating BW models and data products to Datasphere: read-only BW inventory, Data Product Generator or rebuild path, object creation, loads, and BW-versus-Datasphere reconciliation |
+| ⚙️ | **SAP Process Automation Developer** | Inspecting, testing and operating SAP Build Process Automation with the Process Automation companion: process definitions, workflow instances, stuck and failed instances, user-task queues, decisions, process triggers and business events |
+| ☁️ | **SAP BTP Infrastructure Admin** | Auditing and operating SAP BTP core platform setup with the BTP companion: account hierarchy, entitlements and quotas, Service Manager instances and service keys, destinations, trust, Cloud Connectors and principal propagation checks |
+| 📡 | **SAP DevOps & Observability Specialist** | Monitoring SAP landscapes with the Cloud ALM companion: Integration & Exception Monitoring, health and alert hotspots per DEV/TEST/PROD tier, incident triage correlated with CPI message logs and SLG1, and feature/transport status |
 
-**Included skills:** `abap-development` · `abap-testing-quality` · `cds-development` · `rap-development` · `abap-debugging` · `abap-runtime-analysis` · `rap-service-delivery` · `sap-standard-api-analysis` · `clean-core-extensibility` · `sap-sdlc-orchestration` · `sap-transport-release` · `hana-cloud-inspection` · `hana-cloud-native-development` · `hana-cloud-validation` · `sap-integration-architect` · `integration-suite-delivery`
+**Included skills:** `abap-development` · `abap-testing-quality` · `cds-development` · `rap-development` · `abap-debugging` · `abap-runtime-analysis` · `rap-service-delivery` · `sap-standard-api-analysis` · `clean-core-extensibility` · `sap-sdlc-orchestration` · `sap-transport-release` · `hana-cloud-inspection` · `hana-cloud-native-development` · `hana-cloud-validation` · `sap-integration-architect` · `integration-suite-delivery` · `datasphere-development` · `datasphere-administration` · `bw-datasphere-migration` · `process-automation-development` · `btp-platform-administration` · `cloud-alm-operations`
 
 Agents and skills install for the harnesses you pick during global installation: a multi-select offers GitHub Copilot and Claude Code pre-checked, plus OpenAI Codex, Cursor, Gemini CLI, opencode, Pi Coding Agent, Oh My Pi (OMP), Cline, Roo Code, and Windsurf / Devin Desktop. In non-interactive installs they are installed for GitHub Copilot only; run `sap-ai-dev --setup` afterwards to configure destinations or local SAP GUI systems. Repository-scoped installation instructions appear below.
 
@@ -161,9 +166,9 @@ The catalog below covers source inspection, data, editing, quality, transports, 
 - Read SLG1 application logs
 - Review and create transport requests
 
-## 🧠 Seven agents, sixteen focused skills
+## 🧠 Twelve agents, twenty-two focused skills
 
-The package ships with seven custom agents plus sixteen task-focused Agent Skills:
+The package ships with twelve custom agents plus twenty-two task-focused Agent Skills:
 
 | | Skill | Best for |
 | --- | --- | --- |
@@ -183,6 +188,12 @@ The package ships with seven custom agents plus sixteen task-focused Agent Skill
 | ✅ | `hana-cloud-validation` | Run local CAP/HANA builds and prepare a reviewed, user-run deployment handoff |
 | 🏗️ | `sap-integration-architect` | Integration Suite pattern choice, connectivity, per-hop security, naming/versioning rules, and an approvable build plan |
 | 🔌 | `integration-suite-delivery` | Building iFlows, API proxies, gateway policies, API products and key value maps step by step, deploying, and troubleshooting with message logs |
+| 🗄️ | `datasphere-development` | Modeling, deploying, loading, and verifying Datasphere content: CSN objects, packages, task chains, replication flows, data products, consumption queries and Open SQL |
+| 🛡️ | `datasphere-administration` | Administering Datasphere: spaces and space users, database users, workload priorities, roles, users, connections, TLS certificates, and task-scheduling consent |
+| 🚚 | `bw-datasphere-migration` | Planning and running BW → Datasphere migrations: BW inventory, Data Product Generator or rebuild path, object mapping, BW baselines, and Datasphere reconciliation |
+| ⚙️ | `process-automation-development` | Inspecting, testing and operating SAP Build Process Automation: definitions, instances, contexts, logs and errors, stuck instances, user tasks, decisions, process triggers and business events |
+| ☁️ | `btp-platform-administration` | Auditing and operating SAP BTP core platform setup: account hierarchy, entitlements and quotas, Service Manager instances and service keys, destinations, identity and destination trust, Cloud Connectors and principal propagation checks |
+| 📡 | `cloud-alm-operations` | Monitoring, triaging and tracking SAP landscapes with Cloud ALM: monitoring records and analytics, tier hotspots, CPI/SLG1 correlation, feature and transport status, confirmation-gated alert closing |
 
 ## 🗺️ How it fits together
 
@@ -196,7 +207,7 @@ ABAP/RAP backend access is provided by this add-on's BAS proxy. For end-to-end S
 sap-ai-dev --setup --tools
 ```
 
-The companion entries are optional and are launched through `npx` only when the MCP client starts them. They are marked as managed by `sap-ai-dev-toolkit`, so rerunning setup can update or remove them without touching unrelated MCP servers. The HANA and Integration Suite companions use `--ignore-scripts` so the toolkit postinstall wizard cannot run during MCP startup.
+The companion entries are optional and are launched through `npx` only when the MCP client starts them. They are marked as managed by `sap-ai-dev-toolkit`, so rerunning setup can update or remove them without touching unrelated MCP servers. The HANA, Integration Suite and Datasphere companions use `--ignore-scripts` so the toolkit postinstall wizard cannot run during MCP startup.
 
 | MCP entry | Package | Launches | Use when the agent needs to |
 | --- | --- | --- | --- |
@@ -206,6 +217,9 @@ The companion entries are optional and are launched through `npx` only when the 
 | `browser-validation` | `@playwright/mcp` | `playwright-mcp` | Open BAS previews, smoke-test Fiori/UI flows, collect screenshots, and verify browser runtime behavior |
 | `hana-cloud-inspector` | `sap-ai-dev-toolkit` | `sap-ai-hana` | Inspect a bound HANA Cloud HDI schema using read-only catalog tools and capped row reads |
 | `integration-suite` | `sap-ai-dev-toolkit` | `sap-ai-integration` | Build, deploy, undeploy, and monitor Cloud Integration content (iFlows, value mappings, script collections, security material, Partner Directory) and manage API Management providers, proxies, policies, products, and key value maps |
+| `datasphere` | `sap-ai-dev-toolkit` | `sap-ai-datasphere` | Model and administer SAP Datasphere: spaces, users, roles, database users, connections, modeling objects and packages, task chains, replication flows, Data Marketplace, consumption queries and Open SQL |
+| `process-automation` | `sap-ai-dev-toolkit` | `sap-ai-process-automation` | Inspect and operate SAP Build Process Automation across all eight BPA APIs: process definitions, workflow instances with contexts, logs and errors, stuck instances, user tasks and the user inbox, decisions, API triggers, automations, process visibility, administration jobs, process starts and business events |
+| `cloud-alm` | `sap-ai-dev-toolkit` | `sap-ai-cloud-alm` | Observe and triage SAP landscapes with SAP Cloud ALM: health, exception and alert hotspots per tier, Integration & Exception Monitoring records, monitoring events with CPI and SLG1 handoffs, analytics, feature and transport status, and confirmation-gated alert closing |
 
 Recommended profiles:
 
@@ -303,6 +317,136 @@ This separate checker permits configured-management GETs and exact OAuth token P
 
 Lifecycle release changes: signed bounded collections and precise access evidence; continuable release validation/deployment and private configuration-bound recovery; server-side API analytics; native monitoring/promotion readiness; guarded policy/consumer changes; separately credentialed optional metadata adapters and complete native handoffs.
 Live AnalyticsService compatibility uses distinct derived aliases and an explicit source-record count. A zero-record aggregate with null sums is `no_data`, not a failed request or healthy traffic; null metrics with nonzero records remain partial.
+
+### SAP Datasphere
+
+For direct CLI use with your Datasphere user, run **`sap-ai-dev --datasphere objects views list --space MY_SPACE`**. The first command asks for your tenant URL and opens SAP's browser sign-in. On the first run, provide two fresh temporary codes: one to download the command catalog, then one to run the requested command. Later commands reuse the tenant URL and catalog and ask only for one fresh code. SAP's CLI is bundled; no OAuth client or separate CLI installation is required for this flow.
+
+From a source checkout, use `npm run datasphere -- objects views list --space MY_SPACE`. Supply `--host https://<tenant>.eu20.hcs.cloud.sap` to choose a tenant explicitly; a copied Datasphere page URL or a bare tenant host also works. The tenant URL is saved in `~/.config/sap-ai-dev-toolkit/datasphere-cli.json`, and discovery metadata is cached privately per tenant and CLI version. Codes stay in private temporary files removed when the command finishes. Native SAP command options, exit codes, and write confirmations apply. `--datasphere --help` and `--datasphere --version` work without signing in. In a remote terminal, use the printed browser URL; after the catalog is initialized, `--passcode-stdin` reads a code through standard input without opening a browser. For a fresh automation environment, first initialize with `--datasphere config cache init --host <tenant URL> --passcode-stdin`, then supply a new code to the requested command. Use Node.js 20–24, as supported by the bundled SAP CLI.
+
+The separate `datasphere` stdio MCP server covers the whole Datasphere surface reachable from outside the UI: spaces, space users, database users, workload, global and scoped roles, users, objects of every type (including packages, task chains, replication flows and data access controls), connections, TLS certificates, the Data Marketplace, the Consumption catalog/relational/analytical APIs, the Tasks API, and read/execute access to the space Open SQL schema through a Datasphere database user (including the `"DWC_GLOBAL"` data-lake procedures). Typed tools cover the frequent flows; discovery-driven generic tools cover every other — and future — `datasphere` CLI command. All writes require exact confirmation strings; secrets are write-only.
+
+Sign in once with **`sap-ai-dev --setup-datasphere`**: a **Technical user** OAuth client (client credentials) covers objects, tasks, Data Marketplace, connections, certificates and consumption data; **Your user** (Interactive Usage, redirect URI `http://localhost:8080`) additionally covers spaces, users, roles, database users and workload. Credentials are verified online and stored only for you in `~/.config/sap-ai-dev-toolkit/datasphere.json` (0600) — never in `mcp.json`; environment variables (`DATASPHERE_URL`, `DATASPHERE_TOKEN_URL`, `DATASPHERE_CLIENT_ID`, `DATASPHERE_CLIENT_SECRET`, optionally `DATASPHERE_AUTH`, `DATASPHERE_AUTHORIZATION_URL`, `DATASPHERE_REFRESH_TOKEN` and `DATASPHERE_SQL_*`) always win. `sap-ai-datasphere --check` verifies catalog, CLI and SQL access.
+
+#### Tool catalog
+
+The server registers 32 tools by default; the two Open SQL tools appear only when a Datasphere database user is configured. The live `tools/list` response is authoritative; full contracts live in [tools.md](tools.md#separate-optional-sap-datasphere-server). Every state-changing tool requires its exact confirmation string before any tenant call, and all results pass through secret redaction.
+
+**Connection, consumption and reconciliation**
+
+| Tool | Behavior |
+| --- | --- |
+| `datasphere_connection_info` | Report the connected tenant, auth mode, credential source, CLI package version and Open SQL configuration; optional online verification, never returns credentials. |
+| `datasphere_list_spaces` | List the spaces visible to the OAuth client (Consumption catalog API). |
+| `datasphere_list_assets` | List assets exposed for consumption — all visible assets or one space's. |
+| `datasphere_get_asset_metadata` | Fetch the `$metadata` document of a relational or analytical asset (XML, capped at 64 KiB). |
+| `datasphere_query_relational` | Read rows of a relational asset: projection, filter, ordering, paging and count. |
+| `datasphere_query_analytical` | Read aggregated data from an analytic model; `$select` names the requested measures and dimensions. |
+| `datasphere_reconcile` | Compare an asset against expected figures — row count for relational assets, measure totals for analytic models, each with a tolerance. |
+
+**Object lifecycle**
+
+| Tool | Behavior |
+| --- | --- |
+| `datasphere_list_objects` | List objects of one type in a space: technical/business name, type, semantic usage, status, deployment and change dates. |
+| `datasphere_read_object` | Read one object: design-time definition, run-time state, or the complete object. |
+| `datasphere_create_object` | Create an object from a CSN definition and read it back. Confirmation `CREATE DATASPHERE <OBJECT_TYPE> <SPACE>.<TECHNICAL_NAME>`. |
+| `datasphere_update_object` | Update an object from a CSN definition, guarded by `expected_changed_on`. Confirmation `UPDATE DATASPHERE <OBJECT_TYPE> <SPACE>.<TECHNICAL_NAME>`. |
+| `datasphere_delete_object` | Delete an object from a space. Confirmation `DELETE DATASPHERE <OBJECT_TYPE> <SPACE>.<TECHNICAL_NAME>`. |
+| `datasphere_export_package` | Export a package from a space. Confirmation `EXPORT DATASPHERE PACKAGE <SPACE>.<TECHNICAL_NAME>`. |
+| `datasphere_build_local_table_csn` | Convert a BW/Data-Dictionary-style field list (name, label, ddic type, length, decimals, key) into a local-table CSN definition. Pure conversion, no tenant call. |
+
+**Connections, task chains and replication flows**
+
+| Tool | Behavior |
+| --- | --- |
+| `datasphere_list_connections` | List the connections of a space. |
+| `datasphere_validate_connection` | Validate one connection of a space. |
+| `datasphere_list_task_logs` | List the task logs of one object (task chain, replication flow) through the Tasks REST API. |
+| `datasphere_get_task_log` | Read one task log by id; detail level `status`, `details` or `extended`. |
+| `datasphere_run_task_chain` | Start a task chain run and return its log id. Confirmation `RUN DATASPHERE TASK CHAIN <SPACE>.<TASK_CHAIN>`. |
+| `datasphere_retry_task_chain` | Retry the last failed run of a task chain. Confirmation `RETRY DATASPHERE TASK CHAIN <SPACE>.<TASK_CHAIN>`. |
+| `datasphere_cancel_task_chain` | Cancel one run by log id. Confirmation `CANCEL DATASPHERE TASK CHAIN RUN <SPACE>.<LOG_ID>`. |
+| `datasphere_replication_flow` | Run, pause, resume, stop or inspect a replication flow — or pause/resume/restart a single object within it. State changes require `<ACTION> DATASPHERE REPLICATION FLOW <SPACE>.<TECHNICAL_NAME>`. |
+
+**Data Marketplace**
+
+| Tool | Behavior |
+| --- | --- |
+| `datasphere_list_data_providers` | List the Data Marketplace providers visible to the tenant. |
+| `datasphere_list_data_products` | List Data Marketplace products. |
+| `datasphere_read_data_product` | Read one product definition by uuid — the template for `datasphere_create_data_product`. |
+| `datasphere_create_data_product` | Create a data product in status Draft from a definition. Confirmation `CREATE DATASPHERE DATA PRODUCT`. |
+| `datasphere_set_data_product_status` | List, delist or deactivate a product. Confirmation `SET DATASPHERE DATA PRODUCT <UUID> <LIFECYCLE_STATUS>`. |
+| `datasphere_install_data_product` | Install a product into a space. Confirmation `INSTALL DATASPHERE DATA PRODUCT <UUID> INTO <SPACE>`. |
+
+**Generic Datasphere CLI commands**
+
+| Tool | Behavior |
+| --- | --- |
+| `datasphere_list_commands` | List the CLI command catalog discovered from the tenant, optionally filtered by prefix, with the auth mode each command supports. Compact by default; use `include_parameters` with a prefix for parameter lists. |
+| `datasphere_describe_command` | Show the authoritative `--help` text of one CLI command from the tenant catalog. |
+| `datasphere_run_read_command` | Run any discovered read-only CLI command (spaces list, objects read, marketplace, tasks status, ...) with validated options. |
+| `datasphere_run_command` | Run any discovered CLI command; changing commands require confirmation `RUN DATASPHERE <COMMAND>` (deletions `DELETE DATASPHERE <COMMAND>`). |
+
+**Open SQL schema** — only with `DATASPHERE_SQL_*` configured
+
+| Tool | Behavior |
+| --- | --- |
+| `datasphere_sql_query` | Run one read-only `SELECT` against the space Open SQL schema of the database user; rows capped by `max_rows`. |
+| `datasphere_sql_execute` | Execute one SQL statement (DDL, DML, or a documented `"DWC_GLOBAL"` data-lake procedure call). Confirmation `EXECUTE DATASPHERE SQL AS <USER>`. |
+
+The **SAP Datasphere Developer** agent plus the `datasphere-development` and `datasphere-administration` skills drive modeling and administration; the **SAP BW Datasphere Migration Specialist** agent plus `bw-datasphere-migration` plan and run BW → Datasphere migrations (Data Product Generator path or rebuild path), using the read-only ABAP destination server (`GetTable`, `GetTableContents`, `RunQuery`, `SearchObject`) for the BW inventory and `datasphere_reconcile` for BW-versus-Datasphere figures.
+
+### SAP Build Process Automation
+
+The separate `process-automation` stdio MCP server covers all eight SAP Build Process Automation APIs of the Business Accelerator Hub package (Workflow, Inbox, Decisions, Unified API triggers, Automation Execution, Automation Monitoring, Visibility Scenarios, Visibility Workspace) plus business events with 51 tools. It connects through a service key of a `process-automation-service` instance (plan `standard`; client-secret key). It reads process definitions, workflow instances with their contexts, outputs, execution logs, error messages, attributes and roles, finds erroneous, suspended and long-running instances, lists the user-task queue behind My Inbox / SAP Fiori Task Center, evaluates and regression-tests deployed decisions, and traces a business key from an ABAP/RAP event or CPI message to the workflow instance and its open tasks. Every write requires an exact confirmation string; asynchronous operations return a `job_id` for `bpa_get_job`.
+
+| API family | Tools |
+|---|---|
+| Connection | `bpa_connection_info` |
+| Workflow definitions | `bpa_list_process_definitions`, `bpa_get_process_definition`, `bpa_delete_process_definition`, `bpa_list_task_definitions`, `bpa_delete_form` |
+| Instances | `bpa_list_instances`, `bpa_get_instance`, `bpa_find_stuck_instances`, `bpa_trace_process`, `bpa_start_instance`, `bpa_change_instance_status`, `bpa_update_instance_context`, `bpa_update_instance_roles`, `bpa_delete_instances`, `bpa_send_message` |
+| User tasks | `bpa_list_tasks`, `bpa_get_task`, `bpa_complete_task`, `bpa_update_tasks`, `bpa_update_task_context` |
+| Administration / jobs | `bpa_export_workflow_data`, `bpa_purge_workflow_data`, `bpa_get_job` |
+| Inbox (Task Consumption Model, user-centric) | `bpa_inbox_list_tasks`, `bpa_inbox_get_task`, `bpa_inbox_list_task_definitions`, `bpa_inbox_task_action`, `bpa_inbox_list_substitution_rules`, `bpa_inbox_create_substitution_rule`, `bpa_inbox_change_substitution_rule` |
+| Decisions | `bpa_invoke_decision`, `bpa_test_decision` |
+| API triggers (Unified) | `bpa_list_api_triggers`, `bpa_get_api_trigger`, `bpa_execute_api_trigger` |
+| Automations (execution + monitoring; environment API key) | `bpa_list_automation_triggers`, `bpa_get_automation_trigger`, `bpa_list_automation_jobs`, `bpa_start_automation`, `bpa_export_automation_data` |
+| Visibility scenarios | `bpa_list_visibility_scenarios`, `bpa_get_visibility_scenario`, `bpa_process_visibility_scenario`, `bpa_clear_visibility_data`, `bpa_list_visibility_events`, `bpa_push_visibility_events` |
+| Visibility workspace | `bpa_list_visibility_workspace_scenarios`, `bpa_list_visibility_instances`, `bpa_get_visibility_instance` |
+| Business events | `bpa_send_business_event` |
+
+The Inbox shows the signed-in user's tasks (with technical auth the technical client's inbox, normally empty). Automation triggers, jobs and BAM/archived-job exports need an environment API key (`irpa-api-key`, scopes such as `TRIGGER_READ`, `TRIGGER_EXECUTE`, `BAM_DOWNLOAD`, `JOB_DATA_DOWNLOAD`); Unified API triggers and process starts send it as `api-key` when configured. Exports are written to a new local file (absolute path, never overwritten, mode 0600).
+
+Set it up with **`sap-ai-dev --setup-process-automation`**: paste the service key (or the path to its `.json` file) and choose **Technical client** (client credentials; actions run as the key's technical user) or **Your user** (authorization code with the same client; actions are attributed to you and need `ProcessAutomationAdmin` or `ProcessAutomationParticipant`). After verification the wizard optionally asks for an environment API key (Control Tower > Environments > API Keys) and a default environment id for API triggers and process starts; press Enter to skip either. Credentials are verified online and stored only for you in `~/.config/sap-ai-dev-toolkit/process-automation.json` (0600) — never in `mcp.json`. Environment variables win: `PROCESS_AUTOMATION_URL`, `PROCESS_AUTOMATION_TOKEN_URL`, `PROCESS_AUTOMATION_CLIENT_ID`, `PROCESS_AUTOMATION_CLIENT_SECRET` (all four together), else `PROCESS_AUTOMATION_SERVICE_KEY`; optionally `PROCESS_AUTOMATION_AUTH` and `PROCESS_AUTOMATION_REFRESH_TOKEN`. `PROCESS_AUTOMATION_API_KEY` and `PROCESS_AUTOMATION_ENVIRONMENT_ID` are optional and override the stored values. `sap-ai-process-automation --check` verifies Workflow API access. Full tool contracts and confirmation strings live in [tools.md](tools.md#separate-optional-sap-build-process-automation-server).
+
+The **SAP Process Automation Developer** agent plus the `process-automation-development` skill drive inspection, decision testing, confirmed operations, asynchronous job tracking and end-to-end tracing.
+
+### SAP BTP platform administration
+
+The separate `sap-btp` stdio MCP server (`sap-ai-btp`) wraps your installed SAP BTP CLI and uses your own `btp login --sso` session (sessions last at most 12 hours); the toolkit stores no credentials. Every subaccount-scoped tool takes the subaccount GUID explicitly; the server never runs `btp target`.
+
+| Area | Tools |
+| --- | --- |
+| Connection | `btp_connection_info` |
+| Accounts, entitlements and quotas | `btp_get_account_hierarchy`, `btp_list_entitlements`, `btp_check_quota` |
+| Service Manager instances and service keys | `btp_list_service_instances`, `btp_get_service_instance`, `btp_list_service_keys`, `btp_get_service_key`, `btp_create_service_instance`, `btp_create_service_key` |
+| Destinations, trust and Cloud Connectors | `btp_list_destinations`, `btp_get_destination`, `btp_get_trust`, `btp_list_cloud_connectors`, `btp_check_destination` |
+
+Service-key credentials, instance parameters and destination secrets are always redacted; fetch a full key in your own terminal with `btp get services/binding --name <key> --subaccount <id>`. Creating an instance (`CREATE BTP SERVICE INSTANCE <name>`, after a quota check) or a service key (`CREATE BTP SERVICE KEY <name>`) requires the exact confirmation string; creation parameters go through a private temporary file, never the command line. Cloud Connector data comes from the BTP-side Connectivity API and needs a Connectivity `api_access` instance with a client-secret service key. `btp_check_destination` reports pass/warn/fail/unknown checks; principal-propagation items only visible in the Cloud Connector or backend (system and CA certificates, synchronized trust, X.509 principal type, CERTRULE) are reported as `unknown`. There are no delete, entitlement-assignment, destination, trust or role-collection write tools.
+
+Set it up with **`sap-ai-dev --setup-btp`**: the wizard locates `btp` on PATH (or `BTP_CLI`), checks the session, offers to run `btp login --sso` when it expired, and saves only the CLI location to `~/.config/sap-ai-dev-toolkit/btp.json` (0600). `BTP_CLI` and `BTP_CLIENTCONFIG` in the MCP host environment win. `sap-ai-btp --check` verifies the CLI and the session from the shell.
+
+The **SAP BTP Infrastructure Admin** agent plus the `btp-platform-administration` skill drive account and entitlement audits, instance and key automation, and destination/trust/Cloud Connector verification.
+
+### SAP Cloud ALM
+
+The separate `cloud-alm` stdio MCP server connects to SAP Cloud ALM for operations through a service key of a "SAP Cloud ALM API" instance (plan `standard`, client-secret binding; client credentials only). Its 11 tools read landscape objects and their role tiers, summarize exception, health and alert hotspots per DEV/TEST/PROD tier, read raw Integration & Exception Monitoring records, monitoring events and job runs, run analytics queries, and report feature lifecycle status with transport ids. `calm_triage_incident` returns ready-to-use arguments for the Integration Suite companion's `cpi_list_message_logs` and the ABAP destination's `get_application_log`, so the agent can correlate a Cloud ALM alert with live CPI message processing logs and SLG1. The only write, `calm_close_event_situation`, needs `CLOSE CALM EVENT SITUATION <event_situation_id>` (or `… BY EXTERNAL ID <external_id>`).
+
+Set it up with **`sap-ai-dev --setup-cloud-alm`**: paste the service key (or the path to its `.json` file); it is verified against the Landscape and Analytics APIs and stored only for you in `~/.config/sap-ai-dev-toolkit/cloud-alm.json` (0600) — never in `mcp.json`. Environment variables win: `CLOUD_ALM_SERVICE_KEY`, or `CLOUD_ALM_URL` + `CLOUD_ALM_TOKEN_URL` + `CLOUD_ALM_CLIENT_ID` + `CLOUD_ALM_CLIENT_SECRET`. `sap-ai-cloud-alm --check` verifies access from the shell.
+
+The **SAP DevOps & Observability Specialist** agent plus the `cloud-alm-operations` skill drive hotspot finding, triage across Cloud ALM, CPI and ABAP, and deployment tracking. Cloud ALM exposes no per-system transport import status, so the agent never infers TEST/PROD arrival from Features data.
 
 ## 💡 Example requests
 
@@ -502,12 +646,12 @@ During npm postinstall, or after interactive `sap-ai-dev --setup` in BAS or on a
 | Gemini CLI | `$HOME/.gemini/skills/` | — | `$HOME/.gemini/settings.json` |
 | opencode | `$XDG_CONFIG_HOME/opencode/skills/` (default `$HOME/.config/opencode/skills/`) | `$XDG_CONFIG_HOME/opencode/agents/<id>.md` (as subagents) | Not changed automatically |
 | Pi Coding Agent | `$PI_CODING_AGENT_DIR/skills/` (default `$HOME/.pi/agent/skills/`) | `$PI_CODING_AGENT_DIR/prompts/<id>.md` (as `/` prompt commands) | `$PI_CODING_AGENT_DIR/mcp.json` (default `$HOME/.pi/agent/mcp.json`) |
-| Oh My Pi (OMP) | `$HOME/.omp/agent/skills/` (overridden by `PI_CONFIG_DIR` or `PI_CODING_AGENT_DIR`) | — | `$HOME/.omp/agent/mcp.json` (same overrides) |
+| Oh My Pi (OMP) | `$HOME/.omp/agent/skills/` (overridden by `PI_CONFIG_DIR` or `PI_CODING_AGENT_DIR`) | `$HOME/.omp/agent/agents/<id>.md` (as task agents named `<id>`; same overrides) | `$HOME/.omp/agent/mcp.json` (same overrides) |
 | Cline | `$HOME/.cline/skills/` | — | Not changed automatically |
 | Roo Code | `$HOME/.roo/skills/` | — | Not changed automatically |
 | Windsurf / Devin Desktop | `$XDG_CONFIG_HOME/devin/skills/` (default `$HOME/.config/devin/skills/`); Windows: `$HOME/.codeium/windsurf/skills/` | — | `$XDG_CONFIG_HOME/devin/mcp_config.json` (default `$HOME/.config/devin/mcp_config.json`); Windows: `%APPDATA%\devin\mcp_config.json` |
 
-All 14 skills use the portable `SKILL.md` format and are installed verbatim. The 5 agents use Copilot's `.agent.md` format, so they are installed as native custom agents for harnesses with a custom-agent mechanism (GitHub Copilot, Claude Code, opencode), with frontmatter adapted where needed. Pi receives equivalent prompt templates (`/abap-developer`, `/sap-solution-architect`, and so on) because Pi exposes reusable personas through prompts rather than a separate custom-agent file type. Selecting several harnesses duplicates the small markdown payloads on disk.
+All 22 skills use the portable `SKILL.md` format and are installed verbatim. The 12 agents use Copilot's `.agent.md` format, so they are installed as native custom agents for harnesses with a custom-agent mechanism (GitHub Copilot, Claude Code, opencode, OMP), with frontmatter adapted where needed. OMP receives them as task agents named after their file id (`abap-developer`, `sap-solution-architect`, and so on), with Copilot-specific tool-picker wording rewritten for OMP's MCP tool inventory. Pi receives equivalent prompt templates (`/abap-developer`, `/sap-solution-architect`, and so on) because Pi exposes reusable personas through prompts rather than a separate custom-agent file type. Selecting several harnesses duplicates the small markdown payloads on disk.
 
 MCP auto-wiring preserves unrelated servers in each harness config and replaces only entries previously managed by `sap-ai-dev-toolkit`. Generated entries carry `SAP_AI_DEV_TOOLKIT_MANAGED=true` in their server environment so future reinstalls can reconcile them without touching user-owned MCP servers.
 
