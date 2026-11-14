@@ -160,7 +160,8 @@ async function assertUserCopilotAssets(home) {
     'sap-integration-architect',
     'sap-sdlc-orchestration',
     'sap-standard-api-analysis',
-    'sap-transport-release'
+    'sap-transport-release',
+    'sap-webgui-fallback'
   ]);
   for (const skillName of skillNames) {
     assert.equal((await stat(join(copilotRoot, 'skills', skillName, 'SKILL.md'))).isFile(), true);
@@ -189,7 +190,7 @@ async function assertUserClaudeAssets(home) {
   assert.match(architect, /^---\nname: [^\n]+\ndescription: [^\n]+\n---\n/s);
   assert.doesNotMatch(architect, /(^|\n)(target|user-invocable):/);
   const skillNames = (await readdir(join(claudeRoot, 'skills'))).sort();
-  assert.equal(skillNames.length, 23);
+  assert.equal(skillNames.length, 24);
   for (const skillName of skillNames) {
     assert.equal((await stat(join(claudeRoot, 'skills', skillName, 'SKILL.md'))).isFile(), true);
   }
@@ -894,10 +895,10 @@ test('global postinstall completes BAS selection before default Copilot asset in
   assert.equal(accepted.assetsAnswerSent, true, accepted.stdout);
   const acceptLogs = `${accepted.stdout}\n${accepted.stderr}`;
   assert.ok(acceptLogs.indexOf('Install bundled agents and skills for') > acceptLogs.indexOf('Configured 1 MCP server'), acceptLogs);
-  assert.match(acceptLogs, /GitHub Copilot: 36 files installed or updated in [^\n]*\.copilot; 0 already current/);
-  assert.match(acceptLogs, /Claude Code: 36 files installed or updated in [^\n]*\.claude; 0 already current/);
-  assert.match(acceptLogs, /Installed 72 files across 2 harnesses/);
-  assert.ok(acceptLogs.indexOf('Installation configuration summary') > acceptLogs.indexOf('Installed 72 files across 2 harnesses'), acceptLogs);
+  assert.match(acceptLogs, /GitHub Copilot: 37 files installed or updated in [^\n]*\.copilot; 0 already current/);
+  assert.match(acceptLogs, /Claude Code: 37 files installed or updated in [^\n]*\.claude; 0 already current/);
+  assert.match(acceptLogs, /Installed 74 files across 2 harnesses/);
+  assert.ok(acceptLogs.indexOf('Installation configuration summary') > acceptLogs.indexOf('Installed 74 files across 2 harnesses'), acceptLogs);
   assert.ok(acceptLogs.includes(`MCP config file: ${config}`), acceptLogs);
   assert.ok(acceptLogs.includes('Destination: BAS · alpha-system · client 100 · Basic'), acceptLogs);
   assert.ok(acceptLogs.split(/\r?\n/).some(line => line.trim() === `Launch: stdio · ${globalLauncher}`), acceptLogs);
@@ -915,12 +916,12 @@ test('global postinstall completes BAS selection before default Copilot asset in
   assert.equal(extended.code, 0, `${extended.stdout}\n${extended.stderr}`);
   assert.equal(extended.assetsAnswerSent, true, extended.stdout);
   const extendedLogs = `${extended.stdout}\n${extended.stderr}`;
-  assert.match(extendedLogs, /Cursor: 23 files installed or updated in [^\n]*\.cursor; 0 already current/);
-  assert.match(extendedLogs, /Installed 95 files across 3 harnesses/);
+  assert.match(extendedLogs, /Cursor: 24 files installed or updated in [^\n]*\.cursor; 0 already current/);
+  assert.match(extendedLogs, /Installed 98 files across 3 harnesses/);
   await assertUserCopilotAssets(extendedHome);
   await assertUserClaudeAssets(extendedHome);
   const cursorSkills = (await readdir(join(extendedHome, '.cursor', 'skills'))).sort();
-  assert.equal(cursorSkills.length, 23);
+  assert.equal(cursorSkills.length, 24);
   await assert.rejects(stat(join(extendedHome, '.cursor', 'agents')), { code: 'ENOENT' });
 
 });
@@ -1023,9 +1024,9 @@ test('non-TTY postinstall honors the harness environment override', async () => 
     assert.match(logs, /Installing bundled agents and skills for Claude Code, Gemini CLI, Oh My Pi \(OMP\), Cline, Roo Code, Windsurf \/ Devin Desktop by default because no interactive terminal is available/);
     await assertUserClaudeAssets(directory);
     const geminiSkills = (await readdir(join(directory, '.gemini', 'skills'))).sort();
-    assert.equal(geminiSkills.length, 23);
+    assert.equal(geminiSkills.length, 24);
     for (const root of [join(directory, '.omp', 'agent'), join(directory, '.cline'), join(directory, '.roo'), join(directory, 'xdg-config', 'devin')]) {
-      assert.equal((await readdir(join(root, 'skills'))).length, 23, root);
+      assert.equal((await readdir(join(root, 'skills'))).length, 24, root);
       assert.equal((await stat(join(root, 'skills', 'abap-development', 'SKILL.md'))).isFile(), true, root);
     }
     await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
@@ -1082,10 +1083,10 @@ test('postinstall harness selection honors the environment override in a live TT
   const logs = `${result.stdout}\n${result.stderr}`;
   assert.equal(result.code, 0, logs);
   assert.equal(result.assetsAnswerSent, true, logs);
-  assert.match(logs, /Gemini CLI: 23 files installed or updated in [^\n]*\.gemini; 0 already current/);
-  assert.match(logs, /Installed 23 files across 1 harness/);
+  assert.match(logs, /Gemini CLI: 24 files installed or updated in [^\n]*\.gemini; 0 already current/);
+  assert.match(logs, /Installed 24 files across 1 harness/);
   const geminiSkills = (await readdir(join(directory, '.gemini', 'skills'))).sort();
-  assert.equal(geminiSkills.length, 23);
+  assert.equal(geminiSkills.length, 24);
   await assert.rejects(stat(join(directory, '.copilot')), { code: 'ENOENT' });
   await assert.rejects(stat(join(directory, '.claude')), { code: 'ENOENT' });
 });

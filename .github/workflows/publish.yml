@@ -80,6 +80,9 @@ jobs:
       - name: Build native AEM server for tests
         if: steps.version.outputs.changed == 'true'
         run: cargo build --locked --manifest-path native/aem/Cargo.toml
+      - name: Build native WebGUI server for tests
+        if: steps.version.outputs.changed == 'true'
+        run: cargo build --locked --manifest-path native/webgui/Cargo.toml
       - name: Run test suite
         if: steps.version.outputs.changed == 'true'
         run: npm test

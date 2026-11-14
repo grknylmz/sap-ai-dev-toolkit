@@ -28,5 +28,9 @@ jobs:
         run: cargo test --locked --manifest-path native/aem/Cargo.toml
       - name: Build native AEM server
         run: cargo build --locked --manifest-path native/aem/Cargo.toml
+      - name: Test native WebGUI server
+        run: cargo test --locked --manifest-path native/webgui/Cargo.toml
+      - name: Build native WebGUI server
+        run: cargo build --locked --manifest-path native/webgui/Cargo.toml
       - name: Run test suite
         run: npm test

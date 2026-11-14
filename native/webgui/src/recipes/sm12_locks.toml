@@ -1,0 +1,19 @@
+name = "sm12_locks"
+title = "Lock entries (SM12)"
+description = "Current enqueue locks by user and table: time, client, user, component, mode, table and lock argument."
+tcode = "SM12"
+result = "RS_ENQ_ADMIN/0101"
+
+[[params]]
+name = "user"
+description = "User pattern (* for all users)"
+default = "*"
+
+[[params]]
+name = "table"
+description = "Locked table name pattern; empty for all"
+
+[[steps]]
+expect = "RS_ENQ_ADMIN/0101"
+set = { "ENQ_LOCK_FILTER-USERNAME" = "{user}", "ENQ_LOCK_FILTER-NAME" = "{table}" }
+button = "Search"

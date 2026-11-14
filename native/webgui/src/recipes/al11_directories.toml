@@ -1,0 +1,5 @@
+name = "al11_directories"
+title = "Application server directories (AL11)"
+description = "The SAP directory parameters (DIR_*) and their paths on the application server."
+tcode = "AL11"
+result = "SAPLSLVC_FULLSCREEN/0500"

@@ -142,6 +142,20 @@ export const PUBLIC_VSP_TOOLS = new Set([
 ]);
 
 
+// ADT capability gaps (no endpoint, unsupported operation) are often covered
+// by SAP GUI transactions; point the agent at the sap-webgui companion. Missing
+// objects (404) and authorization failures get no hint: WebGUI fails the same way.
+export const WEBGUI_HINT = 'Hint: no ADT endpoint covers this; if the sap-webgui MCP server is enabled, try webgui_list_recipes / webgui_start_transaction.';
+const ADT_GAP = /\bno endpoint\b|\bnot supported\b|\bunsupported\b|\bnot implemented\b/i;
+
+export function withWebguiHint(result) {
+  if (!result?.isError || !Array.isArray(result.content)) return result;
+  const text = result.content.filter(item => item?.type === 'text').map(item => item.text).join('\n');
+  const gap = ADT_GAP.test(text);
+  if (!gap || text.includes(WEBGUI_HINT)) return result;
+  return { ...result, content: [...result.content, { type: 'text', text: WEBGUI_HINT }] };
+}
+
 // Public tool names are lowercase snake_case. BAS/VS Code chat tool references
 // are lowercase-only, so mixed-case names never bind in the tools picker even
 // when the server itself starts and lists tools.
@@ -763,7 +777,7 @@ export class MCPProxy {
           } else {
             this.eventSink(`[${mapped.entry.destination.name}] tools/call ${toolName} completed in ${Date.now() - startedAt}ms`);
           }
-          return response.error ? { ...response, id: message.id } : rpcResult(message.id, response.result);
+          return response.error ? { ...response, id: message.id } : rpcResult(message.id, withWebguiHint(response.result));
         } catch (error) {
           this.eventSink(`[${mapped.entry.destination.name}] tools/call ${toolName} failed after ${Date.now() - startedAt}ms: ${diagnosticText(error.rpcError?.message || error.message)}`, 'error');
           // Self-healing: a dead child (crash, OOM, transient pipe break) is
@@ -782,7 +796,7 @@ export class MCPProxy {
               await this.restartChild(mapped.entry);
               this.eventSink(`[${mapped.entry.destination.name}] tools/call ${toolName} retried after self-healing restart`);
               const retried = await mapped.entry.child.request('tools/call', upstreamParams);
-              return retried.error ? { ...retried, id: message.id } : rpcResult(message.id, retried.result);
+              return retried.error ? { ...retried, id: message.id } : rpcResult(message.id, withWebguiHint(retried.result));
             } catch (restartError) {
               restartFailure = restartError;
               this.eventSink(`[${mapped.entry.destination.name}] tools/call ${toolName} self-healing restart failed: ${diagnosticText(restartError.message)}`, 'error');

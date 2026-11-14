@@ -506,3 +506,16 @@ The `advanced-event-mesh` companion starts `sap-ai-aem`, a Node shim that runs t
 - `aem_semp_action` — `PUT /SEMP/v2/action/...` for queue delete-messages, clear-stats, start/cancel replay, client disconnect/clear-stats, VPN clear-stats; `RUN AEM <ACTION> <vpn>/<key>`.
 - `aem_portal_list`, `aem_portal_get`, `aem_portal_create`, `aem_portal_update`, `aem_portal_delete` — Event Portal `/api/v2/architecture` objects; `CREATE AEM PORTAL <TYPE> <name|version>`, `UPDATE|DELETE AEM PORTAL <TYPE> <id>`.
 - `aem_portal_set_version_state` (`SET AEM PORTAL STATE <id> <state_id>`), `aem_portal_associate_messaging_services` (`ASSOCIATE AEM PORTAL <id>`), `aem_portal_export_asyncapi` (json/yaml, AsyncAPI 2.5.0/3.0.0, truncated over 512 KiB).
+
+## Separate optional SAP GUI for HTML (WebGUI) server
+
+The `sap-webgui` companion starts `sap-ai-webgui`, a Node shim that runs the bundled native Rust executable (`dist/sap-ai-webgui-<os>-<arch>`, checksum-verified against `dist/checksums.txt`; `SAP_AI_DEV_TOOLKIT_WEBGUI_BINARY` overrides it). It is a separate stdio MCP server with 11 read-only tools; it does not use the BAS proxy or a destination prefix. It drives `/sap/bc/gui/sap/its/webgui` through the Chrome DevTools Protocol, either in the user's Chrome via the SAP AI WebGUI Relay extension (`ws://127.0.0.1:<port>`, pairing token, WebGUI tabs only, CDP method allowlist) or in a managed headless Chrome/Edge/Chromium that signs in with `SAP_USER`/`SAP_PASSWORD`. Settings: `~/.config/sap-ai-dev-toolkit/webgui.json` from `sap-ai-dev --setup-webgui`, overridden by `SAP_WEBGUI_URL`/`SAP_URL`, `SAP_CLIENT`, `SAP_LANGUAGE`, `SAP_TLS_SERVER_NAMES`, `SAP_AI_DEV_TOOLKIT_WEBGUI_*`.
+
+- `webgui_connection_info` — effective URL, client, language, mode, browser, relay port/pairing state; no secrets.
+- `webgui_open` — open or reuse a session (`mode`, `url`, `client`, `language`); fills the SAP logon form in headless mode and continues the Logon Status Check page with "Cancel all existing logons" unticked.
+- `webgui_screen` — compact screen model keyed by SAP GUI Scripting ids: transaction, `PROGRAM/DYNPRO`, status, fields (DDIC names), buttons (function keys), tabs, tables (ABAP lists as lines, ALV grids and table controls as rows).
+- `webgui_start_transaction` (`/n<TCODE>`, optional prefill and OK code), `webgui_set_fields`, `webgui_press` (`ref` | `fkey` | `okcode`), `webgui_table` (`page` scrolls ABAP lists with `P+`/`P-`/`P++`/`P--`).
+- `webgui_list_recipes`, `webgui_run_recipe` — `sm37_jobs`, `st22_dumps`, `su53_auth_check`, `su01d_user`, `se16n_table`, `al11_directories`, `sm12_locks`; each step checks the expected screen.
+- `webgui_screenshot` (PNG, optional file), `webgui_close` (`/nex` logoff, then browser or tab release).
+
+Read-only guard: buttons whose text/tooltip means a change, F11/Ctrl+S, saving/deleting function codes, `/h` `/o` `/*` commands, and editing or program-running transactions (SE38, SA38, SM30, SU01, …) are refused before anything reaches SAP.

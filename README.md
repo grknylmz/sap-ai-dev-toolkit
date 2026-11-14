@@ -79,6 +79,7 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 
 | Version | Change |
 | --- | --- |
+| 0.9.9927 | **AI agents can now drive SAP GUI for HTML (WebGUI) in a browser** with the new native Rust companion `sap-ai-webgui`, read-only. It covers what ADT has no endpoint for: background jobs (SM37), short dumps (ST22), failed authorization checks (SU53), user display (SU01D), lock entries (SM12), server directories (AL11), customizing display and other display screens. **Two browser modes:** *relay* drives a WebGUI tab in your own signed-in Chrome through the bundled **SAP AI WebGUI Relay** extension, paired with a token; *headless* starts a managed Chrome, Edge or Chromium. 11 `webgui_*` tools read each screen as a compact model (fields, buttons, tabs, ABAP lists, ALV grids, table controls; elements are identified by their SAP GUI Scripting ids), fill fields, press buttons and function keys, page long lists, take screenshots, and run seven curated recipes with screen guards. A **read-only guard** refuses save/post/delete/change/release actions, F11, and transactions that edit data or run arbitrary programs. The SAP "Cancel all existing logons" checkbox is unticked before continuing, so your other SAP sessions (including the ADT session) are never ended. A new `sap-webgui-fallback` skill and a proxy hint on ADT "no endpoint / not supported" errors tell agents when to switch. Set it up with `sap-ai-dev --setup-webgui`. Verified live against SAP S/4HANA 2023 (SAP_BASIS 758) in both modes. |
 | 0.9.9926 | **Maintenance release, re-verified live** against an SAP S/4HANA 2023 system (SAP_BASIS 758): the curated tool surface and read-only SAP calls pass the live suite. No functional changes since 0.9.9925. MCP configurations still pinned to 0.9.9922 or older should move to this version to pick up the 0.9.9924 single-logon fix. |
 | 0.9.9925 | **New companion MCP server for SAP Integration Suite, advanced event mesh** (`sap-ai-aem`): a native Rust executable bundled prebuilt for Linux, macOS and Windows (x64/arm64), so no Rust toolchain is needed. 29 tools cover the whole lifecycle — Mission Control event broker services (create, rename/lock, resize the spool, upgrade, delete, operation polling), SEMP v2 configuration, monitoring and actions on queues, subscriptions, client usernames, ACL and client profiles, REST delivery points, bridges and replay logs, and Event Portal domains, applications, events and schemas with version states and AsyncAPI export. A Cloud API token resolves each broker's SEMP credentials automatically; brokers without a token use explicit SEMP credentials. Set up with `sap-ai-dev --setup-aem`; driven by the new **SAP Advanced Event Mesh Administrator** agent and `advanced-event-mesh-lifecycle` skill. Verified end to end against a local Solace PubSub+ broker. |
 | 0.9.9924 | **One SAP logon per runtime, shared by parallel tool calls.** AI assistants fire many tool calls at once; each used to reach SAP before the first security-session cookie came back, so every call logged on again and SM04 / the SAP GUI "already logged on" list filled with dozens of sessions. Now the first request logs on, the parallel ones wait for it and reuse its `SAP_SESSIONID` cookie (Basic, SSO and local SAP GUI entries alike); after an expired session the next burst again shares one fresh logon. |
@@ -107,7 +108,7 @@ Use the attached destination-prefixed tools directly in chat. Do not launch `sap
 | 📡 | **SAP DevOps & Observability Specialist** | Monitoring SAP landscapes with the Cloud ALM companion: Integration & Exception Monitoring, health and alert hotspots per DEV/TEST/PROD tier, incident triage correlated with CPI message logs and SLG1, and feature/transport status |
 | 📨 | **SAP Advanced Event Mesh Administrator** | Managing SAP Integration Suite, advanced event mesh with the AEM companion: broker service create, resize, upgrade and delete with operation polling, SEMP configuration, monitoring and actions, and Event Portal design with AsyncAPI export |
 
-**Included skills:** `abap-development` · `abap-testing-quality` · `cds-development` · `rap-development` · `abap-debugging` · `abap-runtime-analysis` · `rap-service-delivery` · `sap-standard-api-analysis` · `clean-core-extensibility` · `sap-sdlc-orchestration` · `sap-transport-release` · `hana-cloud-inspection` · `hana-cloud-native-development` · `hana-cloud-validation` · `sap-integration-architect` · `integration-suite-delivery` · `datasphere-development` · `datasphere-administration` · `bw-datasphere-migration` · `process-automation-development` · `btp-platform-administration` · `cloud-alm-operations` · `advanced-event-mesh-lifecycle`
+**Included skills:** `abap-development` · `abap-testing-quality` · `cds-development` · `rap-development` · `abap-debugging` · `abap-runtime-analysis` · `rap-service-delivery` · `sap-standard-api-analysis` · `clean-core-extensibility` · `sap-sdlc-orchestration` · `sap-transport-release` · `hana-cloud-inspection` · `hana-cloud-native-development` · `hana-cloud-validation` · `sap-integration-architect` · `integration-suite-delivery` · `datasphere-development` · `datasphere-administration` · `bw-datasphere-migration` · `process-automation-development` · `btp-platform-administration` · `cloud-alm-operations` · `advanced-event-mesh-lifecycle` · `sap-webgui-fallback`
 
 Agents and skills install for the harnesses you pick during global installation: a multi-select offers GitHub Copilot and Claude Code pre-checked, plus OpenAI Codex, Cursor, Gemini CLI, opencode, Pi Coding Agent, Oh My Pi (OMP), Cline, Roo Code, and Windsurf / Devin Desktop. In non-interactive installs they are installed for GitHub Copilot only; run `sap-ai-dev --setup` afterwards to configure destinations or local SAP GUI systems. Repository-scoped installation instructions appear below.
 
@@ -135,6 +136,7 @@ The workflow covers ABAP, CDS, RAP, repository analysis, table and query access,
 | 🏛️ | **BTP platform administration** | Audit account hierarchy, entitlements and quotas, service instances and keys, destinations, trust and Cloud Connectors on your own `btp` CLI login. |
 | 📡 | **Cloud ALM observability** | Find exception and alert hotspots per DEV/TEST/PROD tier and correlate them with live CPI message logs and SLG1. |
 | 📨 | **Advanced event mesh lifecycle** | Create, resize, upgrade and delete event brokers, configure and monitor queues, clients and bridges over SEMP, and design Event Portal APIs with AsyncAPI export. |
+| 🖥️ | **SAP GUI for HTML in the browser** | Read jobs, dumps, authorization checks, users and locks from WebGUI, either in your own signed-in Chrome (relay extension) or in a headless browser. Read-only, with screen-guarded recipes. |
 | 🧩 | **Agents in eleven AI harnesses** | Copilot, Claude Code, opencode and OMP get native agents, Pi gets prompt commands, and every harness gets the skills. |
 | 🔁 | **One logon per runtime** | Parallel tool calls share a single SAP security session instead of opening one per call. |
 | ✍️ | **Edit ABAP safely** | Update supported source, stage reviewed change sets, create transport requests, and run syntax checks before requested activation. |
@@ -185,11 +187,12 @@ The catalog below covers source inspection, data, editing, quality, transports, 
 - Execute ABAP SQL queries
 - Inspect system and component information
 - Read SLG1 application logs
+- Drive SAP GUI for HTML display transactions (jobs, dumps, users, locks) read-only through the browser
 - Review and create transport requests
 
-## 🧠 Thirteen agents, twenty-three focused skills
+## 🧠 Thirteen agents, twenty-four focused skills
 
-The package ships with thirteen custom agents plus twenty-three task-focused Agent Skills:
+The package ships with thirteen custom agents plus twenty-four task-focused Agent Skills:
 
 | | Skill | Best for |
 | --- | --- | --- |
@@ -216,20 +219,21 @@ The package ships with thirteen custom agents plus twenty-three task-focused Age
 | ☁️ | `btp-platform-administration` | Auditing and operating SAP BTP core platform setup: account hierarchy, entitlements and quotas, Service Manager instances and service keys, destinations, identity and destination trust, Cloud Connectors and principal propagation checks |
 | 📡 | `cloud-alm-operations` | Monitoring, triaging and tracking SAP landscapes with Cloud ALM: monitoring records and analytics, tier hotspots, CPI/SLG1 correlation, feature and transport status, confirmation-gated alert closing |
 | 📨 | `advanced-event-mesh-lifecycle` | Managing SAP Integration Suite, advanced event mesh: broker service lifecycle with operation polling, SEMP configuration, monitoring and actions, Event Portal design objects and AsyncAPI export |
+| 🖥️ | `sap-webgui-fallback` | Deciding when ADT has no endpoint and switching to read-only SAP GUI for HTML: recipes first, then generic screen, field and table tools, always closing the session |
 
 ## 🗺️ How it fits together
 
-Each selected BAS destination or local SAP GUI system becomes its own isolated MCP server identity. The MCP client discovers the live tools and schemas, the add-on routes calls to the correct runtime process, and that process reaches SAP ADT through the selected route over one shared SAP logon. Companion servers (HANA, Integration Suite, Datasphere, Process Automation, BTP, Cloud ALM, advanced event mesh) are separate stdio MCP processes with their own user-only credentials, so an agent can combine them — for example a Cloud ALM alert, the matching CPI message log, and the ABAP SLG1 entry.
+Each selected BAS destination or local SAP GUI system becomes its own isolated MCP server identity. The MCP client discovers the live tools and schemas, the add-on routes calls to the correct runtime process, and that process reaches SAP ADT through the selected route over one shared SAP logon. Companion servers (HANA, Integration Suite, Datasphere, Process Automation, BTP, Cloud ALM, advanced event mesh, SAP GUI for HTML) are separate stdio MCP processes with their own user-only settings, so an agent can combine them — for example a Cloud ALM alert, the matching CPI message log, and the ABAP SLG1 entry, or an ADT source read followed by the SM37 job that runs it.
 
 ## 🧰 Optional full-stack companion MCP servers
 
-ABAP/RAP backend access is provided by this add-on's destination-scoped runtime. For end-to-end SAP development, setup can also add managed companion MCP entries for frontend, CAP, browser validation, read-only HANA inspection, Integration Suite, Datasphere, Build Process Automation, BTP platform administration, Cloud ALM, and advanced event mesh:
+ABAP/RAP backend access is provided by this add-on's destination-scoped runtime. For end-to-end SAP development, setup can also add managed companion MCP entries for frontend, CAP, browser validation, read-only HANA inspection, Integration Suite, Datasphere, Build Process Automation, BTP platform administration, Cloud ALM, advanced event mesh, and read-only SAP GUI for HTML:
 
 ```sh
 sap-ai-dev --setup --tools
 ```
 
-The companion entries are optional and are launched through `npx` only when the MCP client starts them. They are marked as managed by `sap-ai-dev-toolkit`, so rerunning setup can update or remove them without touching unrelated MCP servers. The companions shipped in this package (HANA, Integration Suite, Datasphere, Process Automation, BTP, Cloud ALM, advanced event mesh) use `--ignore-scripts` so the toolkit postinstall wizard cannot run during MCP startup. Each has a dedicated wizard: `sap-ai-dev --setup-integration`, `--setup-datasphere`, `--setup-process-automation`, `--setup-btp`, `--setup-cloud-alm`, and `--setup-aem`.
+The companion entries are optional and are launched through `npx` only when the MCP client starts them. They are marked as managed by `sap-ai-dev-toolkit`, so rerunning setup can update or remove them without touching unrelated MCP servers. The companions shipped in this package (HANA, Integration Suite, Datasphere, Process Automation, BTP, Cloud ALM, advanced event mesh, SAP GUI for HTML) use `--ignore-scripts` so the toolkit postinstall wizard cannot run during MCP startup. Each has a dedicated wizard: `sap-ai-dev --setup-integration`, `--setup-datasphere`, `--setup-process-automation`, `--setup-btp`, `--setup-cloud-alm`, `--setup-aem`, and `--setup-webgui`.
 
 | MCP entry | Package | Launches | Use when the agent needs to |
 | --- | --- | --- | --- |
@@ -244,6 +248,7 @@ The companion entries are optional and are launched through `npx` only when the 
 | `sap-btp` | `sap-ai-dev-toolkit` | `sap-ai-btp` | Audit and operate the BTP core platform through your own `btp login --sso`: account hierarchy, entitlements and quotas, Service Manager instances and service keys, destinations, trust, and Cloud Connectors |
 | `cloud-alm` | `sap-ai-dev-toolkit` | `sap-ai-cloud-alm` | Observe and triage SAP landscapes with SAP Cloud ALM: health, exception and alert hotspots per tier, Integration & Exception Monitoring records, monitoring events with CPI and SLG1 handoffs, analytics, feature and transport status, and confirmation-gated alert closing |
 | `advanced-event-mesh` | `sap-ai-dev-toolkit` | `sap-ai-aem` | Manage SAP Integration Suite, advanced event mesh (Solace): create, resize, upgrade and delete event broker services with operation polling, configure, monitor and act on brokers over SEMP v2, and design Event Portal objects with AsyncAPI export |
+| `sap-webgui` | `sap-ai-dev-toolkit` | `sap-ai-webgui` | Read SAP GUI for HTML transactions read-only through your own Chrome (relay extension) or a managed headless browser: screens, fields, ABAP lists, ALV grids, and curated recipes for SM37, ST22, SU53, SU01D, SE16N, AL11 and SM12 |
 
 Recommended profiles:
 
@@ -480,6 +485,39 @@ Set it up with **`sap-ai-dev --setup-aem`**: enter a Cloud API token (Cloud Cons
 
 The **SAP Advanced Event Mesh Administrator** agent plus the `advanced-event-mesh-lifecycle` skill drive broker provisioning, SEMP configuration and monitoring, Event Portal design, upgrades and decommissioning.
 
+### SAP GUI for HTML (WebGUI)
+
+Some SAP work has no ADT endpoint: background jobs, short dumps, failed authorization checks, user master display, lock entries, customizing display. The separate `sap-webgui` stdio MCP server (`sap-ai-webgui`) covers these by driving SAP GUI for HTML (`/sap/bc/gui/sap/its/webgui`) in a Chromium-family browser. It is a native Rust executable bundled prebuilt for Linux, macOS and Windows (x64/arm64). It is read-only.
+
+<p align="center"><img src="docs/images/webgui-sm37-jobs.png" alt="SM37 job overview read by the sm37_jobs recipe in a headless browser" width="860"></p>
+
+**Two browser modes**
+
+| Mode | How it signs in | Use when |
+| --- | --- | --- |
+| `relay` (default without credentials) | Drives a WebGUI tab in **your own Chrome** through the bundled **SAP AI WebGUI Relay** extension, using your existing SAP session (SSO, smart card, SAML), so no credentials reach the toolkit. The extension connects only to `127.0.0.1`, proves a pairing token, attaches only to `/sap/bc/gui/sap/its/webgui` tabs (optionally only for listed origins), and accepts a short list of CDP methods. Chrome shows its "being debugged" bar while a tab is driven. | You work in the browser anyway, or the system needs interactive SSO |
+| `headless` (default with `SAP_USER`/`SAP_PASSWORD`) | Starts its own Chrome, Edge or Chromium with a private profile and signs in with `SAP_USER`/`SAP_PASSWORD` from the MCP host environment. Without them it opens a visible window with a persistent profile once, so you can sign in. | Unattended use, CI-like checks, or no Chrome extension allowed |
+
+<p align="center"><img src="docs/images/webgui-relay-options.png" alt="SAP AI WebGUI Relay extension options page paired with the local server" width="560"></p>
+
+**Tools.** `webgui_open` opens or reuses a session. `webgui_screen` returns the current screen as a compact model: transaction, `PROGRAM/DYNPRO`, title, status message, popups, fields with DDIC names, buttons with function keys, tabs, and tables (ABAP lists as text lines, ALV grids and table controls as rows with DDIC column ids). The other tools are `webgui_start_transaction` (optional first-screen prefill), `webgui_set_fields`, `webgui_press` (button or tab ref, function key, or OK code), `webgui_table` (server-side paging for long ABAP lists), `webgui_screenshot`, `webgui_list_recipes` / `webgui_run_recipe`, `webgui_connection_info` and `webgui_close`. Elements are identified by their SAP GUI Scripting ids (`wnd[0]/usr/ctxtBTCH2170-USERNAME`), not by DOM ids that change on every render. Actions go through SAP's built-in UR automation API and wait until SAP reports the page ready.
+
+**Recipes** (verified live on SAP S/4HANA 2023): `sm37_jobs`, `st22_dumps`, `su53_auth_check`, `su01d_user`, `se16n_table`, `al11_directories` and `sm12_locks`. Every step checks the expected screen first. When a step lands on a different screen, the recipe stops and returns that screen and its status message, so the agent can continue with the generic tools.
+
+<p align="center"><img src="docs/images/webgui-se16n-t000.png" alt="SE16N display of table T000 read by the se16n_table recipe" width="860"></p>
+
+**Safety.**
+
+- The guard refuses buttons whose text or tooltip means a change (save, delete, post, release, change, create, import, lock, stop, …).
+- It refuses F11/Ctrl+S, saving or deleting function codes (`/11`, `BU`, `&SAP_EDIT`, …), system commands (`/h`, `/o`, `/*`), and transactions that edit data or run arbitrary programs (SE38, SA38, SM30, SU01, …). It matches English texts, so keep the logon language `EN`.
+- The guard works at GUI level and is heuristic. The real guarantee is a display-only SAP user.
+- On the "Logon Status Check" page, SAP pre-ticks "Cancel all existing logons" on some systems. The server unticks it, checks that it is off, and refuses to continue otherwise, so your other sessions survive.
+- `webgui_close` logs off with `/nex`. Stopping or disconnecting the server logs off too, so no ITS session is left behind. A relay tab you already had open stays signed in and is only released.
+
+**Setup.** Run **`sap-ai-dev --setup-webgui`**. It asks for the WebGUI base URL, client, language, the certificate DNS name when the URL uses an IP address, and the mode. For relay mode it generates a pairing token, copies the extension to `~/.config/sap-ai-dev-toolkit/sap-webgui-relay`, and prints the steps: open `chrome://extensions`, turn on Developer mode, choose **Load unpacked**, then paste the port and token into the extension options. Managed fleets can force-install the extension with Chrome's `ExtensionInstallForcelist` policy. Settings live in `~/.config/sap-ai-dev-toolkit/webgui.json` (0600) and contain no credentials. Environment variables win over the file: `SAP_WEBGUI_URL`/`SAP_URL`, `SAP_CLIENT`, `SAP_LANGUAGE`, `SAP_TLS_SERVER_NAMES`, `SAP_USER`/`SAP_PASSWORD` (headless), `SAP_AI_DEV_TOOLKIT_WEBGUI_MODE`, `SAP_AI_DEV_TOOLKIT_WEBGUI_HEADED=1`, `SAP_AI_DEV_TOOLKIT_WEBGUI_RELAY_PORT` (default 47823), `SAP_AI_DEV_TOOLKIT_WEBGUI_RELAY_TOKEN`, and `SAP_AI_WEBGUI_BROWSER`. `sap-ai-webgui --check` prints the effective settings.
+
+The `sap-webgui-fallback` skill tells agents when to switch: no ADT or companion tool covers the task, a vsp tool answered "no endpoint" / "not supported" (the proxy then appends a hint), or you name a transaction. It also says when not to switch: source, activation, ATC, unit tests and transports stay on ADT, and bulk table reads go through `run_query`. SAP BTP ABAP Environment has no SAP GUI for HTML.
+
 ## 💡 Example requests
 
 Once the destination server is enabled in your chat's tools picker, ask for outcomes instead of manually orchestrating individual SAP operations:
@@ -494,6 +532,8 @@ Once the destination server is enabled in your chat's tools picker, ask for outc
 
 > Inspect the HANA HDI container attached to this workspace, describe the relevant tables, and show at most 20 rows for the columns needed to explain the issue. Do not change database state.
 
+> Show today's canceled background jobs for user `BATCH_FI` in SM37 and the short dumps they caused in ST22.
+
 > Check the current object's transport context, prepare the change for transport, but do not release anything.
 
 ## 🔐 Enterprise-friendly safety model
@@ -506,6 +546,7 @@ Once the destination server is enabled in your chat's tools picker, ask for outc
 | 🔒 **SAP authorization remains authoritative** | The add-on does not bypass backend SAP permissions. |
 | 🚚 **Curated SAP tool surface** | The proxy exposes the same curated developer-lifecycle set for every destination, plus local workflow tools; SAP authorizations and runtime safety checks still apply. |
 | 🧱 **Per-destination isolation** | Generated MCP entries are scoped to a single `SAP_AI_DEV_TOOLKIT_DESTINATION`. |
+| 🖥️ **Read-only WebGUI** | The SAP GUI for HTML companion refuses save/post/delete/change actions and editing transactions, and never cancels your other SAP logons; pair it with a display-only SAP user for a hard guarantee. |
 | 🔑 **Credential-aware setup** | BAS authentication material stays in Destination configuration. Local SAP GUI setup writes VS Code input prompts for SAP user/password instead of raw credentials. |
 
 <a id="install"></a>
@@ -1147,6 +1188,14 @@ SAP_AI_DEV_LIVE_DESTINATION=SSA SAP_AI_DEV_LIVE_USE_MCP_CONFIG=0 npm run test:li
 
 Without `SAP_AI_DEV_LIVE_USE_MCP_CONFIG=0` the suite looks up the destination's server in `SAP_AI_DEV_MCP_CONFIG`, `BAS_VSP_MCP_CONFIG` or the VS Code server `mcp.json` paths and runs its `command`, `args` and `env` — that tests the pinned package version, not the checkout. Credential values written as VS Code `${input:…}` prompts or OMP `!command` lookups are passed through literally and fail with HTTP 401, so resolve them into plain environment variables first (macOS keychain: `security find-generic-password -s <service> -w`). `SAP_AI_DEV_LIVE_COMMAND` / `SAP_AI_DEV_LIVE_ARGS` (JSON array) override the server command; `SAP_AI_DEV_LIVE_DESTINATION_SLUG` and `SAP_AI_DEV_LIVE_TIMEOUT_MS` (default 45000) tune the lookup and per-request timeout.
 
+Run the live SAP GUI for HTML suite (headless, read-only: all seven recipes, the read-only guard, a screenshot and the `/nex` logoff) after `cargo build --manifest-path native/webgui/Cargo.toml`:
+
+```sh
+SAP_URL=https://host:44300 SAP_CLIENT=100 SAP_USER=... SAP_PASSWORD=... npm run test:live:webgui
+```
+
+Add `SAP_TLS_SERVER_NAMES=<certificate DNS name>` when `SAP_URL` uses an IP address. `SAP_AI_DEV_TOOLKIT_WEBGUI_BINARY` points the suite at another build.
+
 Install the checkout globally with `npm run install:local`, or use `npm run install:local -- --link` for a live workspace link. Verify without reinstalling using `npm run install:local -- --verify`: it checks the installed package version and, for a link, the actual workspace target, and refuses an outdated snapshot or a different checkout. After installation, exercise the installed executable with `sap-ai-integration --check`; npm-linked commands resolve their real entrypoint before starting the server.
 
 The ABAP runtime is upstream VSP pinned to one commit and patched with `patches/*.patch` (applied in the order listed in `scripts/build-vsp.mjs`). `npm run build:vsp` clones it into `.build/vibing-steampunk`, applies the patches, and builds `dist/`; run `go test ./pkg/adt/ ./internal/...` there to exercise a patch. To change a patch, commit the patched tree in `.build`, edit, and write `git diff` back to the patch file.
@@ -1163,7 +1212,7 @@ NPM_PUBLISH_TOKEN=npm_...
 
 - `npm run publish:npm` publishes the version already set in `package.json`.
 - To publish a patch bump, run `npm run publish:npm -- --patch`; it updates `package.json` and `package-lock.json` before publishing. If publishing fails after the bump, retry without `--patch`.
-- npm's `prepublishOnly` hook builds the pinned runtime binaries for all platforms — the Go `vsp` runtime (installing the Go toolchain if missing) and the Rust `sap-ai-aem` companion — and refuses to ship a tarball whose `dist/checksums.txt` does not list all ten assets; it guards `npm run publish:npm` and a plain `npm publish` alike. Pass `--skip-build` to republish an already-built `dist/` without rebuilding.
+- npm's `prepublishOnly` hook builds the pinned runtime binaries for all platforms — the Go `vsp` runtime (installing the Go toolchain if missing) and the Rust `sap-ai-aem` and `sap-ai-webgui` companions — and refuses to ship a tarball whose `dist/checksums.txt` does not list all fifteen assets; it guards `npm run publish:npm` and a plain `npm publish` alike. Pass `--skip-build` to republish an already-built `dist/` without rebuilding.
 - Preview the package without publishing, changing its version, or building with `npm run publish:npm -- --dry-run`.
 - GitHub Actions runs the test suite on pushes to `main` and pull requests. A push to `main` that changes the `package.json` version runs the same checks, builds the runtime binaries, publishes that version to npm, and creates a `v<version>` GitHub release with generated notes and the binaries plus `checksums.txt` attached for the download fallback.
 - The publish workflow uses the `NPM_PUBLISH_TOKEN` GitHub repository secret. Verify it with `gh secret list`; the token value is never stored in the repository.

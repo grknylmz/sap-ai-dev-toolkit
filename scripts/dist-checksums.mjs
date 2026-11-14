@@ -3,7 +3,7 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 // Merges sha256 entries for `assets` into dist/checksums.txt, keeping the
-// entries other build scripts wrote (vsp and sap-ai-aem build separately).
+// entries other build scripts wrote (vsp, sap-ai-aem and sap-ai-webgui build separately).
 export async function writeDistChecksums(dist, assets) {
   const path = join(dist, 'checksums.txt');
   let existing = '';

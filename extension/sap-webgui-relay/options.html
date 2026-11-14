@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SAP AI WebGUI Relay</title>
+  <style>
+    body { font: 14px system-ui, sans-serif; max-width: 640px; margin: 32px auto; padding: 0 16px; color: #1d2d3e; }
+    label { display: block; margin: 16px 0 4px; font-weight: 600; }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 6px 8px; font: inherit; }
+    textarea { height: 72px; }
+    button { margin-top: 16px; padding: 6px 16px; font: inherit; }
+    #status { margin-top: 20px; padding: 8px 12px; border-radius: 4px; background: #eef3f8; }
+    #status.connected { background: #e5f5e8; }
+    #status.rejected { background: #fbe9e9; }
+    small { color: #556b82; }
+  </style>
+</head>
+<body>
+  <h1>SAP AI WebGUI Relay</h1>
+  <p>Pairs this browser with the local <code>sap-ai-webgui</code> MCP server so your AI assistant can read SAP GUI for HTML screens in your signed-in session. Only tabs under <code>/sap/bc/gui/sap/its/webgui</code> are ever attached; Chrome shows its "being debugged" bar while a tab is driven.</p>
+  <form id="form">
+    <label for="port">Port</label>
+    <input id="port" type="number" min="1024" max="65535" value="47823">
+    <label for="token">Pairing token</label>
+    <input id="token" type="password" autocomplete="off" placeholder="from sap-ai-dev --setup-webgui">
+    <label for="origins">Allowed SAP origins <small>(optional, one per line, e.g. https://sap.example.com:44300)</small></label>
+    <textarea id="origins"></textarea>
+    <button id="save" type="submit">Save</button>
+  </form>
+  <div id="status">Not configured.</div>
+  <script src="options.js"></script>
+</body>
+</html>

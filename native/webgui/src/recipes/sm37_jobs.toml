@@ -1,0 +1,29 @@
+name = "sm37_jobs"
+title = "Job overview (SM37)"
+description = "Background jobs by name, owner and start date window, all statuses except planned, as the SM37 job list (job name, creator, status, start, duration, delay)."
+tcode = "SM37"
+prefer = "For bulk analysis query table TBTCO (and TBTCP for steps) with the ADT run_query tool."
+result = "SAPMSSY0/0120"
+
+[[params]]
+name = "job"
+description = "Job name pattern"
+default = "*"
+
+[[params]]
+name = "user"
+description = "Job owner pattern (* for all users)"
+default = "*"
+
+[[params]]
+name = "from_date"
+description = "Earliest start date as shown in SAP (e.g. 13.11.2026); empty keeps today"
+
+[[params]]
+name = "to_date"
+description = "Latest start date; empty keeps today"
+
+[[steps]]
+expect = "SAPLBTCH/2170"
+set = { "BTCH2170-JOBNAME" = "{job}", "BTCH2170-USERNAME" = "{user}", "BTCH2170-FROM_DATE" = "{from_date}", "BTCH2170-TO_DATE" = "{to_date}" }
+fkey = "F8"

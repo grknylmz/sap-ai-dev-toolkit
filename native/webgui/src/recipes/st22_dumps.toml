@@ -1,0 +1,27 @@
+name = "st22_dumps"
+title = "ABAP runtime errors (ST22)"
+description = "Short dumps in a date window for a user pattern: date, time, server, user, client, runtime error, exception, program."
+tcode = "ST22"
+result = "RSSHOWRABAX/0100"
+
+[[params]]
+name = "user"
+description = "User pattern (* for all users)"
+default = "*"
+
+[[params]]
+name = "from_date"
+description = "First date as shown in SAP (e.g. 01.11.2026); empty keeps today"
+
+[[params]]
+name = "to_date"
+description = "Last date; empty means a single day"
+
+[[params]]
+name = "error"
+description = "Runtime error name pattern, e.g. DBSQL_*"
+
+[[steps]]
+expect = "RSSHOWRABAX/1000"
+set = { "S_UNAME-LOW" = "{user}", "S_DATUM-LOW" = "{from_date}", "S_DATUM-HIGH" = "{to_date}", "S_ERRID-LOW" = "{error}" }
+fkey = "F8"

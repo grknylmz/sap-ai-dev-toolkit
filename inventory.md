@@ -364,3 +364,13 @@ The standalone `sap-ai-aem` companion (native Rust executable behind a Node shim
 | Mission Control | `aem_list_services`, `aem_get_service`, `aem_list_service_classes`, `aem_list_datacenters`, `aem_list_broker_versions`, `aem_create_service`, `aem_update_service`, `aem_resize_message_spool`, `aem_get_upgrade_status`, `aem_upgrade_service`, `aem_delete_service`, `aem_list_operations`, `aem_get_operation` | Broker service lifecycle with asynchronous operations polled to SUCCEEDED/FAILED; locked services cannot be deleted; no service-class change in the public API. |
 | SEMP v2 | `aem_semp_list_objects`, `aem_semp_get_object`, `aem_semp_create_object`, `aem_semp_update_object`, `aem_semp_delete_object`, `aem_semp_monitor`, `aem_semp_action` | Config CRUD for queues, subscriptions, topic endpoints, client usernames, client/ACL profiles and exceptions, REST delivery points, bridges and replay logs; monitor reads; actions. `service_id` resolves SEMP credentials from the Cloud API. |
 | Event Portal | `aem_portal_list`, `aem_portal_get`, `aem_portal_create`, `aem_portal_update`, `aem_portal_delete`, `aem_portal_set_version_state`, `aem_portal_associate_messaging_services`, `aem_portal_export_asyncapi` | Application domains, applications, events, schemas and their versions; version states; messaging-service association; AsyncAPI export. |
+
+## Separate optional SAP GUI for HTML (WebGUI) server
+
+The standalone `sap-ai-webgui` companion (native Rust executable behind a Node shim) is not a BAS-proxy child and never destination-prefixed. It drives SAP GUI for HTML read-only in the user's Chrome (relay extension) or a managed headless browser, with settings from `~/.config/sap-ai-dev-toolkit/webgui.json` (`sap-ai-dev --setup-webgui`) or the host environment.
+
+| Group | Tools | Behavior |
+|---|---|---|
+| Connection | `webgui_connection_info`, `webgui_open`, `webgui_close` | Settings and relay pairing state; open or reuse a session (logon form, Logon Status Check without cancelling other logons); `/nex` logoff and browser/tab release. |
+| Screens | `webgui_screen`, `webgui_start_transaction`, `webgui_set_fields`, `webgui_press`, `webgui_table`, `webgui_screenshot` | Compact screen model keyed by SAP GUI Scripting ids; guarded navigation, field input, buttons, function keys and OK codes; ABAP list paging; PNG screenshots. |
+| Recipes | `webgui_list_recipes`, `webgui_run_recipe` | SM37 jobs, ST22 dumps, SU53 authorization check, SU01D user, SE16N table, AL11 directories, SM12 locks, each step screen-guarded. |

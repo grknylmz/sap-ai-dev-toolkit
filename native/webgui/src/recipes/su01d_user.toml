@@ -1,0 +1,16 @@
+name = "su01d_user"
+title = "User display (SU01D)"
+description = "One user's master record in display mode: address data plus tabs (Logon Data, Defaults, Roles, Profiles, Groups); select other tabs afterwards with webgui_press."
+tcode = "SU01D"
+prefer = "Logon data and validity are also in tables USR02/USR21 via the ADT get_table_contents tool."
+result = "SAPLSUID_MAINTENANCE/1100"
+
+[[params]]
+name = "user"
+description = "User name"
+required = true
+
+[[steps]]
+expect = "SAPLSUID_MAINTENANCE/1050"
+set = { "SUID_ST_BNAME-BNAME" = "{user}" }
+fkey = "F7"

@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
@@ -30,6 +31,7 @@ import { parseCloudAlmCredentials, parseCloudAlmServiceKey, resolveCloudAlmConfi
 import { readStoredCloudAlmCredentials, storeCloudAlmCredentials } from './cloud-alm-credentials.mjs';
 import { createCloudAlmRestClient, verifyCloudAlmAccess } from './cloud-alm-client.mjs';
 import { readStoredAemCredentials, storeAemCredentials } from './aem-credentials.mjs';
+import { WEBGUI_DEFAULT_RELAY_PORT, installWebguiExtension, readStoredWebguiConfig, storeWebguiConfig } from './webgui-config.mjs';
 import { createStaticServiceClient } from './integration-http.mjs';
 import { connectHana } from './hana-database.mjs';
 import { diagnosticText } from './redact.mjs';
@@ -1356,6 +1358,122 @@ export async function runAemSetup({
   return { selected: [], ...(result || {}) };
 }
 
+// Suggest the SAP_URL of an already-configured local SAP GUI / destination
+// entry, else the ADT URL guessed from the first discovered SAP GUI system.
+async function suggestWebguiUrl(env, discoverLocalSapGui) {
+  try {
+    const config = await readMcpConfig(await resolveMcpConfigPath(env));
+    for (const entry of Object.values(config?.servers || {})) {
+      if (typeof entry?.env?.SAP_URL === 'string' && entry.env.SAP_URL) return adtBaseUrl(entry.env.SAP_URL);
+    }
+  } catch {}
+  try {
+    for (const system of await discoverLocalSapGui({ env })) {
+      const url = defaultAdtUrl(system);
+      if (url) return url;
+    }
+  } catch {}
+  return '';
+}
+
+function webguiUrlValidator(value) {
+  try {
+    const url = new URL(String(value || '').trim());
+    if (url.protocol === 'https:' || url.protocol === 'http:') return true;
+  } catch {}
+  return 'must be an http(s) URL such as https://host:44300';
+}
+
+/** Prompt for WebGUI settings (URL, client, language, mode), keep or generate the relay token, and store them. */
+export async function promptWebgui({
+  env = process.env,
+  input = stdin,
+  output = stdout,
+  discoverLocalSapGui = discoverSapGuiSystems
+} = {}) {
+  const label = 'SAP GUI for HTML';
+  print(output, '');
+  print(output, formatStatus('SAP GUI for HTML (WebGUI) tools', 'step', output, label));
+  print(output, '  Lets your AI agent read SAP GUI for HTML transactions (read-only) through your own Chrome with the relay extension, or a managed headless browser. No credentials are stored; headless mode uses SAP_USER/SAP_PASSWORD from the MCP host environment or a one-time sign-in.');
+  let stored;
+  try {
+    stored = readStoredWebguiConfig(env);
+  } catch (error) {
+    print(output, formatStatus(`${error.message}; it will be replaced.`, 'warning', output, label));
+  }
+  const suggestion = stored?.url || await suggestWebguiUrl(env, discoverLocalSapGui);
+  const url = ((await textPrompt({
+    message: 'WebGUI base URL (https://host:44300)',
+    placeholder: suggestion || 'https://host:44300',
+    required: false,
+    validate: value => webguiUrlValidator(String(value || '').trim() || suggestion)
+  }, { input, output })).trim() || suggestion).replace(/\/+$/, '');
+  const defaultClient = stored?.client || '100';
+  const client = (await textPrompt({
+    message: `SAP client (Enter = ${defaultClient})`,
+    placeholder: defaultClient,
+    required: false,
+    validate: value => (!String(value || '').trim() || /^\d{3}$/.test(String(value).trim()) ? true : 'must be three digits')
+  }, { input, output })).trim() || defaultClient;
+  const defaultLanguage = stored?.language || 'EN';
+  const language = ((await textPrompt({
+    message: `Logon language (Enter = ${defaultLanguage})`,
+    placeholder: defaultLanguage,
+    required: false
+  }, { input, output })).trim() || defaultLanguage).toUpperCase();
+  let tlsServerName = stored?.tlsServerName || '';
+  if (isIP(new URL(url).hostname.replace(/^\[|\]$/g, ''))) {
+    tlsServerName = (await textPrompt({
+      message: `TLS certificate DNS name for ${new URL(url).hostname} (Enter = ${tlsServerName || 'none'})`,
+      placeholder: tlsServerName,
+      required: false
+    }, { input, output })).trim() || tlsServerName;
+  }
+  const mode = await selectPrompt({
+    message: 'Browser mode',
+    defaultValue: stored?.mode === 'headless' ? 'headless' : 'relay',
+    choices: [
+      { name: 'Relay: your own Chrome through the sap-webgui-relay extension (recommended)', value: 'relay', shortcut: 'r' },
+      { name: 'Headless: a managed browser the server starts itself', value: 'headless', shortcut: 'h' }
+    ]
+  }, { input, output });
+  const relayToken = typeof stored?.relayToken === 'string' && stored.relayToken.length >= 32 ? stored.relayToken : randomBytes(32).toString('hex');
+  const relayPort = Number.isInteger(stored?.relayPort) ? stored.relayPort : WEBGUI_DEFAULT_RELAY_PORT;
+  const record = { url, client, language, ...(tlsServerName ? { tlsServerName } : {}), mode, relayPort, relayToken };
+  const path = await storeWebguiConfig(record, env);
+  print(output, formatStatus(`Saved to ${path}`, 'success', output, label));
+  if (mode === 'relay') {
+    const extensionPath = await installWebguiExtension(env);
+    print(output, '  Load the relay extension in Chrome once (setup refreshes this folder; reload the extension after updates):');
+    print(output, `    1. Open chrome://extensions and turn on Developer mode.`);
+    print(output, `    2. Click Load unpacked and choose ${extensionPath}`);
+    print(output, '    3. Open the extension options and paste the port and token below.');
+    print(output, `  Relay port:  ${relayPort}`);
+    print(output, `  Relay token: ${relayToken}`);
+  }
+  return true;
+}
+
+/** `sap-ai-dev --setup-webgui`: only the SAP GUI for HTML step (settings, relay token, add the server). */
+export async function runWebguiSetup({
+  env = process.env,
+  input = stdin,
+  output = stdout,
+  install = installMcpConfig,
+  discoverLocalSapGui = discoverSapGuiSystems
+} = {}) {
+  if (!input.isTTY || !output.isTTY) {
+    print(output, formatStatus('Interactive setup needs a terminal. Rerun sap-ai-dev --setup-webgui from a terminal.', 'warning', output, 'SAP AI Dev Toolkit'));
+    return { skipped: true, reason: 'non-tty' };
+  }
+  await promptWebgui({ env, input, output, discoverLocalSapGui });
+  const result = await install([], { env, sapDevelopmentServers: ['sap-webgui'], additive: true });
+  print(output, '');
+  print(output, formatStatus(`Configured the SAP GUI for HTML (WebGUI) MCP server${result?.path ? ` in ${result.path}` : ''}.`, 'success', output, 'SAP AI Dev Toolkit'));
+  for (const message of Array.isArray(result?.warnings) ? result.warnings : []) print(output, formatStatus(message, 'warning', output, 'Warning'));
+  return { selected: [], ...(result || {}) };
+}
+
 function buildLocalClientDestination(destination, client, authMode, { multipleClients = false, duplicateSystemName = false, browserPath } = {}) {
   const name = localClientDestinationName(destination, client, { multipleClients, duplicateSystemName });
   const localDestination = { ...destination, name, serverName: name, client };
@@ -1877,6 +1995,7 @@ export async function runSetup({
     print(output, '  SAP BTP platform administration uses your own btp CLI login (btp login --sso), checked next; the toolkit stores no credentials and writes none to mcp.json.');
     print(output, '  SAP Cloud ALM uses a service key from CLOUD_ALM_* in the MCP host environment or pasted next (verified online, saved for your user only); credentials are not written to mcp.json.');
     print(output, '  Advanced event mesh uses a Cloud API token or broker SEMP credentials from AEM_* in the MCP host environment or entered next (verified online, saved for your user only); credentials are not written to mcp.json.');
+    print(output, '  SAP GUI for HTML (WebGUI) is read-only; it drives your own Chrome through the relay extension or a managed headless browser, set up next; no credentials are stored and none are written to mcp.json.');
     print(output, '  Leave empty to only configure ABAP/ADT destination servers.');
     print(output, '');
     sapDevelopmentServers = await checkboxPrompt({
@@ -1907,6 +2026,7 @@ export async function runSetup({
     if (sapDevelopmentServers.includes('advanced-event-mesh') && !await promptAem({ env, input, output })) {
       sapDevelopmentServers = sapDevelopmentServers.filter(id => id !== 'advanced-event-mesh');
     }
+    if (sapDevelopmentServers.includes('sap-webgui')) await promptWebgui({ env, input, output });
   } else if (await promptIntegrationSuite({ env, alreadyConfigured: integrationSuiteConfigured, input, output, verifyIntegration, integrationCloudFoundry })) {
     // Without --tools, Integration Suite still gets its own yes/no step instead of being hidden.
     sapDevelopmentServers = ['integration-suite'];

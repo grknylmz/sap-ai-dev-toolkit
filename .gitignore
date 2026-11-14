@@ -5,6 +5,7 @@ node_modules/
 .build/
 dist/
 native/aem/target/
+native/webgui/target/
 *.tgz
 *.tar.gz
 

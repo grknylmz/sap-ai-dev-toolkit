@@ -30,13 +30,20 @@ export function aemBinaryTarget(platform = process.platform, arch = process.arch
   return { os: target[0], arch: target[1], extension: target[2], asset: `sap-ai-aem-${target[0]}-${target[1]}${target[2]}` };
 }
 
+export function webguiBinaryTarget(platform = process.platform, arch = process.arch) {
+  const target = platformMap[`${platform}:${arch}`];
+  if (!target) throw new Error(`Unsupported platform ${platform}/${arch} for sap-ai-webgui.`);
+  return { os: target[0], arch: target[1], extension: target[2], asset: `sap-ai-webgui-${target[0]}-${target[1]}${target[2]}` };
+}
+
 // Every runtime asset the npm tarball must bundle; publish:npm refuses to ship a
 // package whose dist/checksums.txt does not list all of them.
 export function packagedBinaryAssets() {
   const keys = Object.keys(platformMap).map(key => key.split(':'));
   return [
     ...keys.map(key => binaryTarget(...key).asset),
-    ...keys.map(key => aemBinaryTarget(...key).asset)
+    ...keys.map(key => aemBinaryTarget(...key).asset),
+    ...keys.map(key => webguiBinaryTarget(...key).asset)
   ];
 }
 
@@ -46,6 +53,10 @@ export function bundledBinaryPath(platform = process.platform, arch = process.ar
 
 export function bundledAemBinaryPath(platform = process.platform, arch = process.arch) {
   return join(packageRoot, 'dist', aemBinaryTarget(platform, arch).asset);
+}
+
+export function bundledWebguiBinaryPath(platform = process.platform, arch = process.arch) {
+  return join(packageRoot, 'dist', webguiBinaryTarget(platform, arch).asset);
 }
 
 // The npm-published dist/checksums.txt is the trust anchor: unlike a GitHub

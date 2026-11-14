@@ -45,7 +45,8 @@ const expectedSkills = [
   'sap-integration-architect',
   'sap-sdlc-orchestration',
   'sap-standard-api-analysis',
-  'sap-transport-release'
+  'sap-transport-release',
+  'sap-webgui-fallback'
 ];
 async function readMarkdown(path) {
   // Normalize CRLF so content assertions hold on Windows checkouts where

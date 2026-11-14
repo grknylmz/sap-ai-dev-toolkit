@@ -1,0 +1,5 @@
+name = "su53_auth_check"
+title = "Last failed authorization check (SU53)"
+description = "The most recent failed authorization checks of the signed-in user: authorization object, field values requested, and what the user has."
+tcode = "SU53"
+result = "SAPLSLVC_FULLSCREEN/0500"

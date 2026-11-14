@@ -121,6 +121,15 @@ export const SAP_DEVELOPMENT_MCP_SERVERS = Object.freeze([
     bin: 'sap-ai-aem',
     ignoreScripts: true,
     priority: 'optional'
+  }),
+  Object.freeze({
+    id: 'sap-webgui',
+    name: 'SAP GUI for HTML (WebGUI)',
+    description: 'Drive SAP GUI for HTML transactions read-only: read screens, fields and tables, start display transactions and run curated recipes (SM37 jobs, ST22 dumps, SU53 authorization check, SU01D user, SE16N table, AL11 directories, SM12 locks), through your own Chrome (relay extension) or a managed headless browser, set up with sap-ai-dev --setup-webgui.',
+    packageName: 'sap-ai-dev-toolkit',
+    bin: 'sap-ai-webgui',
+    ignoreScripts: true,
+    priority: 'optional'
   })
 ]);
 
@@ -653,7 +662,7 @@ export async function installMcpConfig(destinationsOrOptions, options = {}) {
   // Values are full npx package specs; a bare version would become --package=<version>.
   const selfSpec = selfVersion ? `sap-ai-dev-toolkit@${selfVersion}` : '';
   const companionVersions = selfSpec
-    ? { 'sap-ai-dev-toolkit': selfSpec, 'hana-cloud-inspector': selfSpec, 'integration-suite': selfSpec, 'datasphere': selfSpec, 'process-automation': selfSpec, 'sap-btp': selfSpec, 'cloud-alm': selfSpec, 'advanced-event-mesh': selfSpec }
+    ? { 'sap-ai-dev-toolkit': selfSpec, 'hana-cloud-inspector': selfSpec, 'integration-suite': selfSpec, 'datasphere': selfSpec, 'process-automation': selfSpec, 'sap-btp': selfSpec, 'cloud-alm': selfSpec, 'advanced-event-mesh': selfSpec, 'sap-webgui': selfSpec }
     : {};
   const generated = {
     ...buildMcpEntries(destinations, env),

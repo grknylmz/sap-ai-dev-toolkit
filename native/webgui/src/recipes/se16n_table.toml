@@ -1,0 +1,26 @@
+name = "se16n_table"
+title = "Table display (SE16N)"
+description = "Display the entries of a database table as an ALV grid with DDIC column names."
+tcode = "SE16N"
+prefer = "The ADT get_table_contents and run_query tools read tables faster and with filters; use this when ADT data preview is not available."
+result = "SAPLSE16N/0200"
+
+[[params]]
+name = "table"
+description = "Table name, e.g. T000"
+required = true
+
+[[params]]
+name = "max_rows"
+description = "Maximum number of hits"
+default = "200"
+
+[[steps]]
+expect = "SAPLSE16N/0120"
+set = { "GD-TAB" = "{table}" }
+fkey = "ENTER"
+
+[[steps]]
+expect = "SAPLSE16N/0120"
+set = { "GD-MAX_LINES" = "{max_rows}" }
+fkey = "F8"
