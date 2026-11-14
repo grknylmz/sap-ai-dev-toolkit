@@ -25,7 +25,8 @@
   <a href="#install"><strong>Get started →</strong></a> ·
   <a href="#agents">Meet the agents</a> ·
   <a href="#bas">Connect your SAP systems</a> ·
-  <a href="#tools">Explore the tools</a>
+  <a href="#tools">Explore the tools</a> ·
+  <a href="docs/gifs/README.md">Watch the demos</a>
 </p>
 
 ## From a prompt to SAP-ready work
