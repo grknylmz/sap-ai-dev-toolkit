@@ -696,7 +696,7 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "sap-ai-webgui"
-version = "0.9.9927"
+version = "0.9.9928"
 dependencies = [
  "base64 0.22.1",
  "futures-util",

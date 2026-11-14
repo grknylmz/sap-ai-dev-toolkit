@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SAP AI WebGUI Relay",
-  "version": "0.9.9927",
+  "version": "0.9.9928",
   "description": "Lets the local sap-ai-webgui MCP server drive SAP GUI for HTML tabs in this browser, read-only, after pairing with a token.",
   "minimum_chrome_version": "116",
   "permissions": ["debugger", "tabs", "storage", "alarms"],

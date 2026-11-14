@@ -1,6 +1,6 @@
 [package]
 name = "sap-ai-aem"
-version = "0.9.9927"
+version = "0.9.9928"
 edition = "2024"
 rust-version = "1.88"
 license = "MIT"
