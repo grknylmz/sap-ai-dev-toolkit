@@ -489,7 +489,9 @@ The **SAP Advanced Event Mesh Administrator** agent plus the `advanced-event-mes
 
 Some SAP work has no ADT endpoint: background jobs, short dumps, failed authorization checks, user master display, lock entries, customizing display. The separate `sap-webgui` stdio MCP server (`sap-ai-webgui`) covers these by driving SAP GUI for HTML (`/sap/bc/gui/sap/its/webgui`) in a Chromium-family browser. It is a native Rust executable bundled prebuilt for Linux, macOS and Windows (x64/arm64). It is read-only.
 
-<p align="center"><img src="docs/images/webgui-sm37-jobs.png" alt="SM37 job overview read by the sm37_jobs recipe in a headless browser" width="860"></p>
+<p align="center"><img src="docs/gifs/02-recipe-sm37-job-overview.gif" alt="An agent runs the sm37_jobs recipe in a headless browser and reads the SM37 job overview" width="860"></p>
+
+Short recordings of every feature (WebGUI recipes, the guard, relay pairing, setup, live suites, the ADT tool tour and the offline playground) are in [docs/gifs](docs/gifs/README.md), as GIF and MP4.
 
 **Two browser modes**
 
